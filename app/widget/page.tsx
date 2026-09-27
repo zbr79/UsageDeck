@@ -216,6 +216,7 @@ export default function Widget() {
   const [themeMode, setThemeMode] = useState<"auto" | "light" | "dark" | "white">("auto");
   const lastChange = useRef<Map<string, { at: number }>>(new Map());
   const increaseAt = useRef<Map<string, number>>(new Map());
+  const rootRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const off = (window as any).widget?.onBg?.((v: number) => {
@@ -276,12 +277,20 @@ export default function Widget() {
   }, []);
 
   useEffect(() => {
-    const t = setTimeout(() => {
-      const h = document.body?.scrollHeight ?? 0;
+    const el = rootRef.current;
+    if (!el) return;
+    const send = () => {
+      const h = Math.ceil(el.getBoundingClientRect().height);
       if (h > 0) (window as any).widget?.resize(238, h + 6);
-    }, 80);
-    return () => clearTimeout(t);
-  }, [expanded, rows, cursor]);
+    };
+    const t = setTimeout(send, 80);
+    const ro = new ResizeObserver(send);
+    ro.observe(el);
+    return () => {
+      clearTimeout(t);
+      ro.disconnect();
+    };
+  }, []);
 
   const load = useCallback(async () => {
     setRefreshing(true);
@@ -774,7 +783,7 @@ export default function Widget() {
   const peakInfo = useMemo(() => getPeakInfo(new Date(now)), [now]);
 
   return (
-    <div className="w-screen p-1.5 select-none">
+    <div ref={rootRef} className="w-screen p-1.5 select-none">
       <div
         className={
           expanded

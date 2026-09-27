@@ -131,7 +131,7 @@ function createWindow() {
     },
   });
 
-  win.setMinimumSize(WIDTH, 150);
+  win.setMinimumSize(WIDTH, 40);
   win.setMaximumSize(WIDTH, 8000);
 
   win.setAlwaysOnTop(true, "screen-saver");
@@ -232,7 +232,7 @@ ipcMain.on("widget-resize", (_e, width, height) => {
   if (!win) return;
   const disp = screen.getDisplayMatching(win.getBounds());
   const maxH = disp.workArea.height - 8;
-  const h = Math.max(100, Math.min(Math.round(height), maxH));
+  const h = Math.max(40, Math.min(Math.round(height), maxH));
   win.setSize(Math.round(width), h);
 });
 
