@@ -242,6 +242,9 @@ export default function Widget() {
   const [cursorStale, setCursorStale] = useState(false);
   const [cursorCachedAt, setCursorCachedAt] = useState<number | null>(null);
   const [cursorEnabled, setCursorEnabled] = useState(true);
+  const [grok, setGrok] = useState<{ percentUsed: number | null; resetAt: string | null; email: string | null; planLabel: string | null; cursorPlanName: string | null } | null>(null);
+  const [grokStale, setGrokStale] = useState(false);
+  const [grokCachedAt, setGrokCachedAt] = useState<number | null>(null);
   const [grokEnabled, setGrokEnabled] = useState(true);
   const [codexEnabled, setCodexEnabled] = useState(true);
   const [deepseekPeakHourWarning, setDeepseekPeakHourWarning] = useState(true);
@@ -357,9 +360,10 @@ export default function Widget() {
       setShowProviderNames(sjson.settings?.showProviderNames === true);
       setThemeMode(sjson.settings?.themeMode ?? "auto");
 
-      const [usageRes, cursorRes, codexRes, claudeRes] = await Promise.all([
+      const [usageRes, cursorRes, grokRes, codexRes, claudeRes] = await Promise.all([
         apiFetch("/api/usage", { cache: "no-store" }),
         apiFetch("/api/cursor", { cache: "no-store" }),
+        apiFetch("/api/grok", { cache: "no-store" }),
         apiFetch("/api/codex", { cache: "no-store" }),
         apiFetch("/api/claude", { cache: "no-store" }),
       ]);
@@ -370,6 +374,12 @@ export default function Widget() {
         setCursor(cjson.usage ?? null);
         setCursorStale(cjson.stale === true);
         setCursorCachedAt(typeof cjson.cachedAt === "number" ? cjson.cachedAt : null);
+      }
+      {
+        const gjson = await grokRes.json();
+        setGrok(gjson.usage ?? null);
+        setGrokStale(gjson.stale === true);
+        setGrokCachedAt(typeof gjson.cachedAt === "number" ? gjson.cachedAt : null);
       }
       {
         const xjson = await codexRes.json();
@@ -716,10 +726,10 @@ export default function Widget() {
 
   const renderGrokCard = () => {
     if (!grokEnabled) return null;
-    if (cursor?.grokPercentUsed == null) return null;
-    const pct = cursor.grokPercentUsed;
-    const stale = cursorStale;
-    const grokPassed = stale && isPassed(cursor.grokResetAt);
+    if (grok?.percentUsed == null) return null;
+    const pct = grok.percentUsed;
+    const stale = grokStale;
+    const grokPassed = stale && isPassed(grok.resetAt);
     const exhausted = !grokPassed && pct >= 100;
     const cardClass = `relative rounded-lg p-2 transition-colors duration-700 ${cardBg} ${
       exhausted
@@ -744,12 +754,12 @@ export default function Widget() {
           />
           <span
             className={`text-[11px] truncate flex-1 font-medium ${light ? "text-zinc-800" : "text-zinc-100"}`}
-            title={cursor.grokAccount ?? ""}
+            title={grok.email ?? ""}
           >
             {showProviderNames ? "Grok Bot" : displayNames["grok"] ?? "Grok Bot"}
           </span>
-          {cachedHint(stale, cursorCachedAt)}
-          {(cursor.grokPlanLabel ?? cursor.planName) && (
+          {cachedHint(stale, grokCachedAt)}
+          {(grok.planLabel ?? grok.cursorPlanName) && (
             <span
               className={`ml-auto text-[9px] font-semibold px-1.5 py-0.5 rounded-full ${
                 light
@@ -757,7 +767,7 @@ export default function Widget() {
                   : "bg-blue-500/15 text-blue-300 border border-blue-400/30"
               }`}
             >
-              {cursor.grokPlanLabel ?? cursor.planName}
+              {grok.planLabel ?? grok.cursorPlanName}
             </span>
           )}
         </div>
@@ -772,9 +782,9 @@ export default function Widget() {
             reset={null}
           />
         </div>
-        {cursor.grokResetAt && !grokPassed && (
+        {grok.resetAt && !grokPassed && (
           <div className={`text-[9px] leading-3 mt-1 transition-colors duration-700 ${light ? "text-zinc-500" : "text-zinc-400"}`}>
-            Resets {resetFmt(cursor.grokResetAt)}
+            Resets {resetFmt(grok.resetAt)}
           </div>
         )}
         </div>

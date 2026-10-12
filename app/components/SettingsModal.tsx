@@ -136,8 +136,13 @@ export default function SettingsModal({
         setCursorAccount(c.usage?.accountName ?? null);
         setCursorPlan(c.usage?.planName ?? null);
         setCursorStale(c.stale === true);
-        setGrokAccount(c.usage?.grokAccount ?? null);
-        setGrokPlan(c.usage?.grokPlanLabel ?? null);
+      })
+      .catch(() => {});
+    apiFetch("/api/grok", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((g) => {
+        setGrokAccount(g.usage?.email ?? null);
+        setGrokPlan(g.usage?.planLabel ?? g.usage?.cursorPlanName ?? null);
       })
       .catch(() => {});
     apiFetch("/api/codex", { cache: "no-store" })

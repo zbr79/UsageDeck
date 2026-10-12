@@ -1,154 +1,133 @@
-import { promises as fs } from 'fs'
-import path from 'path'
-import { readCached, writeCached } from './usage-cache'
+import { dataFile } from './paths'
+import { readJson, withLock, writeJsonAtomic } from './fs-atomic'
+import { createProvider, type ProviderResult } from './provider-cache'
+import type { OpenCodeUsage, UsageWindow } from './types'
+
+export type { OpenCodeUsage as Usage, UsageWindow } from './types'
 
 export interface Account {
   email: string
   key: string
 }
 
-export interface UsageWindow {
-  status: string
-  percent: number
-  resetsAt: string
-}
-
-export interface Usage {
-  rolling: UsageWindow
-  weekly: UsageWindow
-  monthly: UsageWindow
-}
-
-const DATA_DIR = path.join(process.cwd(), 'data')
-const ACCOUNTS_FILE = path.join(DATA_DIR, 'accounts.json')
+const ACCOUNTS_FILE = 'accounts.json'
 const USAGE_URL = 'https://opencode.ai/zen/go/v1/usage'
 
+function isAccount(value: unknown): value is Account {
+  const a = value as Account
+  return !!a && typeof a.email === 'string' && typeof a.key === 'string'
+}
+
 export async function getAccounts(): Promise<Account[]> {
-  try {
-    const raw = await fs.readFile(ACCOUNTS_FILE, 'utf8')
-    const parsed = JSON.parse(raw)
-    return Array.isArray(parsed) ? parsed : []
-  } catch {
-    return []
+  const parsed = await readJson(dataFile(ACCOUNTS_FILE))
+  return Array.isArray(parsed) ? parsed.filter(isAccount) : []
+}
+
+/** Read-modify-write the account list under a lock, written atomically. */
+export function updateAccounts(change: (accounts: Account[]) => Account[]): Promise<Account[]> {
+  return withLock(ACCOUNTS_FILE, async () => {
+    const next = change(await getAccounts())
+    await writeJsonAtomic(dataFile(ACCOUNTS_FILE), next, 0o600)
+    return next
+  })
+}
+
+/** "sk-…a1b2" — enough to recognise a key, useless to anyone who sees it. */
+export function keyHint(key: string): string {
+  return key.length > 8 ? `${key.slice(0, 3)}…${key.slice(-4)}` : '•••'
+}
+
+function parseWindow(value: unknown): UsageWindow | null {
+  const w = value as Partial<UsageWindow> | null
+  if (!w || typeof w.percent !== 'number' || !Number.isFinite(w.percent)) return null
+  return {
+    status: typeof w.status === 'string' ? w.status : 'ok',
+    percent: w.percent,
+    resetsAt: typeof w.resetsAt === 'string' ? w.resetsAt : '',
   }
 }
 
-export async function saveAccounts(accounts: Account[]): Promise<void> {
-  await fs.mkdir(DATA_DIR, { recursive: true })
-  await fs.writeFile(ACCOUNTS_FILE, JSON.stringify(accounts, null, 2), 'utf8')
+/** The `usage` object from /zen/go/v1/usage, or null if malformed. */
+export function parseOpenCodeUsage(json: unknown): OpenCodeUsage | null {
+  const u = (json as { usage?: Record<string, unknown> } | null)?.usage
+  if (!u) return null
+  const rolling = parseWindow(u.rolling)
+  const weekly = parseWindow(u.weekly)
+  const monthly = parseWindow(u.monthly)
+  return rolling && weekly && monthly ? { rolling, weekly, monthly } : null
 }
 
-interface UsageCacheEntry {
-  at: number
-  data: Usage | null
-  stale: boolean
-  cachedAt: number | null
-  subscriptionActive: boolean | null
-}
-
-export interface UsageResult {
-  usage: Usage | null
-  prev: Usage | null
-  stale: boolean
-  cachedAt: number | null
-  subscriptionActive: boolean | null
-}
-
-const usageCache = new Map<string, UsageCacheEntry>()
-const CACHE_MS = 10_000
-const FAILURE_CACHE_MS = 15_000
-
-const lastSeen = new Map<string, Usage>()
-const lastChange = new Map<string, { at: number; detail: string }>()
-
-function diffText(prev: Usage, cur: Usage): string {
+export function diffText(prev: OpenCodeUsage, cur: OpenCodeUsage): string {
   const parts: string[] = []
-  const windows: [string, UsageWindow, UsageWindow][] = [
-    ['rolling', prev.rolling, cur.rolling],
-    ['weekly', prev.weekly, cur.weekly],
-    ['monthly', prev.monthly, cur.monthly],
-  ]
-  for (const [name, p, c] of windows) {
-    if (p.percent !== c.percent) parts.push(`${name} ${p.percent}% → ${c.percent}%`)
+  for (const name of ['rolling', 'weekly', 'monthly'] as const) {
+    if (prev[name].percent !== cur[name].percent) {
+      parts.push(`${name} ${prev[name].percent}% → ${cur[name].percent}%`)
+    }
   }
   return parts.join(', ')
 }
 
-export function getLastChange(email: string): { at: number; detail: string } | null {
-  return lastChange.get(email) ?? null
-}
+// Per-account state, keyed by email.
+const keys = new Map<string, string>()
+const lastSeen = new Map<string, OpenCodeUsage>()
+const prevSnapshot = new Map<string, OpenCodeUsage | null>()
+const lastChange = new Map<string, { at: number; detail: string }>()
+const subscription = new Map<string, boolean | null>()
 
-export async function getUsage(key: string, email: string): Promise<UsageResult> {
-  async function fromCache(
-    subscriptionActive: boolean | null = null,
-  ): Promise<UsageResult> {
-    const cached = await readCached<Usage>('opencode', email)
-    const entry: UsageCacheEntry = {
-      at: Date.now(),
-      data: cached?.data ?? null,
-      stale: cached !== null,
-      cachedAt: cached?.savedAt ?? null,
-      subscriptionActive,
-    }
-    usageCache.set(email, entry)
-    return {
-      usage: entry.data,
-      prev: lastSeen.get(email) ?? null,
-      stale: entry.stale,
-      cachedAt: entry.cachedAt,
-      subscriptionActive: entry.subscriptionActive,
-    }
-  }
-
-  const hit = usageCache.get(email)
-  if (hit && Date.now() - hit.at < (hit.data ? CACHE_MS : FAILURE_CACHE_MS)) {
-    return {
-      usage: hit.data,
-      prev: lastSeen.get(email) ?? null,
-      stale: hit.stale,
-      cachedAt: hit.cachedAt,
-      subscriptionActive: hit.subscriptionActive,
-    }
-  }
-  try {
+const provider = createProvider<OpenCodeUsage>({
+  section: 'opencode',
+  ttlMs: 10_000,
+  failureTtlMs: 15_000,
+  async fetch(email) {
+    const key = keys.get(email)
+    if (!key) return { ok: false }
     const res = await fetch(USAGE_URL, {
       headers: { Authorization: `Bearer ${key}` },
       cache: 'no-store',
       signal: AbortSignal.timeout(10_000),
     })
-    let data: Usage | null = null
-    const prev = lastSeen.get(email) ?? null
-    if (res.ok) {
-      const json = await res.json()
-      data = (json?.usage as Usage) ?? null
-      if (data) {
-        if (prev) {
-          const detail = diffText(prev, data)
-          if (detail) lastChange.set(email, { at: Date.now(), detail })
-        }
-        lastSeen.set(email, data)
-        writeCached('opencode', email, data)
-        usageCache.set(email, {
-          at: Date.now(),
-          data,
-          stale: false,
-          cachedAt: null,
-          subscriptionActive: true,
-        })
-        return { usage: data, prev, stale: false, cachedAt: null, subscriptionActive: true }
-      }
-    }
-    let subscriptionActive: boolean | null = null
     if (!res.ok) {
-      try {
-        const err = await res.json()
-        if (err?.error?.type === 'EntitlementError') subscriptionActive = false
-      } catch {
-        // non-JSON error body
-      }
+      const err = await res.json().catch(() => null)
+      subscription.set(email, err?.error?.type === 'EntitlementError' ? false : null)
+      return { ok: false }
     }
-    return await fromCache(subscriptionActive)
-  } catch {
-    return await fromCache(null)
+    const data = parseOpenCodeUsage(await res.json())
+    if (!data) {
+      subscription.set(email, null)
+      return { ok: false }
+    }
+    subscription.set(email, true)
+    const prev = lastSeen.get(email) ?? null
+    if (prev) {
+      const detail = diffText(prev, data)
+      if (detail) lastChange.set(email, { at: Date.now(), detail })
+    }
+    // `prev` stays stable across cache hits until the next live fetch, so
+    // the widget sees the same before/after pair for the whole TTL.
+    prevSnapshot.set(email, prev)
+    lastSeen.set(email, data)
+    return { ok: true, data }
+  },
+})
+
+export interface UsageResult extends ProviderResult<OpenCodeUsage> {
+  prev: OpenCodeUsage | null
+  subscriptionActive: boolean | null
+}
+
+export async function getUsage(key: string, email: string): Promise<UsageResult> {
+  if (keys.get(email) !== key) {
+    keys.set(email, key)
+    provider.invalidate(email)
   }
+  const result = await provider.get(email)
+  return {
+    ...result,
+    prev: prevSnapshot.get(email) ?? null,
+    subscriptionActive: subscription.get(email) ?? null,
+  }
+}
+
+export function getLastChange(email: string): { at: number; detail: string } | null {
+  return lastChange.get(email) ?? null
 }

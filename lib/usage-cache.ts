@@ -1,5 +1,10 @@
-import { promises as fs } from 'fs'
-import path from 'path'
+import { dataFile } from './paths'
+import { readJson, withLock, writeJsonAtomic } from './fs-atomic'
+
+/**
+ * Last-known usage per provider/account, persisted so the widget can show
+ * something (marked "cached") across restarts and outages.
+ */
 
 interface CacheEntry<T> {
   savedAt: number
@@ -8,25 +13,26 @@ interface CacheEntry<T> {
 
 type CacheState = Record<string, Record<string, CacheEntry<unknown>>>
 
-const FILE = path.join(process.cwd(), 'data', 'usage-cache.json')
+const FILE_NAME = 'usage-cache.json'
 
 let state: CacheState | null = null
 let loading: Promise<CacheState> | null = null
 let writeTimer: ReturnType<typeof setTimeout> | null = null
 
+function isState(value: unknown): value is CacheState {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+}
+
+async function readDisk(): Promise<CacheState> {
+  const parsed = await readJson(dataFile(FILE_NAME))
+  return isState(parsed) ? parsed : {}
+}
+
 async function load(): Promise<CacheState> {
   if (state) return state
-  if (!loading) {
-    loading = (async () => {
-      try {
-        const parsed = JSON.parse(await fs.readFile(FILE, 'utf8'))
-        return parsed && typeof parsed === 'object' ? (parsed as CacheState) : {}
-      } catch {
-        return {}
-      }
-    })()
-  }
-  state = await loading
+  loading ??= readDisk()
+  const loaded = await loading
+  state ??= loaded
   loading = null
   return state
 }
@@ -39,15 +45,28 @@ function scheduleWrite(): void {
   }, 500)
 }
 
-async function flush(): Promise<void> {
-  const snapshot = state
-  if (!snapshot) return
-  try {
-    await fs.mkdir(path.dirname(FILE), { recursive: true })
-    await fs.writeFile(FILE, JSON.stringify(snapshot, null, 2), 'utf8')
-  } catch {
-    // ignore cache write failures
-  }
+/**
+ * Merge with what's on disk (newest entry wins) before writing, so another
+ * module instance or process writing other sections is never clobbered.
+ */
+export function flush(): Promise<void> {
+  return withLock(FILE_NAME, async () => {
+    const mine = state
+    if (!mine) return
+    const merged = await readDisk()
+    for (const [section, entries] of Object.entries(mine)) {
+      merged[section] ??= {}
+      for (const [key, entry] of Object.entries(entries)) {
+        const theirs = merged[section][key]
+        if (!theirs || (theirs.savedAt ?? 0) <= entry.savedAt) merged[section][key] = entry
+      }
+    }
+    try {
+      await writeJsonAtomic(dataFile(FILE_NAME), merged)
+    } catch {
+      // cache is best-effort
+    }
+  })
 }
 
 export async function readCached<T>(
@@ -60,10 +79,17 @@ export async function readCached<T>(
   return { data: entry.data, savedAt: entry.savedAt }
 }
 
-export function writeCached(section: string, key: string, data: unknown): void {
-  void load().then((s) => {
-    if (!s[section]) s[section] = {}
-    s[section][key] = { savedAt: Date.now(), data }
-    scheduleWrite()
-  })
+export async function writeCached(section: string, key: string, data: unknown): Promise<void> {
+  const s = await load()
+  s[section] ??= {}
+  s[section][key] = { savedAt: Date.now(), data }
+  scheduleWrite()
+}
+
+/** Test hook: forget in-memory state so the next read comes from disk. */
+export function resetUsageCacheForTests(): void {
+  state = null
+  loading = null
+  if (writeTimer) clearTimeout(writeTimer)
+  writeTimer = null
 }
