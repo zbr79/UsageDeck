@@ -1,5 +1,6 @@
 import { promises as fs } from 'fs'
 import path from 'path'
+import { readCached, writeCached } from './usage-cache'
 
 export interface Account {
   email: string
@@ -37,7 +38,23 @@ export async function saveAccounts(accounts: Account[]): Promise<void> {
   await fs.writeFile(ACCOUNTS_FILE, JSON.stringify(accounts, null, 2), 'utf8')
 }
 
-const usageCache = new Map<string, { at: number; data: Usage | null }>()
+interface UsageCacheEntry {
+  at: number
+  data: Usage | null
+  stale: boolean
+  cachedAt: number | null
+  subscriptionActive: boolean | null
+}
+
+export interface UsageResult {
+  usage: Usage | null
+  prev: Usage | null
+  stale: boolean
+  cachedAt: number | null
+  subscriptionActive: boolean | null
+}
+
+const usageCache = new Map<string, UsageCacheEntry>()
 const CACHE_MS = 10_000
 const FAILURE_CACHE_MS = 15_000
 
@@ -61,13 +78,37 @@ export function getLastChange(email: string): { at: number; detail: string } | n
   return lastChange.get(email) ?? null
 }
 
-export async function getUsage(
-  key: string,
-  email: string,
-): Promise<{ usage: Usage | null; prev: Usage | null }> {
+export async function getUsage(key: string, email: string): Promise<UsageResult> {
+  async function fromCache(
+    subscriptionActive: boolean | null = null,
+  ): Promise<UsageResult> {
+    const cached = await readCached<Usage>('opencode', email)
+    const entry: UsageCacheEntry = {
+      at: Date.now(),
+      data: cached?.data ?? null,
+      stale: cached !== null,
+      cachedAt: cached?.savedAt ?? null,
+      subscriptionActive,
+    }
+    usageCache.set(email, entry)
+    return {
+      usage: entry.data,
+      prev: lastSeen.get(email) ?? null,
+      stale: entry.stale,
+      cachedAt: entry.cachedAt,
+      subscriptionActive: entry.subscriptionActive,
+    }
+  }
+
   const hit = usageCache.get(email)
   if (hit && Date.now() - hit.at < (hit.data ? CACHE_MS : FAILURE_CACHE_MS)) {
-    return { usage: hit.data, prev: lastSeen.get(email) ?? null }
+    return {
+      usage: hit.data,
+      prev: lastSeen.get(email) ?? null,
+      stale: hit.stale,
+      cachedAt: hit.cachedAt,
+      subscriptionActive: hit.subscriptionActive,
+    }
   }
   try {
     const res = await fetch(USAGE_URL, {
@@ -86,12 +127,28 @@ export async function getUsage(
           if (detail) lastChange.set(email, { at: Date.now(), detail })
         }
         lastSeen.set(email, data)
+        writeCached('opencode', email, data)
+        usageCache.set(email, {
+          at: Date.now(),
+          data,
+          stale: false,
+          cachedAt: null,
+          subscriptionActive: true,
+        })
+        return { usage: data, prev, stale: false, cachedAt: null, subscriptionActive: true }
       }
     }
-    usageCache.set(email, { at: Date.now(), data })
-    return { usage: data, prev }
+    let subscriptionActive: boolean | null = null
+    if (!res.ok) {
+      try {
+        const err = await res.json()
+        if (err?.error?.type === 'EntitlementError') subscriptionActive = false
+      } catch {
+        // non-JSON error body
+      }
+    }
+    return await fromCache(subscriptionActive)
   } catch {
-    usageCache.set(email, { at: Date.now(), data: null })
-    return { usage: null, prev: lastSeen.get(email) ?? null }
+    return await fromCache(null)
   }
 }

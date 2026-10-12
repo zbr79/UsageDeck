@@ -8,6 +8,37 @@ interface AccountRow {
   email: string;
 }
 
+interface UsageWindowInfo {
+  status: string;
+  percent: number;
+  resetsAt: string;
+}
+
+interface AccountUsage {
+  usage: {
+    rolling: UsageWindowInfo;
+    weekly: UsageWindowInfo;
+    monthly: UsageWindowInfo;
+  } | null;
+  stale: boolean;
+  cachedAt: number | null;
+  subscriptionActive?: boolean | null;
+}
+
+const CACHED_PILL = "bg-zinc-500/15 text-zinc-400 border border-zinc-500/30";
+
+function resetInfo(resetsAt: string): { short: string; full: string } | null {
+  const ms = new Date(resetsAt).getTime() - Date.now();
+  if (!Number.isFinite(ms) || ms <= 0) return null;
+  const totalM = Math.floor(ms / 60000);
+  const d = Math.floor(totalM / 1440);
+  const h = Math.floor((totalM % 1440) / 60);
+  const m = totalM % 60;
+  const short = d > 0 ? `${d}d` : h > 0 ? `${h}h` : `${m}m`;
+  const full = d > 0 ? `${d}d ${h}h` : h > 0 ? `${h}h ${m}m` : `${m}m`;
+  return { short, full };
+}
+
 type Tab = "opencode" | "cursor" | "grok" | "codex" | "claude";
 
 export default function SettingsModal({
@@ -56,6 +87,11 @@ export default function SettingsModal({
   const [disabledAccounts, setDisabledAccounts] = useState<string[]>([]);
   const [cursorAccount, setCursorAccount] = useState<string | null>(null);
   const [cursorPlan, setCursorPlan] = useState<string | null>(null);
+  const [cursorStale, setCursorStale] = useState(false);
+  const [grokAccount, setGrokAccount] = useState<string | null>(null);
+  const [grokPlan, setGrokPlan] = useState<string | null>(null);
+  const [codexStale, setCodexStale] = useState(false);
+  const [usageByEmail, setUsageByEmail] = useState<Record<string, AccountUsage>>({});
   const [newEmail, setNewEmail] = useState("");
   const [newKey, setNewKey] = useState("");
   const [busy, setBusy] = useState(false);
@@ -96,6 +132,9 @@ export default function SettingsModal({
       .then((c) => {
         setCursorAccount(c.usage?.accountName ?? null);
         setCursorPlan(c.usage?.planName ?? null);
+        setCursorStale(c.stale === true);
+        setGrokAccount(c.usage?.grokAccount ?? null);
+        setGrokPlan(c.usage?.grokPlanLabel ?? null);
       })
       .catch(() => {});
     apiFetch("/api/codex", { cache: "no-store" })
@@ -103,6 +142,29 @@ export default function SettingsModal({
       .then((c) => {
         setCodexAccount(c.usage?.email ?? null);
         setCodexPlan(c.usage?.planType ?? null);
+        setCodexStale(c.stale === true);
+      })
+      .catch(() => {});
+    apiFetch("/api/usage", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((u) => {
+        const map: Record<string, AccountUsage> = {};
+        for (const row of (u.accounts ?? []) as Array<{
+          email?: string;
+          usage?: AccountUsage["usage"];
+          stale?: boolean;
+          cachedAt?: number;
+          subscriptionActive?: boolean | null;
+        }>) {
+          if (typeof row?.email !== "string") continue;
+          map[row.email] = {
+            usage: row.usage ?? null,
+            stale: row.stale === true,
+            cachedAt: typeof row.cachedAt === "number" ? row.cachedAt : null,
+            subscriptionActive: row.subscriptionActive ?? null,
+          };
+        }
+        setUsageByEmail(map);
       })
       .catch(() => {});
     apiFetch("/api/claude", { cache: "no-store" })
@@ -114,9 +176,8 @@ export default function SettingsModal({
             ? "unavailable"
             : !c.usage.signedIn
               ? "not signed in"
-              : c.usage.subscribed
-                ? c.usage.subscriptionType ?? "subscribed"
-                : "not subscribed",
+              : c.usage.planName ??
+                (c.usage.subscribed ? c.usage.subscriptionType ?? "subscribed" : "not subscribed"),
         );
       })
       .catch(() => {});
@@ -125,6 +186,43 @@ export default function SettingsModal({
   useEffect(() => {
     refresh();
   }, []);
+
+  const resetBadges = (email: string) => {
+    const info = usageByEmail[email] ?? usageByEmail[email.toLowerCase()];
+    if (!info) return null;
+    const weekly = info.usage ? resetInfo(info.usage.weekly?.resetsAt ?? "") : null;
+    const monthly = info.usage ? resetInfo(info.usage.monthly?.resetsAt ?? "") : null;
+    if (!weekly && !monthly && !info.stale) return null;
+    const freshPill = "bg-blue-500/15 text-blue-300 border border-blue-400/30";
+    const cachedNote = info.cachedAt
+      ? ` · cached ${new Date(info.cachedAt).toLocaleString()}`
+      : " · last known";
+    const pillClass = `text-[9px] font-semibold px-1.5 py-0.5 rounded-full border shrink-0 ${
+      info.stale ? CACHED_PILL : freshPill
+    }`;
+    return (
+      <span className="flex items-center gap-1 shrink-0">
+        {weekly && (
+          <span title={`Weekly resets in ${weekly.full}${info.stale ? cachedNote : ""}`} className={pillClass}>
+            W {weekly.short}
+          </span>
+        )}
+        {monthly && (
+          <span title={`Monthly resets in ${monthly.full}${info.stale ? cachedNote : ""}`} className={pillClass}>
+            M {monthly.short}
+          </span>
+        )}
+        {info.stale && (
+          <span
+            title={`Showing last known data${info.cachedAt ? ` · ${new Date(info.cachedAt).toLocaleString()}` : ""}`}
+            className={`text-[9px] font-semibold px-1.5 py-0.5 rounded-full border shrink-0 ${CACHED_PILL}`}
+          >
+            cached
+          </span>
+        )}
+      </span>
+    );
+  };
 
   const openDetail = async (email: string) => {
     setDetailEmail(email);
@@ -702,6 +800,12 @@ export default function SettingsModal({
                       >
                         {a.email}
                       </button>
+                      {usageByEmail[a.email]?.subscriptionActive === false && (
+                        <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded-full border shrink-0 bg-red-500/15 text-red-300 border-red-400/30">
+                          inactive
+                        </span>
+                      )}
+                      {resetBadges(a.email)}
                       <div className="flex items-center gap-0.5 shrink-0">
                       <button
                         onClick={() => openDetail(a.email)}
@@ -779,6 +883,11 @@ export default function SettingsModal({
 <span className="flex-1 min-w-0 text-sm text-zinc-200 truncate">
                   {cursorAccount ?? "account unavailable"}
                 </span>
+                {cursorStale && (
+                  <span className={`text-[9px] font-semibold px-1.5 py-0.5 rounded-full border shrink-0 ${CACHED_PILL}`}>
+                    cached
+                  </span>
+                )}
                 <button
                   onClick={() => setSubDetail("cursor")}
                   title="Cursor details"
@@ -816,8 +925,13 @@ export default function SettingsModal({
             <div className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2">
               <div className="flex items-center gap-2">
   <span className="flex-1 min-w-0 text-sm text-zinc-200 truncate">
-                  {cursorAccount ?? "account unavailable"}
+                  {grokAccount ?? cursorAccount ?? "account unavailable"}
                 </span>
+                  {cursorStale && (
+                    <span className={`text-[9px] font-semibold px-1.5 py-0.5 rounded-full border shrink-0 ${CACHED_PILL}`}>
+                      cached
+                    </span>
+                  )}
                   <button
                     onClick={() => setSubDetail("grok")}
                     title="Grok Bot details"
@@ -842,9 +956,9 @@ export default function SettingsModal({
                 <span className="flex-1 min-w-0 text-xs text-zinc-500 truncate">
                   {displayNames["grok"] ?? "no nickname"}
                 </span>
-                {cursorPlan && (
+                {(grokPlan ?? cursorPlan) && (
                   <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-blue-500/15 text-blue-300 border border-blue-400/30 shrink-0">
-                    {cursorPlan}
+                    {grokPlan ?? cursorPlan}
                   </span>
                 )}
               </div>
@@ -857,6 +971,11 @@ export default function SettingsModal({
   <span className="flex-1 min-w-0 text-sm text-zinc-200 truncate">
                   {codexAccount ?? "account unavailable"}
                 </span>
+                  {codexStale && (
+                    <span className={`text-[9px] font-semibold px-1.5 py-0.5 rounded-full border shrink-0 ${CACHED_PILL}`}>
+                      cached
+                    </span>
+                  )}
                   <button
                     onClick={() => setSubDetail("codex")}
                     title="Codex details"
@@ -1128,7 +1247,12 @@ export default function SettingsModal({
                           ? "Codex"
                           : "Claude"}
                   </h3>
-                  {(subDetail === "cursor" || subDetail === "grok") && cursorPlan && (
+                  {subDetail === "grok" && (grokPlan ?? cursorPlan) && (
+                    <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-blue-500/15 text-blue-300 border border-blue-400/30">
+                      {grokPlan ?? cursorPlan}
+                    </span>
+                  )}
+                  {subDetail === "cursor" && cursorPlan && (
                     <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-blue-500/15 text-blue-300 border border-blue-400/30">
                       {cursorPlan}
                     </span>
@@ -1204,7 +1328,9 @@ export default function SettingsModal({
                     ? codexAccount
                     : subDetail === "claude"
                       ? claudeAccount
-                      : cursorAccount) ?? "account unavailable"}
+                      : subDetail === "grok"
+                        ? grokAccount ?? cursorAccount
+                        : cursorAccount) ?? "account unavailable"}
                 </div>
               </div>
               <button

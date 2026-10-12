@@ -70,6 +70,7 @@ Cursor / Codex / Claude read their tokens directly from each app's local credent
 - **Adaptive theme** — samples screen brightness every 3 seconds and fades between dark/light card styles
 - **Change detection** — when an account's usage percent moves, a green ▲ appears for 20s and the most recently used account floats to the top
 - **Reset countdowns** — each bar shows time until its window resets (`5d 7h 45m`); monthly resets always visible
+- **Reset memory** — last known usage and reset times persist across restarts; cached cards are marked `cached`, and a window whose stored reset time has passed shows as unknown until fresh data arrives
 - **Status badges** — `Go` (OpenCode), plan names for Cursor/Codex, `Free` for Claude
 - **Copy key** — click the OpenCode icon on a card to copy that account's API key
 - Right-click menu: expand/collapse, refresh, settings, quit

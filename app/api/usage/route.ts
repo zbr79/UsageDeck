@@ -8,7 +8,7 @@ export async function GET() {
   const results = await Promise.all(
     accounts.map(async (acc) => {
       const enabled = !settings.disabledAccounts.includes(acc.email.toLowerCase())
-      const { usage, prev } = await getUsage(acc.key, acc.email)
+      const { usage, prev, stale, cachedAt, subscriptionActive } = await getUsage(acc.key, acc.email)
       const change = getLastChange(acc.email)
       return {
         email: acc.email,
@@ -16,6 +16,9 @@ export async function GET() {
         prev,
         enabled,
         error: usage ? null : 'failed',
+        stale,
+        cachedAt,
+        subscriptionActive,
         lastChangeAt: change?.at ?? null,
         lastChangeDetail: change?.detail ?? null,
       }

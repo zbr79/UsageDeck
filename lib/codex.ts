@@ -1,6 +1,7 @@
 import { promises as fs } from 'fs'
 import path from 'path'
 import os from 'os'
+import { readCached, writeCached } from './usage-cache'
 
 const AUTH_FILE = path.join(os.homedir(), '.codex', 'auth.json')
 const USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage'
@@ -14,10 +15,22 @@ export interface CodexUsage {
   limitWindowSeconds: number | null
   resetAt: string | null
   creditsBalance: number | null
+  resetCredits: number | null
   limitReached: boolean
 }
 
-let usageCache: { at: number; data: CodexUsage | null } | null = null
+export interface CodexUsageResult {
+  usage: CodexUsage | null
+  stale: boolean
+  cachedAt: number | null
+}
+
+let usageCache: {
+  at: number
+  data: CodexUsage | null
+  stale: boolean
+  cachedAt: number | null
+} | null = null
 
 interface CodexAuth {
   auth_mode?: string
@@ -85,29 +98,37 @@ async function fetchUsage(accessToken: string, accountId: string | undefined) {
   })
 }
 
-export async function getCodexUsage(): Promise<CodexUsage | null> {
-  if (usageCache && Date.now() - usageCache.at < 30_000) return usageCache.data
+export async function getCodexUsage(): Promise<CodexUsageResult> {
+  async function fromCache(): Promise<CodexUsageResult> {
+    const cached = await readCached<CodexUsage>('codex', 'default')
+    usageCache = {
+      at: Date.now(),
+      data: cached?.data ?? null,
+      stale: cached !== null,
+      cachedAt: cached?.savedAt ?? null,
+    }
+    return {
+      usage: usageCache.data,
+      stale: usageCache.stale,
+      cachedAt: usageCache.cachedAt,
+    }
+  }
+
+  if (usageCache && Date.now() - usageCache.at < 30_000) {
+    return { usage: usageCache.data, stale: usageCache.stale, cachedAt: usageCache.cachedAt }
+  }
   let auth = await readAuth()
   const accessToken = auth?.tokens?.access_token
-  if (!auth || !accessToken) {
-    usageCache = { at: Date.now(), data: null }
-    return null
-  }
+  if (!auth || !accessToken) return await fromCache()
   try {
     let res = await fetchUsage(accessToken, auth.tokens?.account_id)
     if (res.status === 401) {
       const refreshed = await refreshTokens(auth)
-      if (!refreshed?.tokens?.access_token) {
-        usageCache = { at: Date.now(), data: null }
-        return null
-      }
+      if (!refreshed?.tokens?.access_token) return await fromCache()
       auth = refreshed
       res = await fetchUsage(refreshed.tokens.access_token, refreshed.tokens.account_id)
     }
-    if (!res.ok) {
-      usageCache = { at: Date.now(), data: null }
-      return null
-    }
+    if (!res.ok) return await fromCache()
     const json = await res.json()
     const rl = json?.rate_limit
     const primary = rl?.primary_window
@@ -125,12 +146,16 @@ export async function getCodexUsage(): Promise<CodexUsage | null> {
         json?.credits?.balance != null && !Number.isNaN(Number(json.credits.balance))
           ? Number(json.credits.balance)
           : null,
+      resetCredits:
+        typeof json?.rate_limit_reset_credits?.available_count === 'number'
+          ? json.rate_limit_reset_credits.available_count
+          : null,
       limitReached: rl?.limit_reached === true,
     }
-    usageCache = { at: Date.now(), data }
-    return data
+    writeCached('codex', 'default', data)
+    usageCache = { at: Date.now(), data, stale: false, cachedAt: null }
+    return { usage: data, stale: false, cachedAt: null }
   } catch {
-    usageCache = { at: Date.now(), data: null }
-    return null
+    return await fromCache()
   }
 }

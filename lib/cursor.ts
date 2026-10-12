@@ -1,6 +1,8 @@
 import { promises as fs } from 'fs'
 import path from 'path'
 import os from 'os'
+import { readCached, writeCached } from './usage-cache'
+import { getGrokUsage } from './grokbot'
 
 const STATE_DB = path.join(
   process.env.APPDATA ?? path.join(os.homedir(), 'AppData', 'Roaming'),
@@ -27,10 +29,23 @@ export interface CursorUsage {
   planName: string | null
   grokPercentUsed: number | null
   grokResetAt: string | null
+  grokAccount: string | null
+  grokPlanLabel: string | null
+}
+
+export interface CursorUsageResult {
+  usage: CursorUsage | null
+  stale: boolean
+  cachedAt: number | null
 }
 
 let tokenCache: { at: number; token: string } | null = null
-let usageCache: { at: number; data: CursorUsage | null } | null = null
+let usageCache: {
+  at: number
+  data: CursorUsage | null
+  stale: boolean
+  cachedAt: number | null
+} | null = null
 
 function toIsoTimestamp(value: unknown): string | null {
   if (typeof value === 'number' && Number.isFinite(value)) {
@@ -111,14 +126,28 @@ async function getToken(): Promise<string | null> {
   return null
 }
 
-export async function getCursorUsage(): Promise<CursorUsage | null> {
-  if (usageCache && Date.now() - usageCache.at < 30_000) return usageCache.data
+export async function getCursorUsage(): Promise<CursorUsageResult> {
+  async function fromCache(): Promise<CursorUsageResult> {
+    const cached = await readCached<CursorUsage>('cursor', 'default')
+    usageCache = {
+      at: Date.now(),
+      data: cached?.data ?? null,
+      stale: cached !== null,
+      cachedAt: cached?.savedAt ?? null,
+    }
+    return {
+      usage: usageCache.data,
+      stale: usageCache.stale,
+      cachedAt: usageCache.cachedAt,
+    }
+  }
+
+  if (usageCache && Date.now() - usageCache.at < 30_000) {
+    return { usage: usageCache.data, stale: usageCache.stale, cachedAt: usageCache.cachedAt }
+  }
   try {
     const token = await getToken()
-    if (!token) {
-      usageCache = { at: Date.now(), data: null }
-      return null
-    }
+    if (!token) return await fromCache()
     const res = await fetch(USAGE_URL, {
       method: 'POST',
       headers: {
@@ -131,36 +160,52 @@ export async function getCursorUsage(): Promise<CursorUsage | null> {
       cache: 'no-store',
       signal: AbortSignal.timeout(10_000),
     })
-    if (!res.ok) {
-      usageCache = { at: Date.now(), data: null }
-      return null
-    }
+    if (!res.ok) return await fromCache()
     const json = await res.json()
     const pu = json?.planUsage
     let planName: string | null = null
     let grokPercentUsed: number | null = null
     let grokResetAt: string | null = null
+    let grokAccount: string | null = null
+    let grokPlanLabel: string | null = null
     const headers = {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
       Accept: 'application/json',
       'User-Agent': 'Mozilla/5.0',
     }
-    const [planRes, sandRes] = await Promise.all([
+    const [planRes, grok] = await Promise.all([
       fetch(PLAN_URL, { method: 'POST', headers, body: '{}', cache: 'no-store', signal: AbortSignal.timeout(10_000) }).catch(() => null),
-      fetch(SAND_URL, { method: 'POST', headers, body: '{}', cache: 'no-store', signal: AbortSignal.timeout(10_000) }).catch(() => null),
+      getGrokUsage().catch(() => null),
     ])
     if (planRes?.ok) {
       const pj = await planRes.json()
       planName = pj?.planInfo?.planName ?? null
     }
-    if (sandRes?.ok) {
-      const sj = await sandRes.json()
-      grokPercentUsed = typeof sj?.usagePercent === 'number' ? sj.usagePercent : null
-      grokResetAt =
-        typeof sj?.nextResetTimestampUtc === 'string'
-          ? new Date(sj.nextResetTimestampUtc).toISOString()
-          : null
+    // Grok Bot has its own account switcher (separate from Cursor). Prefer the
+    // account currently selected in the Grok Bot app; fall back to Cursor's token.
+    if (grok?.usage && grok.usage.percentUsed != null) {
+      grokPercentUsed = grok.usage.percentUsed
+      grokResetAt = grok.usage.resetAt
+      grokAccount = grok.usage.email
+      grokPlanLabel = grok.usage.planLabel
+    } else {
+      const sandRes = await fetch(SAND_URL, {
+        method: 'POST',
+        headers,
+        body: '{}',
+        cache: 'no-store',
+        signal: AbortSignal.timeout(10_000),
+      }).catch(() => null)
+      if (sandRes?.ok) {
+        const sj = await sandRes.json()
+        grokPercentUsed = typeof sj?.usagePercent === 'number' ? sj.usagePercent : null
+        grokResetAt =
+          typeof sj?.nextResetTimestampUtc === 'string'
+            ? new Date(sj.nextResetTimestampUtc).toISOString()
+            : null
+        grokPlanLabel = typeof sj?.grokPlanLabel === 'string' ? sj.grokPlanLabel : null
+      }
     }
     const data: CursorUsage = {
       autoPercentUsed: typeof pu?.autoPercentUsed === 'number' ? pu.autoPercentUsed : null,
@@ -174,11 +219,13 @@ export async function getCursorUsage(): Promise<CursorUsage | null> {
       planName,
       grokPercentUsed,
       grokResetAt,
+      grokAccount,
+      grokPlanLabel,
     }
-    usageCache = { at: Date.now(), data }
-    return data
+    writeCached('cursor', 'default', data)
+    usageCache = { at: Date.now(), data, stale: false, cachedAt: null }
+    return { usage: data, stale: false, cachedAt: null }
   } catch {
-    usageCache = { at: Date.now(), data: null }
-    return null
+    return await fromCache()
   }
 }
