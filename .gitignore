@@ -50,3 +50,8 @@ next-env.d.ts
 /desktop/node_modules/
 
 /desktop/*.log
+
+# agent instructions (next dev recreates AGENTS.md)
+/AGENTS.md
+/CLAUDE.md
+/.cursorrules
