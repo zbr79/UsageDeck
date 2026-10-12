@@ -3,10 +3,10 @@ import path from 'path'
 import os from 'os'
 import { readCached, writeCached } from './usage-cache'
 
+// auth.json belongs to the Codex CLI and is only ever read here. Refreshing
+// would rotate the single-use refresh token and log the CLI out.
 const AUTH_FILE = path.join(os.homedir(), '.codex', 'auth.json')
 const USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage'
-const TOKEN_URL = 'https://auth.openai.com/oauth/token'
-const CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
 
 export interface CodexUsage {
   email: string | null
@@ -23,14 +23,10 @@ export interface CodexUsageResult {
   usage: CodexUsage | null
   stale: boolean
   cachedAt: number | null
+  authExpired: boolean
 }
 
-let usageCache: {
-  at: number
-  data: CodexUsage | null
-  stale: boolean
-  cachedAt: number | null
-} | null = null
+let usageCache: { at: number; result: CodexUsageResult } | null = null
 
 interface CodexAuth {
   auth_mode?: string
@@ -51,41 +47,6 @@ async function readAuth(): Promise<CodexAuth | null> {
   }
 }
 
-async function refreshTokens(auth: CodexAuth): Promise<CodexAuth | null> {
-  const rt = auth.tokens?.refresh_token
-  if (!rt) return null
-  try {
-    const res = await fetch(TOKEN_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        client_id: CLIENT_ID,
-        grant_type: 'refresh_token',
-        refresh_token: rt,
-        scope: 'openid profile email',
-      }),
-      signal: AbortSignal.timeout(10_000),
-    })
-    if (!res.ok) return null
-    const json = await res.json()
-    if (!json?.access_token) return null
-    const next: CodexAuth = {
-      ...auth,
-      tokens: {
-        ...auth.tokens,
-        access_token: json.access_token,
-        refresh_token: json.refresh_token ?? rt,
-        id_token: json.id_token ?? auth.tokens?.id_token,
-      },
-      last_refresh: new Date().toISOString(),
-    }
-    await fs.writeFile(AUTH_FILE, JSON.stringify(next, null, 2), 'utf8')
-    return next
-  } catch {
-    return null
-  }
-}
-
 async function fetchUsage(accessToken: string, accountId: string | undefined) {
   return fetch(USAGE_URL, {
     headers: {
@@ -99,35 +60,25 @@ async function fetchUsage(accessToken: string, accountId: string | undefined) {
 }
 
 export async function getCodexUsage(): Promise<CodexUsageResult> {
-  async function fromCache(): Promise<CodexUsageResult> {
+  async function fromCache(authExpired = false): Promise<CodexUsageResult> {
     const cached = await readCached<CodexUsage>('codex', 'default')
-    usageCache = {
-      at: Date.now(),
-      data: cached?.data ?? null,
+    const result: CodexUsageResult = {
+      usage: cached?.data ?? null,
       stale: cached !== null,
       cachedAt: cached?.savedAt ?? null,
+      authExpired,
     }
-    return {
-      usage: usageCache.data,
-      stale: usageCache.stale,
-      cachedAt: usageCache.cachedAt,
-    }
+    usageCache = { at: Date.now(), result }
+    return result
   }
 
-  if (usageCache && Date.now() - usageCache.at < 30_000) {
-    return { usage: usageCache.data, stale: usageCache.stale, cachedAt: usageCache.cachedAt }
-  }
-  let auth = await readAuth()
+  if (usageCache && Date.now() - usageCache.at < 30_000) return usageCache.result
+  const auth = await readAuth()
   const accessToken = auth?.tokens?.access_token
   if (!auth || !accessToken) return await fromCache()
   try {
-    let res = await fetchUsage(accessToken, auth.tokens?.account_id)
-    if (res.status === 401) {
-      const refreshed = await refreshTokens(auth)
-      if (!refreshed?.tokens?.access_token) return await fromCache()
-      auth = refreshed
-      res = await fetchUsage(refreshed.tokens.access_token, refreshed.tokens.account_id)
-    }
+    const res = await fetchUsage(accessToken, auth.tokens?.account_id)
+    if (res.status === 401 || res.status === 403) return await fromCache(true)
     if (!res.ok) return await fromCache()
     const json = await res.json()
     const rl = json?.rate_limit
@@ -153,8 +104,9 @@ export async function getCodexUsage(): Promise<CodexUsageResult> {
       limitReached: rl?.limit_reached === true,
     }
     writeCached('codex', 'default', data)
-    usageCache = { at: Date.now(), data, stale: false, cachedAt: null }
-    return { usage: data, stale: false, cachedAt: null }
+    const result: CodexUsageResult = { usage: data, stale: false, cachedAt: null, authExpired: false }
+    usageCache = { at: Date.now(), result }
+    return result
   } catch {
     return await fromCache()
   }

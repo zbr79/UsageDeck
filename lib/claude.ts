@@ -5,11 +5,12 @@ import crypto from 'crypto'
 import { execFile } from 'child_process'
 import { readCached, writeCached } from './usage-cache'
 
+// Credentials belong to Claude Code / Claude desktop. This module only ever
+// reads them: refreshing would rotate the refresh token out from under the
+// owning app and log it out.
 const CLAUDE_JSON = path.join(os.homedir(), '.claude.json')
 const CLI_CREDENTIALS = path.join(os.homedir(), '.claude', '.credentials.json')
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
-const TOKEN_URL = 'https://console.anthropic.com/v1/oauth/token'
-const OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e'
 
 export interface ClaudeWindow {
   percent: number | null
@@ -37,9 +38,10 @@ export interface ClaudeUsageResult {
   usage: ClaudeUsage | null
   stale: boolean
   cachedAt: number | null
+  authExpired: boolean
 }
 
-let cache: { at: number; data: ClaudeUsage | null; stale: boolean; cachedAt: number | null } | null = null
+let cache: { at: number; result: ClaudeUsageResult } | null = null
 
 function dpapiUnprotect(encryptedKeyB64: string): Promise<Buffer> {
   const script = [
@@ -86,6 +88,11 @@ interface CachedToken {
   subscriptionType: string | null
   rateLimitTier: string | null
   expiresAt: number | null
+  expired: boolean
+}
+
+function isExpired(expiresAt: number | null): boolean {
+  return expiresAt != null && expiresAt <= Date.now()
 }
 
 async function desktopConfigDirs(): Promise<string[]> {
@@ -125,22 +132,26 @@ async function readDesktopToken(): Promise<CachedToken | null> {
         subscriptionType?: string
         rateLimitTier?: string
       }>
-      let claudeCode: CachedToken | null = null
-      let fallback: CachedToken | null = null
+      // Preference: live Claude Code token > any live token > expired ones
+      // (an expired token still tells us the plan, just not the usage).
+      const candidates: { rank: number; token: CachedToken }[] = []
       for (const [name, entry] of Object.entries(entries)) {
         if (!entry?.token) continue
-        if (typeof entry.expiresAt === 'number' && entry.expiresAt < Date.now()) continue
-        const candidate: CachedToken = {
-          token: entry.token,
-          subscriptionType: entry.subscriptionType ?? null,
-          rateLimitTier: entry.rateLimitTier ?? null,
-          expiresAt: typeof entry.expiresAt === 'number' ? entry.expiresAt : null,
-        }
-        if (name.includes('claude_code')) claudeCode = candidate
-        else if (!fallback) fallback = candidate
+        const expiresAt = typeof entry.expiresAt === 'number' ? entry.expiresAt : null
+        const expired = isExpired(expiresAt)
+        candidates.push({
+          rank: (expired ? 2 : 0) + (name.includes('claude_code') ? 0 : 1),
+          token: {
+            token: entry.token,
+            subscriptionType: entry.subscriptionType ?? null,
+            rateLimitTier: entry.rateLimitTier ?? null,
+            expiresAt,
+            expired,
+          },
+        })
       }
-      if (claudeCode) return claudeCode
-      if (fallback) return fallback
+      candidates.sort((a, b) => a.rank - b.rank)
+      if (candidates[0]) return candidates[0].token
     } catch {
       // try next dir
     }
@@ -158,54 +169,12 @@ async function readCliToken(): Promise<CachedToken | null> {
   const oauth = creds?.claudeAiOauth
   if (!oauth?.accessToken) return null
   const expiresAt = typeof oauth.expiresAt === 'number' ? oauth.expiresAt : null
-  const notExpired = expiresAt == null || expiresAt > Date.now()
-  if (notExpired) {
-    return {
-      token: oauth.accessToken,
-      subscriptionType: oauth.subscriptionType ?? null,
-      rateLimitTier: oauth.rateLimitTier ?? null,
-      expiresAt,
-    }
-  }
-  const refreshed = await refreshCliToken(oauth)
-  return refreshed
-}
-
-async function refreshCliToken(oauth: any): Promise<CachedToken | null> {
-  if (!oauth?.refreshToken) return null
-  try {
-    const res = await fetch(TOKEN_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        grant_type: 'refresh_token',
-        refresh_token: oauth.refreshToken,
-        client_id: OAUTH_CLIENT_ID,
-      }),
-      signal: AbortSignal.timeout(10_000),
-    })
-    if (!res.ok) return null
-    const json = await res.json()
-    if (!json?.access_token) return null
-    const next = {
-      ...oauth,
-      accessToken: json.access_token,
-      refreshToken: json.refresh_token ?? oauth.refreshToken,
-      expiresAt: Date.now() + (typeof json.expires_in === 'number' ? json.expires_in * 1000 : 3600_000),
-    }
-    try {
-      await fs.writeFile(CLI_CREDENTIALS, JSON.stringify(next, null, 2), 'utf8')
-    } catch {
-      // best-effort persistence
-    }
-    return {
-      token: next.accessToken,
-      subscriptionType: next.subscriptionType ?? null,
-      rateLimitTier: next.rateLimitTier ?? null,
-      expiresAt: next.expiresAt,
-    }
-  } catch {
-    return null
+  return {
+    token: oauth.accessToken,
+    subscriptionType: oauth.subscriptionType ?? null,
+    rateLimitTier: oauth.rateLimitTier ?? null,
+    expiresAt,
+    expired: isExpired(expiresAt),
   }
 }
 
@@ -275,26 +244,17 @@ function resetCreditsOf(json: any): number | null {
 }
 
 export async function getClaudeUsage(): Promise<ClaudeUsageResult> {
-  async function fromCache(): Promise<ClaudeUsageResult> {
-    const cached = await readCached<ClaudeUsage>('claude', 'default')
-    cache = {
-      at: Date.now(),
-      data: cached?.data ?? null,
-      stale: cached !== null,
-      cachedAt: cached?.savedAt ?? null,
-    }
-    return { usage: cache.data, stale: cache.stale, cachedAt: cache.cachedAt }
-  }
-
-  if (cache && Date.now() - cache.at < 60_000) {
-    return { usage: cache.data, stale: cache.stale, cachedAt: cache.cachedAt }
-  }
+  if (cache && Date.now() - cache.at < 60_000) return cache.result
 
   const account = await readAccount()
-  const token = (await readDesktopToken()) ?? (await readCliToken())
+  const desktop = await readDesktopToken()
+  const cli = desktop && !desktop.expired ? null : await readCliToken()
+  const token =
+    [desktop, cli].find((t) => t && !t.expired) ?? desktop ?? cli ?? null
   const signedIn = token != null
   const subscriptionType = token?.subscriptionType ?? null
   const rateLimitTier = token?.rateLimitTier ?? null
+  let authExpired = token?.expired === true
 
   let fiveHour: ClaudeWindow = { percent: null, resetsAt: null }
   let weekly: ClaudeWindow = { percent: null, resetsAt: null }
@@ -303,7 +263,7 @@ export async function getClaudeUsage(): Promise<ClaudeUsageResult> {
   let resetCredits: number | null = null
   let live = false
 
-  if (token) {
+  if (token && !token.expired) {
     try {
       const res = await fetch(USAGE_URL, {
         headers: {
@@ -324,13 +284,13 @@ export async function getClaudeUsage(): Promise<ClaudeUsageResult> {
         if (json?.seven_day_sonnet) weeklySonnet = windowOf(json.seven_day_sonnet)
         resetCredits = resetCreditsOf(json)
         live = true
+      } else if (res.status === 401) {
+        authExpired = true
       }
     } catch {
       // fall back to cache below
     }
   }
-
-  if (!live && !signedIn && !account.email) return await fromCache()
 
   const subscribed =
     subscriptionType != null ||
@@ -353,15 +313,22 @@ export async function getClaudeUsage(): Promise<ClaudeUsageResult> {
     orgUuid: account.orgUuid,
   }
 
-  if (!live) {
+  let result: ClaudeUsageResult
+  if (live) {
+    writeCached('claude', 'default', data)
+    result = { usage: data, stale: false, cachedAt: null, authExpired: false }
+  } else {
+    // Prefer the last known numbers; otherwise show what we know locally
+    // (account + plan) without persisting a usage-less snapshot.
     const cached = await readCached<ClaudeUsage>('claude', 'default')
     if (cached?.data) {
-      cache = { at: Date.now(), data: cached.data, stale: true, cachedAt: cached.savedAt }
-      return { usage: cached.data, stale: true, cachedAt: cached.savedAt }
+      result = { usage: cached.data, stale: true, cachedAt: cached.savedAt, authExpired }
+    } else if (signedIn || account.email) {
+      result = { usage: data, stale: false, cachedAt: null, authExpired }
+    } else {
+      result = { usage: null, stale: false, cachedAt: null, authExpired: false }
     }
   }
-
-  writeCached('claude', 'default', data)
-  cache = { at: Date.now(), data, stale: false, cachedAt: null }
-  return { usage: data, stale: false, cachedAt: null }
+  cache = { at: Date.now(), result }
+  return result
 }
