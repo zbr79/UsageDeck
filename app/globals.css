@@ -1,16 +1,7 @@
 @import "tailwindcss";
 
-:root {
-  --background: #f4f4f5;
-  --foreground: #18181b;
-}
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+/* Colours come from app/_ui/palette.ts as CSS custom properties
+   (--w-* on the widget, --p-* on the settings panel). */
 
 html {
   color-scheme: light;
@@ -18,8 +9,13 @@ html {
 
 body {
   background: transparent;
-  color: var(--foreground);
+  color: #18181b;
   font-family: Arial, Helvetica, sans-serif;
+}
+
+:focus-visible {
+  outline: 2px solid var(--p-focus, #1447e6);
+  outline-offset: 2px;
 }
 
 @keyframes arrow-fade {
@@ -50,115 +46,18 @@ body {
 
 .no-scrollbar {
   scrollbar-width: none;
-  -ms-overflow-style: none;
 }
 
-/* Light theme for the settings panel */
-.settings-light {
-  color: #18181b;
-}
-.settings-light .bg-zinc-900 {
-  background: #ffffff;
-}
-.settings-light .bg-zinc-800 {
-  background: #f4f4f5;
-}
-.settings-light .bg-zinc-700 {
-  background: #e4e4e7;
-}
-.settings-light .bg-zinc-600 {
-  background: #d4d4d8;
-}
-.settings-light .bg-zinc-500 {
-  background: #a1a1aa;
-}
-.settings-light .text-zinc-100 {
-  color: #18181b;
-}
-.settings-light .text-zinc-200 {
-  color: #27272a;
-}
-.settings-light .text-zinc-300 {
-  color: #3f3f46;
-}
-.settings-light .text-zinc-400 {
-  color: #52525b;
-}
-.settings-light .text-zinc-500 {
-  color: #71717a;
-}
-.settings-light .text-zinc-900 {
-  color: #ffffff;
-}
-.settings-light .bg-zinc-100 {
-  background: #18181b;
-}
-.settings-light .border-zinc-800 {
-  border-color: #e4e4e7;
-}
-.settings-light .border-zinc-700 {
-  border-color: #d4d4d8;
-}
-.settings-light .border-zinc-600 {
-  border-color: #d4d4d8;
-}
-.settings-light .border-zinc-500 {
-  border-color: #a1a1aa;
-}
-.settings-light .text-emerald-300 {
-  color: #047857;
-}
-.settings-light .text-emerald-400 {
-  color: #059669;
-}
-.settings-light .text-blue-300 {
-  color: #1d4ed8;
-}
-.settings-light .text-red-300 {
-  color: #b91c1c;
-}
-.settings-light .text-amber-300 {
-  color: #b45309;
-}
-.settings-light .bg-emerald-500\/15 {
-  background: rgba(16, 185, 129, 0.12);
-}
-.settings-light .bg-blue-500\/15 {
-  background: rgba(59, 130, 246, 0.1);
-}
-.settings-light .bg-red-500\/15 {
-  background: rgba(239, 68, 68, 0.1);
-}
-.settings-light .bg-amber-500\/15 {
-  background: rgba(245, 158, 11, 0.12);
-}
-.settings-light .bg-zinc-500\/15 {
-  background: rgba(0, 0, 0, 0.06);
-}
-.settings-light .hover\:bg-zinc-800:hover {
-  background: #e4e4e7;
-}
-.settings-light .hover\:bg-zinc-700:hover {
-  background: #d4d4d8;
-}
-.settings-light .hover\:bg-white\/10:hover {
-  background: #e4e4e7;
-}
-.settings-light .hover\:text-zinc-200:hover {
-  color: #18181b;
-}
-.settings-light .hover\:text-zinc-100:hover {
-  color: #18181b;
-}
-.settings-light .hover\:text-zinc-300:hover {
-  color: #3f3f46;
-}
-.settings-light .hover\:text-zinc-700:hover {
-  color: #18181b;
-}
-.settings-light .hover\:text-red-300:hover {
-  color: #dc2626;
-}
-.settings-light img[src="/openai.png"] {
-  filter: invert(1);
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  /* keep the ▲ visible instead of animating it in and out */
+  .arrow-pop {
+    animation: none !important;
+  }
 }

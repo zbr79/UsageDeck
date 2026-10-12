@@ -25,7 +25,9 @@ function expectUntouched() {
 }
 
 function stubFetch(status: number) {
-  const fetch = vi.fn(async (_url: string | URL | Request) => jsonResponse({ error: 'nope' }, status))
+  const fetch = vi.fn<(url: string | URL | Request) => Promise<Response>>(async () =>
+    jsonResponse({ error: 'nope' }, status),
+  )
   vi.stubGlobal('fetch', fetch)
   return fetch
 }

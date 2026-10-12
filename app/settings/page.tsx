@@ -1,14 +1,7 @@
 "use client";
 
-import SettingsModal from "@/app/components/SettingsModal";
+import SettingsPanel from "./_components/SettingsPanel";
 
 export default function SettingsPage() {
-  return (
-    <div className="w-screen h-screen">
-      <SettingsModal
-        onClose={() => (window as any).settingsWindow?.close()}
-        onChanged={() => {}}
-      />
-    </div>
-  );
+  return <SettingsPanel onClose={() => window.settingsWindow?.close()} />;
 }
