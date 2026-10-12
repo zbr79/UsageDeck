@@ -4,7 +4,9 @@ import { NextRequest } from 'next/server'
 
 export const dynamic = 'force-dynamic'
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const denied = await requireLocalSecret(req)
+  if (denied) return denied
   const settings = await getSettings()
   return Response.json({ settings })
 }

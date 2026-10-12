@@ -1,26 +1,50 @@
 import { promises as fs } from 'fs'
-import path from 'path'
 import crypto from 'crypto'
-import { NextRequest } from 'next/server'
+import { dataDir, dataFile } from './paths'
 
-const FILE = path.join(process.cwd(), 'data', '.api-secret')
+export const SECRET_HEADER = 'x-usage-secret'
 
-export async function getOrCreateSecret(): Promise<string> {
+let cached: { file: string; secret: string } | null = null
+
+async function readSecret(file: string): Promise<string | null> {
   try {
-    const existing = (await fs.readFile(FILE, 'utf8')).trim()
-    if (existing) return existing
+    const existing = (await fs.readFile(file, 'utf8')).trim()
+    return existing || null
   } catch {
-    // create below
+    return null
   }
-  const secret = crypto.randomBytes(32).toString('hex')
-  await fs.mkdir(path.dirname(FILE), { recursive: true })
-  await fs.writeFile(FILE, secret, { encoding: 'utf8', mode: 0o600 })
+}
+
+/** Shared secret between the Electron shell and this server (data/.api-secret). */
+export async function getOrCreateSecret(): Promise<string> {
+  const file = dataFile('.api-secret')
+  if (cached?.file === file) return cached.secret
+  let secret = await readSecret(file)
+  if (!secret) {
+    const fresh = crypto.randomBytes(32).toString('hex')
+    await fs.mkdir(dataDir(), { recursive: true })
+    try {
+      // 'wx' fails if the Electron shell created it first; then use theirs.
+      await fs.writeFile(file, fresh, { encoding: 'utf8', mode: 0o600, flag: 'wx' })
+      secret = fresh
+    } catch {
+      secret = (await readSecret(file)) ?? fresh
+    }
+  }
+  cached = { file, secret }
   return secret
 }
 
-export async function requireLocalSecret(req: NextRequest): Promise<Response | null> {
+export function secretsMatch(provided: string | null | undefined, secret: string): boolean {
+  if (!provided) return false
+  const a = Buffer.from(provided)
+  const b = Buffer.from(secret)
+  return a.length === b.length && crypto.timingSafeEqual(a, b)
+}
+
+/** Route-level check (defense in depth; proxy.ts gates every /api request too). */
+export async function requireLocalSecret(req: Request): Promise<Response | null> {
   const secret = await getOrCreateSecret()
-  const provided = req.headers.get('x-usage-secret')
-  if (provided && provided === secret) return null
+  if (secretsMatch(req.headers.get(SECRET_HEADER), secret)) return null
   return Response.json({ error: 'unauthorized' }, { status: 401 })
 }

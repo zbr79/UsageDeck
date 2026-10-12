@@ -6,6 +6,7 @@ import { apiFetch } from "@/lib/api-fetch";
 
 interface AccountRow {
   email: string;
+  keyHint: string;
 }
 
 interface UsageWindowInfo {
@@ -96,7 +97,6 @@ export default function SettingsModal({
   const [newKey, setNewKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [detailEmail, setDetailEmail] = useState<string | null>(null);
-  const [detailKey, setDetailKey] = useState<string | null>(null);
   const [editKey, setEditKey] = useState(false);
   const [newKeyValue, setNewKeyValue] = useState("");
   const [keyBusy, setKeyBusy] = useState(false);
@@ -110,7 +110,10 @@ export default function SettingsModal({
       apiFetch("/api/settings", { cache: "no-store" }).then((r) => r.json()),
     ]);
     const disabled = s.settings?.disabledAccounts ?? [];
-    const list = (u.accounts ?? []).map((a: AccountRow) => ({ email: a.email }));
+    const list = (u.accounts ?? []).map((a: AccountRow) => ({
+      email: a.email,
+      keyHint: a.keyHint,
+    }));
     list.sort(
       (a: AccountRow, b: AccountRow) =>
         (disabled.includes(a.email.toLowerCase()) ? 1 : 0) -
@@ -224,24 +227,12 @@ export default function SettingsModal({
     );
   };
 
-  const openDetail = async (email: string) => {
+  const openDetail = (email: string) => {
     setDetailEmail(email);
-    setDetailKey(null);
     setEditKey(false);
-    try {
-      const res = await apiFetch(`/api/key?email=${encodeURIComponent(email)}`);
-      if (!res.ok) {
-        setDetailKey(null);
-        return;
-      }
-      const json = await res.json();
-      setDetailKey(typeof json.key === "string" ? json.key : null);
-    } catch {
-      setDetailKey(null);
-    }
   };
 
-  const maskKey = (k: string) => `${k.slice(0, Math.ceil(k.length / 2))}***`;
+  const detailKeyHint = accounts?.find((a) => a.email === detailEmail)?.keyHint ?? null;
 
   const saveNewKey = async () => {
     if (!detailEmail) return;
@@ -254,9 +245,9 @@ export default function SettingsModal({
       });
       if (res.ok) {
         toastSuccess("API key updated");
-        setDetailKey(newKeyValue);
         setNewKeyValue("");
         setEditKey(false);
+        await refresh();
         onChanged();
       } else {
         const json = await res.json();
@@ -765,6 +756,8 @@ export default function SettingsModal({
                   className="rounded-lg bg-zinc-800 border border-zinc-600 px-3 py-1 text-sm text-zinc-100 placeholder:text-zinc-500"
                 />
                 <input
+                  type="password"
+                  autoComplete="off"
                   value={newKey}
                   onChange={(e) => setNewKey(e.target.value)}
                   placeholder="sk-..."
@@ -1156,7 +1149,7 @@ export default function SettingsModal({
               <div className="flex items-center gap-2">
                 <div className="text-xs text-zinc-400 shrink-0">API key</div>
                 <div className="flex-1 min-w-0 text-xs font-mono text-zinc-300 bg-zinc-800 border border-zinc-700 rounded-lg px-2 py-1 break-all">
-                  {detailKey ? maskKey(detailKey) : "…"}
+                  {detailKeyHint ?? "…"}
                 </div>
                 <button
                   onClick={() => {
@@ -1200,6 +1193,8 @@ export default function SettingsModal({
             </h3>
             <div className="flex flex-col gap-3">
               <input
+                type="password"
+                autoComplete="off"
                 value={newKeyValue}
                 onChange={(e) => setNewKeyValue(e.target.value)}
                 placeholder="new sk-... key"

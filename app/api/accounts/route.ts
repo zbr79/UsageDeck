@@ -4,9 +4,18 @@ import { NextRequest } from 'next/server'
 
 export const dynamic = 'force-dynamic'
 
-export async function GET() {
+/** "sk-…a1b2" — enough to recognise a key, useless to anyone who sees it. */
+function keyHint(key: string): string {
+  return key.length > 8 ? `${key.slice(0, 3)}…${key.slice(-4)}` : '•••'
+}
+
+export async function GET(req: NextRequest) {
+  const denied = await requireLocalSecret(req)
+  if (denied) return denied
   const accounts = await getAccounts()
-  return Response.json({ accounts: accounts.map((a) => ({ email: a.email })) })
+  return Response.json({
+    accounts: accounts.map((a) => ({ email: a.email, keyHint: keyHint(a.key) })),
+  })
 }
 
 export async function POST(req: NextRequest) {

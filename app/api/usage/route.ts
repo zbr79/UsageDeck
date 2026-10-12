@@ -1,9 +1,13 @@
 import { getAccounts, getUsage, getLastChange } from '@/lib/opencode'
 import { getSettings } from '@/lib/settings'
+import { requireLocalSecret } from '@/lib/secret'
+import { NextRequest } from 'next/server'
 
 export const dynamic = 'force-dynamic'
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const denied = await requireLocalSecret(req)
+  if (denied) return denied
   const [accounts, settings] = await Promise.all([getAccounts(), getSettings()])
   const results = await Promise.all(
     accounts.map(async (acc) => {
