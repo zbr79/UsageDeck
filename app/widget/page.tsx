@@ -420,8 +420,13 @@ export default function Widget() {
   }, [load]);
 
   useEffect(() => {
-    const off = (window as any).widget?.onSettingsChanged?.(() => load());
-    return () => off?.();
+    const w = (window as any).widget;
+    const offSettings = w?.onSettingsChanged?.(() => load());
+    const offRefresh = w?.onRefresh?.(() => load());
+    return () => {
+      offSettings?.();
+      offRefresh?.();
+    };
   }, [load]);
 
   const sortedRows = useMemo(() => {

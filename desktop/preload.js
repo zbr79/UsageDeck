@@ -10,12 +10,10 @@ function listen(channel, cb) {
 
 contextBridge.exposeInMainWorld("widget", {
   secret,
-  close: () => ipcRenderer.send("widget-close"),
-  minimize: () => ipcRenderer.send("widget-minimize"),
-  resize: (width, height, center) => ipcRenderer.send("widget-resize", width, height, center),
+  resize: (width, height) => ipcRenderer.send("widget-resize", width, height),
   onBg: (cb) => listen("widget-bg", cb),
   onToggleExpand: (cb) => listen("widget-toggle-expand", () => cb()),
-  onOpenSettings: (cb) => listen("widget-open-settings", () => cb()),
+  onRefresh: (cb) => listen("widget-refresh", () => cb()),
   onSettingsChanged: (cb) => listen("widget-settings-changed", () => cb()),
   showMenu: () => ipcRenderer.send("widget-show-menu"),
   startDrag: (sx, sy) => ipcRenderer.send("widget-drag-start", sx, sy),

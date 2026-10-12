@@ -1,14 +1,27 @@
-const { app, BrowserWindow, Menu, ipcMain, screen, desktopCapturer } = require("electron");
+const {
+  app,
+  BrowserWindow,
+  Menu,
+  ipcMain,
+  screen,
+  desktopCapturer,
+  dialog,
+  session,
+} = require("electron");
 const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 
 const APP_ROOT = path.resolve(__dirname, "..");
-const WIDGET_URL = "http://127.0.0.1:3100/widget";
+const ORIGIN = "http://127.0.0.1:3100";
+const WIDGET_URL = `${ORIGIN}/widget`;
+const SETTINGS_URL = `${ORIGIN}/settings`;
 const WIDTH = 238;
 const CONFIG_PATH = path.join(app.getPath("userData"), "widget-config.json");
-const SECRET_PATH = path.join(APP_ROOT, "data", ".api-secret");
+const DATA_DIR = process.env.USAGE_DATA_DIR || path.join(APP_ROOT, "data");
+const SECRET_PATH = path.join(DATA_DIR, ".api-secret");
+const SETTINGS_FILE = path.join(DATA_DIR, "settings.json");
 
 let win = null;
 let settingsWin = null;
@@ -16,6 +29,44 @@ let dragOffset = null;
 let serverChild = null;
 let spawnedServer = false;
 let usageSecret = "";
+
+// One widget at a time: a second launch just surfaces the existing one
+// (otherwise quitting either instance would kill the shared server).
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) app.quit();
+app.on("second-instance", () => {
+  if (win && !win.isDestroyed()) win.showInactive();
+});
+
+function isAppUrl(url) {
+  try {
+    return new URL(url).origin === ORIGIN;
+  } catch {
+    return false;
+  }
+}
+
+function fromApp(event) {
+  return !!event.senderFrame && isAppUrl(event.senderFrame.url);
+}
+
+/** Keep every window on our own origin: no navigation away, no popups. */
+function lockDown(w) {
+  w.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  const guard = (e, url) => {
+    if (!isAppUrl(url)) e.preventDefault();
+  };
+  w.webContents.on("will-navigate", guard);
+  w.webContents.on("will-redirect", guard);
+}
+
+const secureWebPreferences = (preload) => ({
+  preload: path.join(__dirname, preload),
+  contextIsolation: true,
+  nodeIntegration: false,
+  sandbox: true,
+  webviewTag: false,
+});
 
 function loadPos() {
   try {
@@ -37,11 +88,11 @@ function loadPos() {
 }
 
 function savePos() {
-  if (!win) return;
+  if (!win || win.isDestroyed()) return;
   const b = win.getBounds();
   try {
     fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
-    fs.writeFileSync(CONFIG_PATH, JSON.stringify({ x: b.x, y: b.y, width: b.width, height: b.height }));
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify({ x: b.x, y: b.y }));
   } catch {
     // ignore
   }
@@ -49,7 +100,7 @@ function savePos() {
 
 function ensureSecret() {
   try {
-    fs.mkdirSync(path.dirname(SECRET_PATH), { recursive: true });
+    fs.mkdirSync(DATA_DIR, { recursive: true });
     if (fs.existsSync(SECRET_PATH)) {
       const existing = fs.readFileSync(SECRET_PATH, "utf8").trim();
       if (existing) {
@@ -66,9 +117,7 @@ function ensureSecret() {
 
 async function serverIsUp() {
   try {
-    const res = await fetch("http://127.0.0.1:3100/widget", {
-      signal: AbortSignal.timeout(2000),
-    });
+    const res = await fetch(WIDGET_URL, { signal: AbortSignal.timeout(2000) });
     return res.ok;
   } catch {
     return false;
@@ -124,12 +173,9 @@ function createWindow() {
     hasShadow: false,
     backgroundColor: "#00000000",
     icon: path.join(APP_ROOT, "app-icon.ico"),
-    webPreferences: {
-      preload: path.join(__dirname, "preload.js"),
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
+    webPreferences: secureWebPreferences("preload.js"),
   });
+  lockDown(win);
 
   win.setMinimumSize(WIDTH, 40);
   win.setMaximumSize(WIDTH, 8000);
@@ -149,6 +195,14 @@ function createWindow() {
     showMenu();
   });
 
+  // If the renderer dies (crash / OOM), bring it back instead of leaving a
+  // blank transparent window on screen.
+  win.webContents.on("render-process-gone", () => {
+    setTimeout(() => {
+      if (win && !win.isDestroyed()) win.loadURL(WIDGET_URL);
+    }, 1000);
+  });
+
   win.on("closed", () => {
     win = null;
   });
@@ -159,7 +213,10 @@ function openSettingsOverlay() {
     settingsWin.focus();
     return;
   }
-  const disp = win && !win.isDestroyed() ? screen.getDisplayMatching(win.getBounds()) : screen.getPrimaryDisplay();
+  const disp =
+    win && !win.isDestroyed()
+      ? screen.getDisplayMatching(win.getBounds())
+      : screen.getPrimaryDisplay();
   const wa = disp.workArea;
   settingsWin = new BrowserWindow({
     x: wa.x,
@@ -172,14 +229,11 @@ function openSettingsOverlay() {
     skipTaskbar: true,
     hasShadow: false,
     backgroundColor: "#00000000",
-    webPreferences: {
-      preload: path.join(__dirname, "settings-preload.js"),
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
+    webPreferences: secureWebPreferences("settings-preload.js"),
   });
+  lockDown(settingsWin);
   settingsWin.setAlwaysOnTop(true, "screen-saver");
-  settingsWin.loadURL("http://127.0.0.1:3100/settings");
+  settingsWin.loadURL(SETTINGS_URL);
   settingsWin.on("closed", () => {
     settingsWin = null;
     if (win && !win.isDestroyed()) win.webContents.send("widget-settings-changed");
@@ -187,111 +241,148 @@ function openSettingsOverlay() {
 }
 
 function showMenu() {
-  if (!win) return;
+  if (!win || win.isDestroyed()) return;
   Menu.buildFromTemplate([
     {
       label: "Toggle Expand / Collapse",
-      click: () => win.webContents.send("widget-toggle-expand"),
+      click: () => win?.webContents.send("widget-toggle-expand"),
     },
-    { label: "Refresh", click: () => win.reload() },
-    {
-      label: "Settings",
-      click: () => openSettingsOverlay(),
-    },
+    { label: "Refresh", click: () => win?.webContents.send("widget-refresh") },
+    { label: "Settings", click: () => openSettingsOverlay() },
     { type: "separator" },
     { label: "Quit", click: () => app.quit() },
   ]).popup({ window: win });
 }
 
-ipcMain.on("settings-close", () => {
+ipcMain.on("get-usage-secret", (e) => {
+  e.returnValue = fromApp(e) ? usageSecret : "";
+});
+ipcMain.on("settings-close", (e) => {
+  if (!fromApp(e)) return;
   if (settingsWin && !settingsWin.isDestroyed()) settingsWin.close();
 });
-ipcMain.on("get-usage-secret", (e) => {
-  e.returnValue = usageSecret;
+ipcMain.on("widget-show-menu", (e) => {
+  if (fromApp(e)) showMenu();
 });
-
-ipcMain.on("widget-close", () => app.quit());
-ipcMain.on("widget-minimize", () => {
-  if (win) win.minimize();
-});
-ipcMain.on("widget-show-menu", () => showMenu());
-ipcMain.on("widget-drag-start", (_e, sx, sy) => {
-  if (!win) return;
+ipcMain.on("widget-drag-start", (e, sx, sy) => {
+  if (!fromApp(e) || !win) return;
   const [x, y] = win.getPosition();
   dragOffset = { dx: sx - x, dy: sy - y };
 });
-ipcMain.on("widget-drag-move", (_e, sx, sy) => {
-  if (!win || !dragOffset) return;
+ipcMain.on("widget-drag-move", (e, sx, sy) => {
+  if (!fromApp(e) || !win || !dragOffset) return;
   win.setPosition(Math.round(sx - dragOffset.dx), Math.round(sy - dragOffset.dy));
 });
-ipcMain.on("widget-drag-end", () => {
+ipcMain.on("widget-drag-end", (e) => {
+  if (!fromApp(e)) return;
   dragOffset = null;
   savePos();
 });
-ipcMain.on("widget-resize", (_e, width, height) => {
-  if (!win) return;
+ipcMain.on("widget-resize", (e, _width, height) => {
+  if (!fromApp(e) || !win || !Number.isFinite(height)) return;
   const disp = screen.getDisplayMatching(win.getBounds());
   const maxH = disp.workArea.height - 8;
   const h = Math.max(40, Math.min(Math.round(height), maxH));
-  win.setSize(Math.round(width), h);
+  win.setSize(WIDTH, h);
 });
 
-function startBgSampler() {
-  const SETTINGS_FILE = path.join(APP_ROOT, "data", "settings.json");
-  async function loop() {
-    while (true) {
-      let mode = "auto";
-      try {
-        const s = JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf8"));
-        if (s?.themeMode === "light" || s?.themeMode === "dark") mode = s.themeMode;
-      } catch {
-        // no settings file yet → auto
-      }
-      if (mode === "auto") {
-        try {
-          if (win && !win.isDestroyed()) {
-            const display = screen.getPrimaryDisplay();
-            const sources = await desktopCapturer.getSources({
-              types: ["screen"],
-              thumbnailSize: { width: 160, height: 90 },
-            });
-            const src = sources.find((s) => s.display_id === String(display.id)) ?? sources[0];
-            if (src) {
-              const buffer = src.thumbnail.toBitmap();
-              let sum = 0;
-              let count = 0;
-              for (let i = 0; i + 3 < buffer.length; i += 12) {
-                sum += buffer[i] + buffer[i + 1] + buffer[i + 2];
-                count += 3;
-              }
-              const avg = count ? sum / count / 255 : 0.5;
-              win.webContents.send("widget-bg", avg);
-            }
-          }
-        } catch {
-          // ignore sampling errors
-        }
-        await new Promise((r) => setTimeout(r, 3000));
-      } else {
-        await new Promise((r) => setTimeout(r, 5000));
-      }
-    }
+function readThemeMode() {
+  try {
+    const s = JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf8"));
+    return typeof s?.themeMode === "string" ? s.themeMode : "auto";
+  } catch {
+    return "auto"; // no settings file yet
   }
-  loop();
 }
 
-app.whenReady().then(async () => {
-  ensureSecret();
-  if (!(await serverIsUp())) {
-    startServer();
+/**
+ * Average brightness (0..1) of the screen just around the widget, on the
+ * display the widget is actually on. The widget's own pixels are excluded.
+ */
+async function sampleBackground() {
+  const bounds = win.getBounds();
+  const display = screen.getDisplayMatching(bounds);
+  const db = display.bounds;
+  const thumbW = 320;
+  const sources = await desktopCapturer.getSources({
+    types: ["screen"],
+    thumbnailSize: { width: thumbW, height: Math.round((thumbW * db.height) / db.width) },
+  });
+  const src = sources.find((s) => s.display_id === String(display.id));
+  if (!src || src.thumbnail.isEmpty()) return null;
+  const size = src.thumbnail.getSize();
+  const bmp = src.thumbnail.toBitmap(); // BGRA
+  const sx = size.width / db.width;
+  const sy = size.height / db.height;
+  const clampX = (v) => Math.max(0, Math.min(size.width, Math.round(v)));
+  const clampY = (v) => Math.max(0, Math.min(size.height, Math.round(v)));
+  const margin = 48;
+  const outer = {
+    x0: clampX((bounds.x - db.x - margin) * sx),
+    y0: clampY((bounds.y - db.y - margin) * sy),
+    x1: clampX((bounds.x - db.x + bounds.width + margin) * sx),
+    y1: clampY((bounds.y - db.y + bounds.height + margin) * sy),
+  };
+  const inner = {
+    x0: clampX((bounds.x - db.x) * sx),
+    y0: clampY((bounds.y - db.y) * sy),
+    x1: clampX((bounds.x - db.x + bounds.width) * sx),
+    y1: clampY((bounds.y - db.y + bounds.height) * sy),
+  };
+  let sum = 0;
+  let count = 0;
+  for (let y = outer.y0; y < outer.y1; y++) {
+    for (let x = outer.x0; x < outer.x1; x++) {
+      if (x >= inner.x0 && x < inner.x1 && y >= inner.y0 && y < inner.y1) continue;
+      const i = (y * size.width + x) * 4;
+      sum += (0.0722 * bmp[i] + 0.7152 * bmp[i + 1] + 0.2126 * bmp[i + 2]) / 255;
+      count++;
+    }
   }
-  const ok = await waitForServer();
-  if (!usageSecret) ensureSecret();
-  if (ok) {
+  return count ? sum / count : null;
+}
+
+function startBgSampler() {
+  const tick = async () => {
+    let delay = 5000;
+    // Only the "auto" theme needs screen sampling; light/white/dark are static.
+    if (readThemeMode() === "auto") {
+      delay = 3000;
+      try {
+        if (win && !win.isDestroyed() && win.isVisible()) {
+          const avg = await sampleBackground();
+          if (avg != null) win.webContents.send("widget-bg", avg);
+        }
+      } catch {
+        // ignore sampling errors
+      }
+    }
+    setTimeout(tick, delay);
+  };
+  tick();
+}
+
+app.on("web-contents-created", (_e, contents) => {
+  contents.on("will-attach-webview", (e) => e.preventDefault());
+});
+
+app.whenReady().then(async () => {
+  if (!gotLock) return;
+  // Only clipboard writes (copy key) are needed; deny every other permission.
+  session.defaultSession.setPermissionRequestHandler((wc, permission, cb) => {
+    cb(permission === "clipboard-sanitized-write" && isAppUrl(wc.getURL()));
+  });
+  ensureSecret();
+  if (!(await serverIsUp())) startServer();
+  if (await waitForServer()) {
     createWindow();
     startBgSampler();
   } else {
-    console.error("Server did not start in time");
+    dialog.showErrorBox(
+      "Provider Usage Monitor",
+      `The local server did not start on ${ORIGIN} within 60 seconds.\n\n` +
+        "Run `npm run build` in the project folder, then launch the widget again.",
+    );
     app.quit();
   }
 });
