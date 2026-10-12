@@ -250,6 +250,8 @@ export default function Widget() {
   const [codexCachedAt, setCodexCachedAt] = useState<number | null>(null);
   const [claudeEnabled, setClaudeEnabled] = useState(true);
   const [claude, setClaude] = useState<ClaudeUsage | null>(null);
+  const [claudeAuthExpired, setClaudeAuthExpired] = useState(false);
+  const [codexAuthExpired, setCodexAuthExpired] = useState(false);
   const [displayNames, setDisplayNames] = useState<Record<string, string>>({});
   const [showProviderNames, setShowProviderNames] = useState(false);
   const [themeMode, setThemeMode] = useState<"auto" | "light" | "dark" | "white">("auto");
@@ -374,8 +376,13 @@ export default function Widget() {
         setCodex(xjson.usage ?? null);
         setCodexStale(xjson.stale === true);
         setCodexCachedAt(typeof xjson.cachedAt === "number" ? xjson.cachedAt : null);
+        setCodexAuthExpired(xjson.authExpired === true);
       }
-      setClaude((await claudeRes.json()).usage ?? null);
+      {
+        const ajson = await claudeRes.json();
+        setClaude(ajson.usage ?? null);
+        setClaudeAuthExpired(ajson.authExpired === true);
+      }
       const accounts: AccountRow[] = json.accounts ?? [];
       const ts = Date.now();
       for (const row of accounts) {
@@ -451,6 +458,16 @@ export default function Widget() {
       toastError("Copy failed");
     }
   };
+
+  const reauthHint = (expired: boolean, how: string) =>
+    !expired ? null : (
+      <span
+        className={`text-[9px] font-medium whitespace-nowrap ${light ? "text-amber-700" : "text-amber-300"}`}
+        title={`Sign-in expired · ${how} to refresh it`}
+      >
+        re-auth
+      </span>
+    );
 
   const cachedHint = (stale: boolean, cachedAt: number | null) =>
     !stale ? null : (
@@ -790,6 +807,7 @@ export default function Widget() {
           <span className={`text-[11px] truncate flex-1 font-medium ${light ? "text-zinc-800" : "text-zinc-100"}`}>
             {showProviderNames ? "Codex" : displayNames["codex"] ?? "Codex"}
           </span>
+          {reauthHint(codexAuthExpired, "run codex")}
           {cachedHint(stale, codexCachedAt)}
           <span className="ml-auto flex items-center gap-1 shrink-0">
             {codex?.resetCredits != null && (
@@ -893,6 +911,7 @@ export default function Widget() {
           >
             {showProviderNames ? "Claude" : displayNames["claude"] ?? "Claude"}
           </span>
+          {reauthHint(claudeAuthExpired, "open Claude Code")}
           <span className="ml-auto flex items-center gap-1 shrink-0">
             {claude?.resetCredits != null && (
               <span
