@@ -21,7 +21,10 @@ function ResetBadges({ usage, now }: { usage: OpenCodeAccountUsage | undefined; 
     const ms = iso ? new Date(iso).getTime() - now : NaN;
     if (!Number.isFinite(ms) || ms <= 0) return null;
     return (
-      <Badge tone={usage.stale ? "gray" : "blue"} title={`${name} resets in ${formatDuration(ms, 2)}${cachedNote}`}>
+      <Badge
+        tone={usage.stale ? "gray" : "blue"}
+        title={`${name} resets in ${formatDuration(ms, 2)}${cachedNote}`}
+      >
         {label} {formatDuration(ms, 1)}
       </Badge>
     );
@@ -30,7 +33,11 @@ function ResetBadges({ usage, now }: { usage: OpenCodeAccountUsage | undefined; 
     <>
       {pill("W", "Weekly", usage.usage?.weekly.resetsAt)}
       {pill("M", "Monthly", usage.usage?.monthly.resetsAt)}
-      {usage.stale && <Badge tone="gray" title={`Showing last known data${cachedNote}`}>cached</Badge>}
+      {usage.stale && (
+        <Badge tone="gray" title={`Showing last known data${cachedNote}`}>
+          cached
+        </Badge>
+      )}
     </>
   );
 }
@@ -57,7 +64,14 @@ function AddAccountForm({ onAdded }: { onAdded: () => void }) {
       <label htmlFor={emailId} className="text-xs text-(--p-muted)">
         Email or label
       </label>
-      <input id={emailId} value={email} onChange={(e) => setEmail(e.target.value)} required maxLength={320} className={inputClass} />
+      <input
+        id={emailId}
+        value={email}
+        onChange={(e) => setEmail(e.target.value)}
+        required
+        maxLength={320}
+        className={inputClass}
+      />
       <label htmlFor={keyId} className="text-xs text-(--p-muted)">
         API key
       </label>
@@ -80,7 +94,15 @@ function AddAccountForm({ onAdded }: { onAdded: () => void }) {
   );
 }
 
-function KeyDialog({ email, onClose, onSaved }: { email: string; onClose: () => void; onSaved: () => void }) {
+function KeyDialog({
+  email,
+  onClose,
+  onSaved,
+}: {
+  email: string;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
   const titleId = useId();
   const inputId = useId();
   const [key, setKey] = useState("");
@@ -97,7 +119,10 @@ function KeyDialog({ email, onClose, onSaved }: { email: string; onClose: () => 
   };
   return (
     <Dialog labelledBy={titleId} onClose={onClose}>
-      <form onSubmit={save} className="bg-(--p-bg) rounded-xl shadow-2xl w-[420px] border border-(--p-border) p-5">
+      <form
+        onSubmit={save}
+        className="bg-(--p-bg) rounded-xl shadow-2xl w-[420px] border border-(--p-border) p-5"
+      >
         <h3 id={titleId} className="text-base font-bold mb-4 truncate">
           Update API key · {email}
         </h3>
@@ -196,7 +221,11 @@ function AccountDialog({
         </div>
       </div>
       {editingKey && (
-        <KeyDialog email={account.email} onClose={() => setEditingKey(false)} onSaved={onKeySaved} />
+        <KeyDialog
+          email={account.email}
+          onClose={() => setEditingKey(false)}
+          onSaved={onKeySaved}
+        />
       )}
     </Dialog>
   );
@@ -253,7 +282,9 @@ export default function OpenCodeAccounts({
       {sorted === null ? (
         <p className="text-sm text-(--p-muted)">Loading…</p>
       ) : sorted.length === 0 ? (
-        <p className="text-sm text-(--p-muted)">No accounts yet. Use Add to connect an OpenCode Go key.</p>
+        <p className="text-sm text-(--p-muted)">
+          No accounts yet. Use Add to connect an OpenCode Go key.
+        </p>
       ) : (
         <ul className="space-y-2">
           {sorted.map((a) => (
@@ -303,7 +334,11 @@ export default function OpenCodeAccounts({
                     <IconButton label={`Details for ${a.email}`} onClick={() => setDetail(a.email)}>
                       <GearIcon />
                     </IconButton>
-                    <IconButton label={`Remove ${a.email}`} danger onClick={() => setConfirmRemove(a.email)}>
+                    <IconButton
+                      label={`Remove ${a.email}`}
+                      danger
+                      onClick={() => setConfirmRemove(a.email)}
+                    >
                       <TrashIcon />
                     </IconButton>
                   </span>

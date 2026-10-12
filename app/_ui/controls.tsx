@@ -52,7 +52,12 @@ export function SegmentedControl<T extends string>({
 }) {
   const refs = useRef<(HTMLButtonElement | null)[]>([]);
   const onKeyDown = (e: KeyboardEvent, i: number) => {
-    const delta = e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 0;
+    const delta =
+      e.key === "ArrowRight" || e.key === "ArrowDown"
+        ? 1
+        : e.key === "ArrowLeft" || e.key === "ArrowUp"
+          ? -1
+          : 0;
     if (!delta) return;
     e.preventDefault();
     const next = (i + delta + options.length) % options.length;
@@ -60,7 +65,11 @@ export function SegmentedControl<T extends string>({
     refs.current[next]?.focus();
   };
   return (
-    <div role="radiogroup" aria-label={label} className="flex rounded-lg overflow-hidden border border-(--p-border) shrink-0">
+    <div
+      role="radiogroup"
+      aria-label={label}
+      className="flex rounded-lg overflow-hidden border border-(--p-border) shrink-0"
+    >
       {options.map((option, i) => {
         const selected = option === value;
         return (

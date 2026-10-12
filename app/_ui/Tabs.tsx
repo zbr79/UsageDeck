@@ -47,7 +47,11 @@ export function TabList<T extends string>({
   };
 
   return (
-    <div role="tablist" aria-label={label} className={`flex gap-5 border-b border-(--p-divider) ${className}`}>
+    <div
+      role="tablist"
+      aria-label={label}
+      className={`flex gap-5 border-b border-(--p-divider) ${className}`}
+    >
       {items.map((item, i) => {
         const selected = item.id === value;
         return (

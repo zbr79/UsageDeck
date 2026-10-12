@@ -37,11 +37,21 @@ function statusOf(id: ProviderId, s: Summaries): Status {
   });
   switch (id) {
     case "cursor":
-      return { ...base(s.cursor), account: s.cursor?.usage?.accountName ?? null, plan: s.cursor?.usage?.planName ?? null, tone: "blue" };
+      return {
+        ...base(s.cursor),
+        account: s.cursor?.usage?.accountName ?? null,
+        plan: s.cursor?.usage?.planName ?? null,
+        tone: "blue",
+      };
     case "grok": {
       const g = s.grok?.usage;
       const account = g?.email ? `${g.email}${g.source === "cursor" ? " (via Cursor)" : ""}` : null;
-      return { ...base(s.grok), account, plan: g?.planLabel ?? g?.cursorPlanName ?? null, tone: "blue" };
+      return {
+        ...base(s.grok),
+        account,
+        plan: g?.planLabel ?? g?.cursorPlanName ?? null,
+        tone: "blue",
+      };
     }
     case "codex": {
       const plan = s.codex?.usage?.planType ?? null;
@@ -61,7 +71,12 @@ function statusOf(id: ProviderId, s: Summaries): Status {
           : !c.signedIn
             ? "not signed in"
             : (c.planName ?? (c.subscribed ? (c.subscriptionType ?? "subscribed") : "Free"));
-      const tone: Tone = plan === "Free" ? "green" : plan === "unavailable" || plan === "not signed in" ? "gray" : "blue";
+      const tone: Tone =
+        plan === "Free"
+          ? "green"
+          : plan === "unavailable" || plan === "not signed in"
+            ? "gray"
+            : "blue";
       return { ...base(s.claude), account: c?.email ?? null, plan, tone };
     }
   }
@@ -95,7 +110,9 @@ function ProviderDialog({
               </h3>
               {status.plan && <Badge tone={status.tone}>{status.plan}</Badge>}
             </div>
-            <div className="text-xs text-(--p-muted) truncate">{status.account ?? "account unavailable"}</div>
+            <div className="text-xs text-(--p-muted) truncate">
+              {status.account ?? "account unavailable"}
+            </div>
           </div>
           <IconButton label="Close" onClick={onClose}>
             <CloseIcon size={16} />
@@ -107,7 +124,10 @@ function ProviderDialog({
               labelledBy={switchId}
               checked={enabled}
               onChange={(next) =>
-                void update({ [enabledKey]: next }, `${name} ${next ? "shown on" : "hidden from"} widget`)
+                void update(
+                  { [enabledKey]: next },
+                  `${name} ${next ? "shown on" : "hidden from"} widget`,
+                )
               }
             />
             <span id={switchId} className="text-sm text-(--p-textSecondary)">
@@ -145,13 +165,19 @@ export default function ProviderPanel({
   const status = statusOf(id, summaries);
   const { name, enabledKey } = PROVIDERS[id];
   return (
-    <div className={`bg-(--p-surface) border border-(--p-border) rounded-lg px-3 py-2 ${settings[enabledKey] ? "" : "border-dashed"}`}>
+    <div
+      className={`bg-(--p-surface) border border-(--p-border) rounded-lg px-3 py-2 ${settings[enabledKey] ? "" : "border-dashed"}`}
+    >
       <div className="flex items-center gap-2">
         <span className="flex-1 min-w-0 text-sm text-(--p-text) truncate">
           {status.account ?? "account unavailable"}
         </span>
         {!settings[enabledKey] && <Badge tone="gray">hidden</Badge>}
-        {status.authExpired && <Badge tone="amber" title={`Sign-in expired · open ${name} to refresh it`}>re-auth</Badge>}
+        {status.authExpired && (
+          <Badge tone="amber" title={`Sign-in expired · open ${name} to refresh it`}>
+            re-auth
+          </Badge>
+        )}
         {status.stale && <Badge tone="gray">cached</Badge>}
         <IconButton label={`${name} details`} onClick={() => setOpen(true)}>
           <GearIcon />
@@ -164,7 +190,13 @@ export default function ProviderPanel({
         {status.plan && <Badge tone={status.tone}>{status.plan}</Badge>}
       </div>
       {open && (
-        <ProviderDialog id={id} status={status} settings={settings} update={update} onClose={() => setOpen(false)} />
+        <ProviderDialog
+          id={id}
+          status={status}
+          settings={settings}
+          update={update}
+          onClose={() => setOpen(false)}
+        />
       )}
     </div>
   );

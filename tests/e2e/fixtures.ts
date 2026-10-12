@@ -1,4 +1,4 @@
-import type { Page, Route } from '@playwright/test'
+import type { Page, Route } from "@playwright/test";
 import type {
   ClaudeUsage,
   CodexUsage,
@@ -8,11 +8,11 @@ import type {
   OpenCodeAccountUsage,
   ProviderResponse,
   Settings,
-} from '../../lib/types'
+} from "../../lib/types";
 
-export const NOW = new Date('2026-10-12T00:57:00Z') // a Monday, 3 minutes before peak
-const iso = (msFromNow: number) => new Date(NOW.getTime() + msFromNow).toISOString()
-const H = 3_600_000
+export const NOW = new Date("2026-10-12T00:57:00Z"); // a Monday, 3 minutes before peak
+const iso = (msFromNow: number) => new Date(NOW.getTime() + msFromNow).toISOString();
+const H = 3_600_000;
 
 export const settings: Settings = {
   cursorEnabled: true,
@@ -21,15 +21,25 @@ export const settings: Settings = {
   claudeEnabled: true,
   deepseekPeakHourWarning: true,
   showProviderNames: false,
-  themeMode: 'dark',
-  panelTheme: 'dark',
-  displayNames: { 'main@example.com': 'Main', 'spare@example.com': 'Spare' },
-  disabledAccounts: ['hidden@example.com'],
-}
+  themeMode: "dark",
+  panelTheme: "dark",
+  displayNames: { "main@example.com": "Main", "spare@example.com": "Spare" },
+  disabledAccounts: ["hidden@example.com"],
+};
 
-const win = (percent: number, resetsIn: number) => ({ status: 'ok', percent, resetsAt: iso(resetsIn) })
+const win = (percent: number, resetsIn: number) => ({
+  status: "ok",
+  percent,
+  resetsAt: iso(resetsIn),
+});
 
-function account(email: string, r: number, w: number, m: number, extra: Partial<OpenCodeAccountUsage> = {}): OpenCodeAccountUsage {
+function account(
+  email: string,
+  r: number,
+  w: number,
+  m: number,
+  extra: Partial<OpenCodeAccountUsage> = {},
+): OpenCodeAccountUsage {
   return {
     email,
     usage: { rolling: win(r, 4 * H), weekly: win(w, 6 * 24 * H), monthly: win(m, 15 * 24 * H) },
@@ -42,17 +52,20 @@ function account(email: string, r: number, w: number, m: number, extra: Partial<
     lastChangeAt: null,
     lastChangeDetail: null,
     ...extra,
-  }
+  };
 }
 
 export const usage: OpenCodeAccountUsage[] = [
-  account('main@example.com', 2, 10, 85, { lastChangeAt: NOW.getTime() - 60_000 }),
-  account('spare@example.com', 0, 100, 40),
-  account('hidden@example.com', 5, 5, 5, { enabled: false }),
-  account('lapsed@example.com', 0, 0, 0, { subscriptionActive: false }),
-]
+  account("main@example.com", 2, 10, 85, { lastChangeAt: NOW.getTime() - 60_000 }),
+  account("spare@example.com", 0, 100, 40),
+  account("hidden@example.com", 5, 5, 5, { enabled: false }),
+  account("lapsed@example.com", 0, 0, 0, { subscriptionActive: false }),
+];
 
-export const accounts: OpenCodeAccountSummary[] = usage.map((u) => ({ email: u.email, keyHint: 'sk-…ab12' }))
+export const accounts: OpenCodeAccountSummary[] = usage.map((u) => ({
+  email: u.email,
+  keyHint: "sk-…ab12",
+}));
 
 const ok = <T>(usage: T, extra: Partial<ProviderResponse<T>> = {}): ProviderResponse<T> => ({
   usage,
@@ -61,7 +74,7 @@ const ok = <T>(usage: T, extra: Partial<ProviderResponse<T>> = {}): ProviderResp
   authExpired: false,
   error: null,
   ...extra,
-})
+});
 
 export const providers = {
   cursor: ok<CursorUsage>({
@@ -72,24 +85,39 @@ export const providers = {
     totalSpend: null,
     limit: null,
     bonusSpend: null,
-    accountName: 'dev@example.com',
-    planName: 'Pro',
+    accountName: "dev@example.com",
+    planName: "Pro",
   }),
   grok: ok<GrokUsage>(
-    { email: 'dev@example.com', name: null, percentUsed: 40, resetAt: iso(3 * 24 * H), planLabel: 'SuperGrok', cursorPlanName: null, source: 'grok-bot' },
+    {
+      email: "dev@example.com",
+      name: null,
+      percentUsed: 40,
+      resetAt: iso(3 * 24 * H),
+      planLabel: "SuperGrok",
+      cursorPlanName: null,
+      source: "grok-bot",
+    },
     { stale: true, cachedAt: NOW.getTime() - 3_600_000 },
   ),
-  codex: ok<CodexUsage>(
-    { email: 'c@example.com', planType: 'plus', usedPercent: 100, limitWindowSeconds: 18000, resetAt: iso(2 * H), creditsBalance: null, resetCredits: 1, limitReached: true },
-  ),
+  codex: ok<CodexUsage>({
+    email: "c@example.com",
+    planType: "plus",
+    usedPercent: 100,
+    limitWindowSeconds: 18000,
+    resetAt: iso(2 * H),
+    creditsBalance: null,
+    resetCredits: 1,
+    limitReached: true,
+  }),
   claude: ok<ClaudeUsage>(
     {
-      email: 'me@example.com',
-      displayName: 'Me',
+      email: "me@example.com",
+      displayName: "Me",
       signedIn: true,
       subscribed: true,
-      subscriptionType: 'pro',
-      planName: 'Pro',
+      subscriptionType: "pro",
+      planName: "Pro",
       fiveHour: { percent: 31, resetsAt: iso(4 * H) },
       weekly: { percent: 60, resetsAt: iso(52 * H) },
       weeklyOpus: null,
@@ -101,73 +129,83 @@ export const providers = {
     },
     { authExpired: true },
   ),
-}
+};
 
 export interface ApiOverrides {
-  settings?: Partial<Settings>
-  fail?: string[] // route names that should return 500
-  onPost?: (path: string, body: unknown) => void
+  settings?: Partial<Settings>;
+  fail?: string[]; // route names that should return 500
+  onPost?: (path: string, body: unknown) => void;
 }
 
 /** Mock every /api route; returns the requests seen, for assertions. */
 export async function mockApi(page: Page, o: ApiOverrides = {}) {
-  const seen: { method: string; path: string; body: unknown; secret: string | null }[] = []
-  let current: Settings = { ...settings, ...o.settings }
-  await page.route('**/api/**', async (route: Route) => {
-    const req = route.request()
-    const url = new URL(req.url())
-    const name = url.pathname.replace('/api/', '')
-    const body = req.postData() ? JSON.parse(req.postData()!) : null
-    seen.push({ method: req.method(), path: url.pathname + url.search, body, secret: req.headers()['x-usage-secret'] ?? null })
-    if (o.fail?.includes(name)) return route.fulfill({ status: 500, body: 'boom' })
-    if (req.method() !== 'GET') {
-      o.onPost?.(name, body)
-      if (name === 'settings') {
-        current = { ...current, ...body, displayNames: { ...current.displayNames, ...(body?.displayNames ?? {}) } }
-        return route.fulfill({ json: { ok: true, settings: current } })
+  const seen: { method: string; path: string; body: unknown; secret: string | null }[] = [];
+  let current: Settings = { ...settings, ...o.settings };
+  await page.route("**/api/**", async (route: Route) => {
+    const req = route.request();
+    const url = new URL(req.url());
+    const name = url.pathname.replace("/api/", "");
+    const body = req.postData() ? JSON.parse(req.postData()!) : null;
+    seen.push({
+      method: req.method(),
+      path: url.pathname + url.search,
+      body,
+      secret: req.headers()["x-usage-secret"] ?? null,
+    });
+    if (o.fail?.includes(name)) return route.fulfill({ status: 500, body: "boom" });
+    if (req.method() !== "GET") {
+      o.onPost?.(name, body);
+      if (name === "settings") {
+        current = {
+          ...current,
+          ...body,
+          displayNames: { ...current.displayNames, ...(body?.displayNames ?? {}) },
+        };
+        return route.fulfill({ json: { ok: true, settings: current } });
       }
-      return route.fulfill({ json: { ok: true } })
+      return route.fulfill({ json: { ok: true } });
     }
     switch (name) {
-      case 'settings':
-        return route.fulfill({ json: { settings: current } })
-      case 'usage':
-        return route.fulfill({ json: { accounts: usage } })
-      case 'accounts':
-        return route.fulfill({ json: { accounts } })
-      case 'key':
-        return route.fulfill({ json: { key: 'sk-test-key-123' } })
+      case "settings":
+        return route.fulfill({ json: { settings: current } });
+      case "usage":
+        return route.fulfill({ json: { accounts: usage } });
+      case "accounts":
+        return route.fulfill({ json: { accounts } });
+      case "key":
+        return route.fulfill({ json: { key: "sk-test-key-123" } });
       default:
-        if (name in providers) return route.fulfill({ json: providers[name as keyof typeof providers] })
-        return route.fulfill({ status: 404, json: { error: 'not found' } })
+        if (name in providers)
+          return route.fulfill({ json: providers[name as keyof typeof providers] });
+        return route.fulfill({ status: 404, json: { error: "not found" } });
     }
-  })
-  return seen
+  });
+  return seen;
 }
 
 /** Stub the Electron preload bridge and freeze time. */
 export async function setupWidget(page: Page) {
-  await page.clock.setFixedTime(NOW)
+  await page.clock.setFixedTime(NOW);
   await page.addInitScript(() => {
-    const listeners: Record<string, (() => void)[]> = {}
+    const listeners: Record<string, (() => void)[]> = {};
     const on = (name: string) => (cb: () => void) => {
-      ;(listeners[name] ??= []).push(cb)
-      return () => {}
-    }
-    const w = window as unknown as Record<string, unknown>
-    w.__emit = (name: string) => listeners[name]?.forEach((cb) => cb())
+      (listeners[name] ??= []).push(cb);
+      return () => {};
+    };
+    const w = window as unknown as Record<string, unknown>;
+    w.__emit = (name: string) => listeners[name]?.forEach((cb) => cb());
     w.widget = {
-      secret: 'test-secret',
+      secret: "test-secret",
       resize: () => {},
       onBg: () => () => {},
-      onToggleExpand: on('expand'),
-      onRefresh: on('refresh'),
-      onSettingsChanged: on('settings'),
+      onToggleExpand: on("expand"),
+      onRefresh: on("refresh"),
+      onSettingsChanged: on("settings"),
       showMenu: () => {},
       startDrag: () => {},
       moveDrag: () => {},
       endDrag: () => {},
-    }
-    w.settingsWindow = { secret: 'test-secret', close: () => ((w.__closed = true)) }
-  })
+    };
+    w.settingsWindow = { secret: "test-secret", close: () => (w.__closed = true) };
+  });
 }

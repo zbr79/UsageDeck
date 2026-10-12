@@ -25,7 +25,7 @@ export interface ProviderSlot<T> {
   loaded: boolean;
 }
 
-const emptySlot = <T,>(): ProviderSlot<T> => ({
+const emptySlot = <T>(): ProviderSlot<T> => ({
   data: null,
   stale: false,
   cachedAt: null,
@@ -98,7 +98,7 @@ export function useWidgetData() {
         }
       }
 
-      const slot = <T,>(
+      const slot = <T>(
         prev: ProviderSlot<T>,
         r: PromiseSettledResult<ProviderResponse<T>>,
       ): ProviderSlot<T> =>

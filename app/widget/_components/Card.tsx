@@ -54,8 +54,13 @@ export function Card({
 }
 
 export function ProviderIcon({ src, alt, invert }: { src: string; alt: string; invert?: boolean }) {
-  // eslint-disable-next-line @next/next/no-img-element -- tiny local icons
-  return <img src={src} alt={alt} className={`h-3 w-3 shrink-0 rounded-[3px] ${invert ? "invert" : ""}`} />;
+  return (
+    <img
+      src={src}
+      alt={alt}
+      className={`h-3 w-3 shrink-0 rounded-[3px] ${invert ? "invert" : ""}`}
+    />
+  );
 }
 
 export function Hint({
@@ -99,13 +104,14 @@ export function Meter({
 }) {
   const known = !unknown && percent != null;
   const value = known ? Math.max(0, percent) : 0;
-  const fill = !known || dimmed
-    ? "var(--w-barDim)"
-    : value >= 100
-      ? "var(--w-barDanger)"
-      : value >= 80
-        ? "var(--w-barWarn)"
-        : "var(--w-barOk)";
+  const fill =
+    !known || dimmed
+      ? "var(--w-barDim)"
+      : value >= 100
+        ? "var(--w-barDanger)"
+        : value >= 80
+          ? "var(--w-barWarn)"
+          : "var(--w-barOk)";
   const valueText = known
     ? `${formatPercent(value)}%${reset ? `, resets in ${reset}` : ""}`
     : "unknown";

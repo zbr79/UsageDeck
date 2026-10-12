@@ -147,12 +147,16 @@ export default function WidgetPage() {
               onCopyKey={() => void copyKey(row.email)}
             />
           ))}
-          {settings.cursorEnabled && <CursorCard slot={data.cursor} settings={settings} now={now} />}
+          {settings.cursorEnabled && (
+            <CursorCard slot={data.cursor} settings={settings} now={now} />
+          )}
           {settings.grokEnabled && <GrokCard slot={data.grok} settings={settings} now={now} />}
           {settings.codexEnabled && (
             <CodexCard slot={data.codex} settings={settings} now={now} light={light} />
           )}
-          {settings.claudeEnabled && <ClaudeCard slot={data.claude} settings={settings} now={now} />}
+          {settings.claudeEnabled && (
+            <ClaudeCard slot={data.claude} settings={settings} now={now} />
+          )}
         </div>
       )}
     </main>

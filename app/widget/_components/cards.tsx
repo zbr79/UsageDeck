@@ -71,8 +71,13 @@ export function OpenCodeCard({
 }) {
   const title = nameFor(settings, row.email, "OpenCode", row.email.slice(0, 4));
   const u = row.usage;
-  const state: CardState = isAccountExhausted(row, now) ? "exhausted" : active ? "active" : "normal";
-  const unknown = (w: "rolling" | "weekly" | "monthly") => !!u && isUnknownWindow(u[w], row.stale, now);
+  const state: CardState = isAccountExhausted(row, now)
+    ? "exhausted"
+    : active
+      ? "active"
+      : "normal";
+  const unknown = (w: "rolling" | "weekly" | "monthly") =>
+    !!u && isUnknownWindow(u[w], row.stale, now);
   const reset = (w: "rolling" | "weekly" | "monthly", show: boolean) =>
     u && show && !unknown(w) ? formatUntil(u[w].resetsAt, now) : null;
 
@@ -81,7 +86,9 @@ export function OpenCodeCard({
     if (peak.active && peak.endAt) {
       peakHint = <Hint color="peakActive">Peak ends in {formatDuration(peak.endAt - now, 2)}</Hint>;
     } else if (peak.nextStartAt) {
-      peakHint = <Hint color="peakNext">Peak starts in {formatDuration(peak.nextStartAt - now, 2)}</Hint>;
+      peakHint = (
+        <Hint color="peakNext">Peak starts in {formatDuration(peak.nextStartAt - now, 2)}</Hint>
+      );
     }
   }
 
@@ -111,7 +118,11 @@ export function OpenCodeCard({
           <CachedHint slot={row} />
         </>
       }
-      badges={<Badge scope="w" tone="blue">Go</Badge>}
+      badges={
+        <Badge scope="w" tone="blue">
+          Go
+        </Badge>
+      }
     >
       {u ? (
         <div className="flex gap-2">
@@ -120,7 +131,10 @@ export function OpenCodeCard({
             name="Rolling usage"
             percent={u.rolling.percent}
             unknown={unknown("rolling")}
-            dimmed={isExhaustedWindow(u.weekly, row.stale, now) || isExhaustedWindow(u.monthly, row.stale, now)}
+            dimmed={
+              isExhaustedWindow(u.weekly, row.stale, now) ||
+              isExhaustedWindow(u.monthly, row.stale, now)
+            }
             increased={increased("rolling")}
             reset={reset("rolling", primary)}
           />
@@ -177,12 +191,23 @@ export function CursorCard({
           <CachedHint slot={slot} />
         </>
       }
-      badges={c?.planName ? <Badge scope="w" tone="blue">{c.planName}</Badge> : null}
+      badges={
+        c?.planName ? (
+          <Badge scope="w" tone="blue">
+            {c.planName}
+          </Badge>
+        ) : null
+      }
     >
       {c ? (
         <>
           <div className="flex gap-2">
-            <Meter label="First Party" name="First-party usage" percent={c.autoPercentUsed} unknown={cyclePassed} />
+            <Meter
+              label="First Party"
+              name="First-party usage"
+              percent={c.autoPercentUsed}
+              unknown={cyclePassed}
+            />
             <Meter label="API" name="API usage" percent={c.apiPercentUsed} unknown={cyclePassed} />
           </div>
           {c.billingCycleEnd && !cyclePassed && (
@@ -228,7 +253,13 @@ export function GrokCard({
           <CachedHint slot={slot} />
         </>
       }
-      badges={plan ? <Badge scope="w" tone="blue">{plan}</Badge> : null}
+      badges={
+        plan ? (
+          <Badge scope="w" tone="blue">
+            {plan}
+          </Badge>
+        ) : null
+      }
     >
       {g ? (
         <>
@@ -329,8 +360,7 @@ export function ClaudeCard({
   const windowUnknown = (w: ClaudeUsage["fiveHour"] | undefined) =>
     w?.percent == null || (slot.stale && isPassed(w.resetsAt, now));
   const exhausted =
-    !!c &&
-    [c.fiveHour, c.weekly].some((w) => !windowUnknown(w) && (w.percent ?? 0) >= 100);
+    !!c && [c.fiveHour, c.weekly].some((w) => !windowUnknown(w) && (w.percent ?? 0) >= 100);
   return (
     <Card
       label={`Claude ${title}`}

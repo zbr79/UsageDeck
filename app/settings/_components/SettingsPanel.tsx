@@ -86,7 +86,11 @@ export default function SettingsPanel({ onClose }: { onClose: () => void }) {
           {!settings ? (
             <p className="px-5 text-sm text-(--p-muted)">Loading…</p>
           ) : mainTab === "general" ? (
-            <TabPanel idPrefix="main" id="general" className="flex-1 overflow-y-auto no-scrollbar px-5 pb-5">
+            <TabPanel
+              idPrefix="main"
+              id="general"
+              className="flex-1 overflow-y-auto no-scrollbar px-5 pb-5"
+            >
               <GeneralTab settings={settings} update={update} />
             </TabPanel>
           ) : (
@@ -101,7 +105,6 @@ export default function SettingsPanel({ onClose }: { onClose: () => void }) {
                   id: t.id,
                   label: (
                     <>
-                      {/* eslint-disable-next-line @next/next/no-img-element -- tiny local icons */}
                       <img
                         src={t.icon}
                         alt=""
@@ -112,7 +115,11 @@ export default function SettingsPanel({ onClose }: { onClose: () => void }) {
                   ),
                 }))}
               />
-              <TabPanel idPrefix="acct" id={accountTab} className="flex-1 overflow-y-auto no-scrollbar px-5 pb-5">
+              <TabPanel
+                idPrefix="acct"
+                id={accountTab}
+                className="flex-1 overflow-y-auto no-scrollbar px-5 pb-5"
+              >
                 {accountTab === "opencode" ? (
                   <OpenCodeAccounts
                     accounts={summaries.accounts}
@@ -122,7 +129,12 @@ export default function SettingsPanel({ onClose }: { onClose: () => void }) {
                     reload={summaries.reloadAccounts}
                   />
                 ) : (
-                  <ProviderPanel id={accountTab} summaries={summaries} settings={settings} update={update} />
+                  <ProviderPanel
+                    id={accountTab}
+                    summaries={summaries}
+                    settings={settings}
+                    update={update}
+                  />
                 )}
               </TabPanel>
             </TabPanel>

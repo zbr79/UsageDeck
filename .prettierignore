@@ -1,0 +1,13 @@
+node_modules
+.next
+.next-e2e
+desktop/node_modules
+data
+test-results
+playwright-report
+tests/.e2e-data
+tests/e2e/*-snapshots
+package-lock.json
+desktop/package-lock.json
+public
+*.md
