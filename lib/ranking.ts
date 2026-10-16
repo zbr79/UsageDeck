@@ -1,3 +1,4 @@
+import { formatDuration } from "./format";
 import type { OpenCodeAccountUsage, OpenCodeUsage, UsageWindow } from "./types";
 
 // Ranking rules for OpenCode accounts on the widget:
@@ -59,6 +60,28 @@ export function rankAccounts(
 export const WINDOW_KEYS = ["rolling", "weekly", "monthly"] as const;
 
 /** Windows whose usage went up between two snapshots. */
+/** Compact week/month status for a settings row. Null once the window has reset. */
+export function resetLabel(
+  shortName: string,
+  longName: string,
+  window: UsageWindow | null | undefined,
+  stale: boolean,
+  now = Date.now(),
+): { text: string; title: string; full: boolean } | null {
+  if (!window?.resetsAt || isUnknownWindow(window, stale, now)) return null;
+  const ms = new Date(window.resetsAt).getTime() - now;
+  if (!Number.isFinite(ms) || ms <= 0) return null;
+  const full = isExhaustedWindow(window, stale, now);
+  const left = formatDuration(ms, 1);
+  return {
+    text: full ? `${shortName} full ${left}` : `${shortName} ${left}`,
+    title: full
+      ? `${longName} is used up and resets in ${formatDuration(ms, 2)}`
+      : `${longName} resets in ${formatDuration(ms, 2)}`,
+    full,
+  };
+}
+
 export function increasedWindows(
   cur: OpenCodeUsage,
   prev: OpenCodeUsage | null,

@@ -54,6 +54,36 @@ describe("OpenCode getUsage", () => {
     expect(r.usage).toBeNull();
   });
 
+  it("encrypts plaintext keys on read and hands callers the plaintext", async () => {
+    const fs = await import("node:fs/promises");
+    const { dataFile } = await import("@/lib/paths");
+    await fs.mkdir(process.env.USAGE_DATA_DIR!, { recursive: true });
+    await fs.writeFile(
+      dataFile("accounts.json"),
+      JSON.stringify([{ email: "a@x.com", key: "sk-secret" }]),
+    );
+    const { getAccounts, keyHint, updateAccounts } = await import("@/lib/opencode");
+
+    const accounts = await getAccounts();
+    expect(accounts).toEqual([{ email: "a@x.com", key: "sk-secret" }]);
+    expect(keyHint(accounts[0].key)).toBe("sk-…cret");
+
+    const sealed = JSON.parse(await fs.readFile(dataFile("accounts.json"), "utf8")) as {
+      key: string;
+    }[];
+    expect(sealed[0].key.startsWith("enc:v1:")).toBe(true);
+    expect(sealed[0].key.includes("sk-secret")).toBe(false);
+
+    expect(await getAccounts()).toEqual([{ email: "a@x.com", key: "sk-secret" }]);
+    await updateAccounts((list) => [...list, { email: "b@x.com", key: "sk-otherkey" }]);
+    const after = await getAccounts();
+    expect(after.map((a) => a.key)).toEqual(["sk-secret", "sk-otherkey"]);
+    const sealedAgain = JSON.parse(await fs.readFile(dataFile("accounts.json"), "utf8")) as {
+      key: string;
+    }[];
+    expect(sealedAgain.every((a) => a.key.startsWith("enc:v1:"))).toBe(true);
+  });
+
   it("refetches immediately when the key changes", async () => {
     const fetch = vi.fn(async () => jsonResponse(usage(1)));
     vi.stubGlobal("fetch", fetch);

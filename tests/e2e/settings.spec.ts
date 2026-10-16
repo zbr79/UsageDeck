@@ -83,12 +83,13 @@ test("nickname saves once on Enter, not on every blur", async ({ page }) => {
 test("adding an account validates the key and posts it", async ({ page }) => {
   const { seen, dialog } = await openSettings(page);
   await dialog.getByRole("button", { name: "Add", exact: true }).click();
-  await dialog.getByLabel("Email or label").fill("new@example.com");
-  await dialog.getByLabel("API key").fill("not-a-key");
-  await dialog.getByRole("button", { name: "Add account" }).click();
+  const add = page.getByRole("dialog", { name: "Add OpenCode account" });
+  await add.getByLabel("Email or label").fill("new@example.com");
+  await add.getByLabel("API key").fill("not-a-key");
+  await add.getByRole("button", { name: "Add account" }).click();
   expect(seen.some((r) => r.method === "POST" && r.path === "/api/accounts")).toBe(false);
-  await dialog.getByLabel("API key").fill("sk-new-key");
-  await dialog.getByRole("button", { name: "Add account" }).click();
+  await add.getByLabel("API key").fill("sk-new-key");
+  await add.getByRole("button", { name: "Add account" }).click();
   await expect(page.getByText("Account added")).toBeVisible();
   expect(seen.find((r) => r.method === "POST" && r.path === "/api/accounts")?.body).toEqual({
     email: "new@example.com",

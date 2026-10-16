@@ -7,11 +7,13 @@ const {
   desktopCapturer,
   dialog,
   session,
+  shell,
 } = require("electron");
-const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { appendRotatedLog } = require("./log");
+const { createServerManager } = require("./server-manager");
 
 const APP_ROOT = path.resolve(__dirname, "..");
 const ORIGIN = "http://127.0.0.1:3100";
@@ -26,9 +28,9 @@ const SETTINGS_FILE = path.join(DATA_DIR, "settings.json");
 let win = null;
 let settingsWin = null;
 let dragOffset = null;
-let serverChild = null;
-let spawnedServer = false;
 let usageSecret = "";
+let logFile = "";
+let stopServer = () => {};
 
 // One widget at a time: a second launch just surfaces the existing one
 // (otherwise quitting either instance would kill the shared server).
@@ -113,49 +115,6 @@ function ensureSecret() {
   } catch {
     usageSecret = crypto.randomBytes(32).toString("hex");
   }
-}
-
-async function serverIsUp() {
-  try {
-    const res = await fetch(WIDGET_URL, { signal: AbortSignal.timeout(2000) });
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
-
-function startServer() {
-  serverChild = spawn("cmd.exe", ["/c", "npm run start"], {
-    cwd: APP_ROOT,
-    stdio: "ignore",
-    windowsHide: true,
-  });
-  spawnedServer = true;
-}
-
-function stopServer() {
-  if (!spawnedServer || !serverChild) return;
-  const pid = serverChild.pid;
-  serverChild = null;
-  spawnedServer = false;
-  if (!pid) return;
-  try {
-    spawn("taskkill", ["/pid", String(pid), "/f", "/t"], {
-      windowsHide: true,
-      stdio: "ignore",
-    });
-  } catch {
-    // ignore
-  }
-}
-
-async function waitForServer(timeoutMs = 60000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await serverIsUp()) return true;
-    await new Promise((r) => setTimeout(r, 1000));
-  }
-  return false;
 }
 
 function createWindow() {
@@ -249,6 +208,12 @@ function showMenu() {
     },
     { label: "Refresh", click: () => win?.webContents.send("widget-refresh") },
     { label: "Settings", click: () => openSettingsOverlay() },
+    {
+      label: "Open log folder",
+      click: () => {
+        if (logFile) void shell.openPath(path.dirname(logFile));
+      },
+    },
     { type: "separator" },
     { label: "Quit", click: () => app.quit() },
   ]).popup({ window: win });
@@ -346,13 +311,11 @@ function startBgSampler() {
   const tick = async () => {
     let delay = 5000;
     // Only the "auto" theme needs screen sampling; light/white/dark are static.
-    if (readThemeMode() === "auto") {
+    if (readThemeMode() === "auto" && win && !win.isDestroyed() && win.isVisible()) {
       delay = 3000;
       try {
-        if (win && !win.isDestroyed() && win.isVisible()) {
-          const avg = await sampleBackground();
-          if (avg != null) win.webContents.send("widget-bg", avg);
-        }
+        const avg = await sampleBackground();
+        if (avg != null) win.webContents.send("widget-bg", avg);
       } catch {
         // ignore sampling errors
       }
@@ -373,15 +336,38 @@ app.whenReady().then(async () => {
     cb(permission === "clipboard-sanitized-write" && isAppUrl(wc.getURL()));
   });
   ensureSecret();
-  if (!(await serverIsUp())) startServer();
-  if (await waitForServer()) {
+  logFile = path.join(app.getPath("userData"), "logs", "main.log");
+  const log = (level, message) =>
+    appendRotatedLog(logFile, `${new Date().toISOString()} [${level}] ${message}`);
+  const server = createServerManager({
+    appRoot: APP_ROOT,
+    widgetUrl: WIDGET_URL,
+    log,
+    getWindow: () => win,
+  });
+  stopServer = () => server.stop();
+  log("INFO", "Widget starting");
+
+  const probe = await server.probe();
+  if (probe === "other") {
+    dialog.showErrorBox(
+      "Provider Usage Monitor",
+      "Port 3100 is already used by another program. Close that program, then open Provider Usage Monitor again.",
+    );
+    app.quit();
+    return;
+  }
+  if (probe === "down") server.start();
+  if (await server.waitFor()) {
     createWindow();
     startBgSampler();
   } else {
+    server.stop();
     dialog.showErrorBox(
       "Provider Usage Monitor",
       `The local server did not start on ${ORIGIN} within 60 seconds.\n\n` +
-        "Run `npm run build` in the project folder, then launch the widget again.",
+        "Run `npm run build` in the project folder, then launch the widget again.\n" +
+        `The log is in ${path.dirname(logFile)}.`,
     );
     app.quit();
   }

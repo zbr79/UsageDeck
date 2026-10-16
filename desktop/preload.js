@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld("widget", {
   onToggleExpand: (cb) => listen("widget-toggle-expand", () => cb()),
   onRefresh: (cb) => listen("widget-refresh", () => cb()),
   onSettingsChanged: (cb) => listen("widget-settings-changed", () => cb()),
+  onServerStatus: (cb) => listen("widget-server-status", cb),
   showMenu: () => ipcRenderer.send("widget-show-menu"),
   startDrag: (sx, sy) => ipcRenderer.send("widget-drag-start", sx, sy),
   moveDrag: (sx, sy) => ipcRenderer.send("widget-drag-move", sx, sy),

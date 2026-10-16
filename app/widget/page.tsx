@@ -13,6 +13,8 @@ import { nextBrightness, resolveWidgetTheme } from "./_lib/theme";
 import { useWidgetData } from "./_lib/useWidgetData";
 
 const WIDTH = 238;
+/** Reset text is minute-resolution, so the whole panel does not re-render every second. */
+const CLOCK_MS = 60_000;
 
 async function copyKey(email: string) {
   try {
@@ -52,7 +54,7 @@ export default function WidgetPage() {
   const vars = useMemo(() => cssVars("w", WIDGET_PALETTES[theme]), [theme]);
 
   useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 1000);
+    const id = setInterval(() => setNow(Date.now()), CLOCK_MS);
     return () => clearInterval(id);
   }, []);
 

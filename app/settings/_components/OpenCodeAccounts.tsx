@@ -5,7 +5,7 @@ import { Badge, IconButton, Switch } from "@/app/_ui/controls";
 import Dialog from "@/app/_ui/Dialog";
 import { CloseIcon, GearIcon, PencilIcon, TrashIcon } from "@/app/_ui/Icons";
 import { toastSuccess } from "@/app/components/toast/toast";
-import { formatDuration } from "@/lib/format";
+import { resetLabel } from "@/lib/ranking";
 import type { OpenCodeAccountSummary, OpenCodeAccountUsage, Settings } from "@/lib/types";
 import { removeAccount, saveAccount } from "../_lib/hooks";
 import { inputClass, NicknameField, primaryButton, secondaryButton } from "./fields";
@@ -17,22 +17,26 @@ function ResetBadges({ usage, now }: { usage: OpenCodeAccountUsage | undefined; 
   const cachedNote = usage.stale
     ? ` · last known ${usage.cachedAt ? new Date(usage.cachedAt).toLocaleString() : ""}`
     : "";
-  const pill = (label: string, name: string, iso: string | undefined) => {
-    const ms = iso ? new Date(iso).getTime() - now : NaN;
-    if (!Number.isFinite(ms) || ms <= 0) return null;
-    return (
-      <Badge
-        tone={usage.stale ? "gray" : "blue"}
-        title={`${name} resets in ${formatDuration(ms, 2)}${cachedNote}`}
-      >
-        {label} {formatDuration(ms, 1)}
-      </Badge>
-    );
-  };
+  const weekly = resetLabel("W", "Weekly", usage.usage?.weekly, usage.stale, now);
+  const monthly = resetLabel("M", "Monthly", usage.usage?.monthly, usage.stale, now);
   return (
     <>
-      {pill("W", "Weekly", usage.usage?.weekly.resetsAt)}
-      {pill("M", "Monthly", usage.usage?.monthly.resetsAt)}
+      {weekly && (
+        <Badge
+          tone={weekly.full ? "red" : usage.stale ? "gray" : "blue"}
+          title={`${weekly.title}${cachedNote}`}
+        >
+          {weekly.text}
+        </Badge>
+      )}
+      {monthly && (
+        <Badge
+          tone={monthly.full ? "red" : usage.stale ? "gray" : "blue"}
+          title={`${monthly.title}${cachedNote}`}
+        >
+          {monthly.text}
+        </Badge>
+      )}
       {usage.stale && (
         <Badge tone="gray" title={`Showing last known data${cachedNote}`}>
           cached
@@ -42,7 +46,8 @@ function ResetBadges({ usage, now }: { usage: OpenCodeAccountUsage | undefined; 
   );
 }
 
-function AddAccountForm({ onAdded }: { onAdded: () => void }) {
+function AddAccountDialog({ onClose, onAdded }: { onClose: () => void; onAdded: () => void }) {
+  const titleId = useId();
   const emailId = useId();
   const keyId = useId();
   const [email, setEmail] = useState("");
@@ -53,44 +58,59 @@ function AddAccountForm({ onAdded }: { onAdded: () => void }) {
     setBusy(true);
     if (await saveAccount(email.trim(), key.trim())) {
       toastSuccess("Account added");
-      setEmail("");
-      setKey("");
       onAdded();
+      onClose();
     }
     setBusy(false);
   };
   return (
-    <form onSubmit={submit} className="grid grid-cols-[auto_1fr] items-center gap-2 mb-3">
-      <label htmlFor={emailId} className="text-xs text-(--p-muted)">
-        Email or label
-      </label>
-      <input
-        id={emailId}
-        value={email}
-        onChange={(e) => setEmail(e.target.value)}
-        required
-        maxLength={320}
-        className={inputClass}
-      />
-      <label htmlFor={keyId} className="text-xs text-(--p-muted)">
-        API key
-      </label>
-      <input
-        id={keyId}
-        type="password"
-        autoComplete="off"
-        value={key}
-        onChange={(e) => setKey(e.target.value)}
-        placeholder="sk-…"
-        required
-        pattern="sk-\S+"
-        title="An OpenCode key starting with sk-"
-        className={`${inputClass} font-mono`}
-      />
-      <button type="submit" disabled={busy} className={`col-span-2 ${primaryButton}`}>
-        {busy ? "Adding…" : "Add account"}
-      </button>
-    </form>
+    <Dialog labelledBy={titleId} onClose={onClose}>
+      <form
+        onSubmit={submit}
+        className="bg-(--p-bg) rounded-xl shadow-2xl w-[420px] border border-(--p-border) p-5"
+      >
+        <h3 id={titleId} className="text-base font-bold mb-4">
+          Add OpenCode account
+        </h3>
+        <div className="grid grid-cols-[auto_1fr] items-center gap-2">
+          <label htmlFor={emailId} className="text-xs text-(--p-muted)">
+            Email or label
+          </label>
+          <input
+            id={emailId}
+            data-autofocus
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            required
+            maxLength={320}
+            className={inputClass}
+          />
+          <label htmlFor={keyId} className="text-xs text-(--p-muted)">
+            API key
+          </label>
+          <input
+            id={keyId}
+            type="password"
+            autoComplete="off"
+            value={key}
+            onChange={(e) => setKey(e.target.value)}
+            placeholder="sk-…"
+            required
+            pattern="sk-\S+"
+            title="An OpenCode key starting with sk-"
+            className={`${inputClass} font-mono`}
+          />
+        </div>
+        <div className="flex gap-2 justify-end mt-4">
+          <button type="button" onClick={onClose} className={secondaryButton}>
+            Cancel
+          </button>
+          <button type="submit" disabled={busy} className={primaryButton}>
+            {busy ? "Adding…" : "Add account"}
+          </button>
+        </div>
+      </form>
+    </Dialog>
   );
 }
 
@@ -262,17 +282,13 @@ export default function OpenCodeAccounts({
     <div>
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-sm font-medium text-(--p-textSecondary)">Accounts</h3>
-        <button
-          type="button"
-          onClick={() => setAdding((a) => !a)}
-          aria-expanded={adding}
-          className={adding ? secondaryButton : primaryButton}
-        >
-          {adding ? "Cancel" : "Add"}
+        <button type="button" onClick={() => setAdding(true)} className={primaryButton}>
+          Add
         </button>
       </div>
       {adding && (
-        <AddAccountForm
+        <AddAccountDialog
+          onClose={() => setAdding(false)}
           onAdded={() => {
             setAdding(false);
             void reload();

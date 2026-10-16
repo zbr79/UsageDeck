@@ -137,6 +137,10 @@ export function useWidgetData() {
     const offs = [
       w?.onSettingsChanged(() => void load()),
       w?.onRefresh(() => void load()),
+      w?.onServerStatus((status) => {
+        if (status.state === "online") void load();
+        else setData((prev) => ({ ...prev, offline: true }));
+      }),
       onSettingsChanged(() => void load()),
     ];
     return () => {

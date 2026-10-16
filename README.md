@@ -58,15 +58,18 @@ npm run build
 ```
 
 Then start the widget with `desktop/widget-launcher.vbs` (create a shortcut to it via `wscript.exe`
-for one-click launch). The widget starts the server itself if it isn't already running; if the
-server can't start within 60 seconds it shows an error telling you to run `npm run build`.
+for one-click launch). The widget starts the server itself if it isn't already running. If that
+server exits, the window stays open and restarts it with backoff. If the server can't start within
+60 seconds it shows an error telling you to run `npm run build`. The desktop log is
+`%APPDATA%\provider-usage-widget\logs\main.log` (widget menu → Open log folder).
 
 ## Your data
 
 Everything the app stores lives in `data/` (gitignored; override with `USAGE_DATA_DIR`):
 
-- `accounts.json` — OpenCode accounts (`email` + `sk-…` key). The settings panel only ever shows a
-  hint (`sk-…a1b2`); the full key is only sent to the widget's copy-key button.
+- `accounts.json` — OpenCode accounts. Keys are encrypted at rest (`enc:v1:`, AES-256-GCM) with
+  `data/.api-secret`. A plaintext file is encrypted the next time it is read. The settings panel
+  only ever shows a hint (`sk-…a1b2`); the full key is only sent to the widget's copy-key button.
 - `settings.json` — toggles, nicknames, hidden accounts.
 - `usage-cache.json` — last known usage per provider, so the widget has something to show after a
   restart or outage (marked `cached`).

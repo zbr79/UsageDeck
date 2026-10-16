@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { formatAgo, formatDuration, formatPercent, formatUntil } from "@/lib/format";
 import { getPeakInfo } from "@/lib/peak";
-import { increasedWindows, isAccountExhausted, rankAccounts } from "@/lib/ranking";
+import { increasedWindows, isAccountExhausted, rankAccounts, resetLabel } from "@/lib/ranking";
 import type { OpenCodeAccountUsage } from "@/lib/types";
 import { nextBrightness, resolveWidgetTheme } from "@/app/widget/_lib/theme";
 
@@ -41,6 +41,29 @@ describe("formatPercent / formatAgo", () => {
     expect(formatAgo(0, 3 * M)).toBe("3m ago");
     expect(formatAgo(0, 2 * H)).toBe("2h ago");
     expect(formatAgo(0, 3 * D)).toBe("3d ago");
+  });
+});
+
+describe("resetLabel", () => {
+  const now = Date.parse("2026-10-16T00:00:00Z");
+  const window = (percent: number, resetsAt: string, status = "ok") => ({
+    status,
+    percent,
+    resetsAt,
+  });
+  it("shows time remaining, and marks a full window", () => {
+    expect(resetLabel("W", "Weekly", window(20, "2026-10-18T00:00:00Z"), false, now)).toMatchObject(
+      {
+        text: "W 2d",
+        full: false,
+      },
+    );
+    expect(
+      resetLabel("M", "Monthly", window(100, "2026-11-01T00:00:00Z"), false, now),
+    ).toMatchObject({ text: "M full 16d", full: true });
+  });
+  it("hides a stale window whose reset has already passed", () => {
+    expect(resetLabel("W", "Weekly", window(0, "2026-10-01T00:00:00Z"), true, now)).toBeNull();
   });
 });
 

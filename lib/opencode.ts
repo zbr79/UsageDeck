@@ -1,6 +1,8 @@
+import { decryptKey, encryptKey, isEncryptedKey } from "./key-crypto";
 import { dataFile } from "./paths";
 import { readJson, withLock, writeJsonAtomic } from "./fs-atomic";
 import { createProvider, type ProviderResult } from "./provider-cache";
+import { getOrCreateSecret } from "./secret";
 import type { OpenCodeUsage, UsageWindow } from "./types";
 
 export type { OpenCodeUsage as Usage, UsageWindow } from "./types";
@@ -18,16 +20,62 @@ function isAccount(value: unknown): value is Account {
   return !!a && typeof a.email === "string" && typeof a.key === "string";
 }
 
-export async function getAccounts(): Promise<Account[]> {
+async function readStored(): Promise<Account[]> {
   const parsed = await readJson(dataFile(ACCOUNTS_FILE));
   return Array.isArray(parsed) ? parsed.filter(isAccount) : [];
 }
 
-/** Read-modify-write the account list under a lock, written atomically. */
+/**
+ * Decrypt for the running process. A leftover plaintext file is sealed on
+ * the way through. A row that cannot be decrypted is left on disk and omitted
+ * from the usable list, so a bad secret cannot wipe the file or be sent as a key.
+ */
+async function loadPlain(): Promise<Account[]> {
+  const secret = await getOrCreateSecret();
+  const stored = await readStored();
+  const usable: Account[] = [];
+  const sealed: Account[] = [];
+  let migrated = false;
+  for (const account of stored) {
+    if (!isEncryptedKey(account.key)) {
+      migrated = true;
+      usable.push(account);
+      sealed.push({ email: account.email, key: encryptKey(account.key, secret) });
+      continue;
+    }
+    try {
+      usable.push({ email: account.email, key: decryptKey(account.key, secret) });
+      sealed.push(account);
+    } catch {
+      sealed.push(account);
+    }
+  }
+  if (migrated) await writeJsonAtomic(dataFile(ACCOUNTS_FILE), sealed, 0o600);
+  return usable;
+}
+
+async function storePlain(accounts: Account[]): Promise<void> {
+  const secret = await getOrCreateSecret();
+  await writeJsonAtomic(
+    dataFile(ACCOUNTS_FILE),
+    accounts.map((account) => ({
+      email: account.email,
+      key: encryptKey(account.key, secret),
+    })),
+    0o600,
+  );
+}
+
+/** Accounts with usable plaintext keys. Callers never see ciphertext. */
+export function getAccounts(): Promise<Account[]> {
+  return withLock(ACCOUNTS_FILE, loadPlain);
+}
+
+/** Read-modify-write the account list under a lock, written atomically and encrypted. */
 export function updateAccounts(change: (accounts: Account[]) => Account[]): Promise<Account[]> {
   return withLock(ACCOUNTS_FILE, async () => {
-    const next = change(await getAccounts());
-    await writeJsonAtomic(dataFile(ACCOUNTS_FILE), next, 0o600);
+    const next = change(await loadPlain());
+    await storePlain(next);
     return next;
   });
 }
