@@ -1,6 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
-import { mockApi, setupWidget } from "./fixtures";
+import { mockApi, providers, setupWidget } from "./fixtures";
 
 test.use({ viewport: { width: 1000, height: 760 } });
 
@@ -39,11 +39,13 @@ test("theme choices are a radio group", async ({ page }) => {
   const { seen, dialog } = await openSettings(page);
   await dialog.getByRole("tab", { name: "General" }).click();
   const group = dialog.getByRole("radiogroup", { name: "Widget theme" });
-  await group.getByRole("radio", { name: "white" }).click();
-  await expect(group.getByRole("radio", { name: "white" })).toHaveAttribute("aria-checked", "true");
-  expect(
-    seen.some((r) => r.method === "POST" && JSON.stringify(r.body) === '{"themeMode":"white"}'),
-  ).toBe(true);
+  await group.getByRole("radio", { name: "light" }).click();
+  await expect(group.getByRole("radio", { name: "light" })).toHaveAttribute("aria-checked", "true");
+  await expect
+    .poll(() =>
+      seen.some((r) => r.method === "POST" && JSON.stringify(r.body) === '{"themeMode":"light"}'),
+    )
+    .toBe(true);
 });
 
 test("account details show a key hint and never fetch the full key", async ({ page }) => {
@@ -78,6 +80,73 @@ test("nickname saves once on Enter, not on every blur", async ({ page }) => {
   await expect(detail.getByText("✓ saved")).toBeVisible();
   const posts = seen.filter((r) => r.method === "POST" && r.path === "/api/settings");
   expect(posts.map((p) => p.body)).toEqual([{ displayNames: { "main@example.com": "Primary" } }]);
+});
+
+test("dragging a provider tab left moves it earlier in the order", async ({ page }) => {
+  const { seen, dialog } = await openSettings(page);
+  const providers = dialog.getByRole("tablist", { name: "Providers" });
+  await expect(dialog.getByText("Drag up or down to reorder on the widget")).toBeVisible();
+  const claude = providers.getByRole("tab", { name: "Claude" });
+  const opencode = providers.getByRole("tab", { name: "OpenCode" });
+  const from = await claude.boundingBox();
+  const to = await opencode.boundingBox();
+  expect(from).not.toBeNull();
+  expect(to).not.toBeNull();
+  await page.mouse.move(from!.x + from!.width / 2, from!.y + from!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(to!.x + to!.width / 2, to!.y + to!.height / 2, { steps: 5 });
+  await expect(providers.locator("[data-reorder-preview]")).toHaveCount(1);
+  await page.mouse.up();
+  expect(seen.find((r) => r.method === "POST" && r.path === "/api/settings")?.body).toEqual({
+    providerOrder: ["claude", "opencode", "cursor", "grok", "codex"],
+  });
+  await expect(providers.getByRole("tab").first()).toContainText("Claude");
+});
+
+test("a Cursor account can be nicknamed and hidden on its own", async ({ page }) => {
+  const current = providers.cursor.accounts[0];
+  const { seen, dialog } = await openSettings(page, {
+    providers: {
+      cursor: {
+        accounts: [
+          current,
+          {
+            ...current,
+            id: "other@example.com",
+            label: "other@example.com",
+            active: false,
+            stale: true,
+          },
+        ],
+      },
+    },
+  });
+  await dialog.getByRole("tab", { name: "Cursor" }).click();
+  await expect(dialog.getByText("dev@example.com")).toBeVisible();
+  await expect(dialog.getByText("other@example.com")).toBeVisible();
+  await expect(dialog.getByText("in use")).toHaveCount(0);
+  await dialog.getByRole("button", { name: "Details for other@example.com" }).click();
+  const detail = page.getByRole("dialog", { name: "Cursor" });
+  await detail.getByRole("switch", { name: "Show this account" }).click();
+  await detail.getByLabel("Nickname").fill("Alt");
+  await detail.getByLabel("Nickname").press("Enter");
+  await expect(detail.getByText("✓ saved")).toBeVisible();
+  const posts = seen.filter((r) => r.method === "POST" && r.path === "/api/settings");
+  expect(posts.map((p) => p.body)).toEqual([
+    { disabledAccounts: ["hidden@example.com", "cursor:other@example.com"] },
+    { displayNames: { "cursor:other@example.com": "Alt" } },
+  ]);
+});
+
+test("OpenCode can be hidden from the widget as a whole", async ({ page }) => {
+  const { seen, dialog } = await openSettings(page);
+  const sw = dialog.getByRole("switch", { name: "Show on widget" });
+  await expect(sw).toHaveAttribute("aria-checked", "true");
+  await sw.click();
+  await expect(sw).toHaveAttribute("aria-checked", "false");
+  expect(seen.find((r) => r.method === "POST" && r.path === "/api/settings")?.body).toEqual({
+    opencodeEnabled: false,
+  });
 });
 
 test("adding an account validates the key and posts it", async ({ page }) => {

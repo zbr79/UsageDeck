@@ -32,8 +32,9 @@ All in `data/` (gitignored), or `USAGE_DATA_DIR` if set:
 | File               | Contents                                     | Notes                                                              |
 | ------------------ | -------------------------------------------- | ------------------------------------------------------------------ |
 | `accounts.json`    | OpenCode account labels and `sk-…` API keys  | Plain JSON, protected by your Windows account's file permissions   |
-| `settings.json`    | Toggles, nicknames, hidden accounts          | Validated server-side; unknown fields ignored                      |
-| `usage-cache.json` | Last known usage, account emails/plan names  | Shown as `cached` when providers are unreachable                   |
+| `settings.json`      | Toggles, nicknames, hidden accounts          | Validated server-side; unknown fields ignored                      |
+| `seen-accounts.json` | Emails of provider accounts already seen     | No tokens. Lets a switched-away account stay listed                |
+| `usage-cache.json`   | Last known usage, account emails/plan names  | Shown as `cached` when providers are unreachable                   |
 | `.api-secret`      | 256-bit random secret                        | Shared by the Electron shell and the server                        |
 
 Writes are atomic (temp file + rename) and serialised per file.

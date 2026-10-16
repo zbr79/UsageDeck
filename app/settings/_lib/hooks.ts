@@ -11,8 +11,8 @@ import type {
   GrokUsage,
   OpenCodeAccountSummary,
   OpenCodeAccountUsage,
-  ProviderResponse,
   Settings,
+  TrackedAccount,
 } from "@/lib/types";
 
 /**
@@ -66,10 +66,10 @@ export function useSettings() {
 export interface Summaries {
   accounts: OpenCodeAccountSummary[] | null;
   usage: Record<string, OpenCodeAccountUsage>;
-  cursor: ProviderResponse<CursorUsage> | null;
-  grok: ProviderResponse<GrokUsage> | null;
-  codex: ProviderResponse<CodexUsage> | null;
-  claude: ProviderResponse<ClaudeUsage> | null;
+  cursor: { accounts: TrackedAccount<CursorUsage>[] } | null;
+  grok: { accounts: TrackedAccount<GrokUsage>[] } | null;
+  codex: { accounts: TrackedAccount<CodexUsage>[] } | null;
+  claude: { accounts: TrackedAccount<ClaudeUsage>[] } | null;
 }
 
 /** Fetch the account list + usage; resolves to a state updater. */

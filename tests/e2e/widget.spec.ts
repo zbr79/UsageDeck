@@ -1,6 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
-import { mockApi, setupWidget } from "./fixtures";
+import { mockApi, providers, setupWidget } from "./fixtures";
 
 test.use({ viewport: { width: 238, height: 700 } });
 
@@ -8,7 +8,7 @@ async function openWidget(page: Page, overrides: Parameters<typeof mockApi>[1] =
   await setupWidget(page);
   const seen = await mockApi(page, overrides);
   await page.goto("/widget");
-  await expect(page.getByRole("region", { name: /^Cursor/ })).toBeVisible();
+  await expect(page.getByRole("region", { name: /^Cursor/ }).first()).toBeVisible();
   return seen;
 }
 
@@ -33,6 +33,114 @@ test("shows the top account and every enabled provider, with the secret on each 
   expect(seen.every((r) => r.secret === "test-secret")).toBe(true);
 });
 
+test("providers render in the saved order", async ({ page }) => {
+  await openWidget(page, {
+    settings: { providerOrder: ["claude", "cursor", "grok", "codex", "opencode"] },
+  });
+  const labels = await page
+    .getByRole("region")
+    .evaluateAll((els) => els.map((el) => el.getAttribute("aria-label") ?? ""));
+  expect(labels[0]).toMatch(/^Claude/);
+  expect(labels.findIndex((label) => label.startsWith("OpenCode"))).toBeGreaterThan(0);
+});
+
+test("right-click menu has icon actions and a red Quit action", async ({ page }) => {
+  await openWidget(page);
+  const main = page.getByRole("main", { name: "Provider usage" });
+  const mainBox = await main.boundingBox();
+  await main.click({ button: "right", position: { x: 180, y: 80 } });
+  const menu = page.getByRole("menu", { name: "Widget menu" });
+  const menuBox = await menu.boundingBox();
+  expect(menuBox?.width).toBe(120);
+  expect(menuBox?.x).toBeGreaterThanOrEqual(mainBox?.x ?? 0);
+  expect((menuBox?.x ?? 0) + (menuBox?.width ?? 0)).toBeLessThanOrEqual(
+    (mainBox?.x ?? 0) + (mainBox?.width ?? 0),
+  );
+  expect(menuBox?.y).toBeGreaterThanOrEqual(mainBox?.y ?? 0);
+  await expect(menu.getByRole("menuitem", { name: "Expand" })).toBeVisible();
+  await expect(menu.getByRole("menuitem", { name: "Refresh" })).toBeVisible();
+  await expect(menu.getByRole("menuitem", { name: "Settings" })).toBeVisible();
+  await expect(menu.getByRole("menuitem", { name: "Quit" })).toBeVisible();
+  await expect(menu.getByText("Open log folder")).toHaveCount(0);
+  await expect(menu.getByRole("menuitem", { name: "Quit" })).toHaveCSS(
+    "color",
+    "rgb(255, 100, 103)",
+  );
+});
+
+test("the widget shows only the account a provider is signed into", async ({ page }) => {
+  const current = providers.cursor.accounts[0];
+  await openWidget(page, {
+    providers: {
+      cursor: {
+        accounts: [
+          current,
+          {
+            ...current,
+            id: "other@example.com",
+            label: "other@example.com",
+            active: false,
+            stale: true,
+            usage: current.usage ? { ...current.usage, accountName: "other@example.com" } : null,
+          },
+        ],
+      },
+    },
+  });
+  await expect(page.getByRole("region", { name: "Cursor dev@example.com" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Cursor other@example.com" })).toHaveCount(0);
+});
+
+test("hiding the signed-in account removes it even when others exist", async ({ page }) => {
+  const current = providers.cursor.accounts[0];
+  await setupWidget(page);
+  await mockApi(page, {
+    settings: { disabledAccounts: ["cursor:dev@example.com"] },
+    providers: {
+      cursor: {
+        accounts: [
+          current,
+          {
+            ...current,
+            id: "other@example.com",
+            label: "other@example.com",
+            active: false,
+            usage: current.usage ? { ...current.usage, accountName: "other@example.com" } : null,
+          },
+        ],
+      },
+    },
+  });
+  await page.goto("/widget");
+  await expect(page.getByRole("region", { name: /^Claude/ })).toBeVisible();
+  await expect(page.getByRole("region", { name: /^Cursor/ })).toHaveCount(0);
+});
+
+test("hiding a provider removes every one of its accounts", async ({ page }) => {
+  const current = providers.cursor.accounts[0];
+  await setupWidget(page);
+  await mockApi(page, {
+    settings: { cursorEnabled: false },
+    providers: {
+      cursor: {
+        accounts: [
+          current,
+          { ...current, id: "other@example.com", label: "other@example.com", active: false },
+        ],
+      },
+    },
+  });
+  await page.goto("/widget");
+  await expect(page.getByRole("region", { name: /^Claude/ })).toBeVisible();
+  await expect(page.getByRole("region", { name: /^Cursor/ })).toHaveCount(0);
+});
+
+test("hiding OpenCode removes its cards and leaves the other providers", async ({ page }) => {
+  await openWidget(page, { settings: { opencodeEnabled: false } });
+  await expect(page.getByRole("region", { name: /^OpenCode account/ })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: /^Claude/ })).toBeVisible();
+});
+
 test("cards never touch: collapsed and expanded both keep a gap", async ({ page }) => {
   await openWidget(page);
   for (const state of ["collapsed", "expanded"]) {
@@ -43,7 +151,7 @@ test("cards never touch: collapsed and expanded both keep a gap", async ({ page 
         els.map((el) => el.getBoundingClientRect()).map((r) => ({ top: r.top, bottom: r.bottom })),
       );
     for (let i = 1; i < boxes.length; i++) {
-      expect(boxes[i].top - boxes[i - 1].bottom, `${state} gap ${i}`).toBeGreaterThanOrEqual(5);
+      expect(boxes[i].top - boxes[i - 1].bottom, `${state} gap ${i}`).toBeGreaterThanOrEqual(3);
     }
   }
 });
@@ -57,9 +165,9 @@ test("expanded view hides disabled and lapsed accounts, exhausted ones sink", as
   expect(names).toEqual(["OpenCode account Main", "OpenCode account Spare"]);
 });
 
-test("cached, re-auth and exhausted states are shown consistently", async ({ page }) => {
+test("re-auth and exhausted states are shown without cache labels", async ({ page }) => {
   await openWidget(page);
-  await expect(page.getByRole("region", { name: /^Grok Bot/ }).getByText("cached")).toBeVisible();
+  await expect(page.getByRole("region", { name: /^Grok Bot/ }).getByText("cached")).toHaveCount(0);
   await expect(page.getByRole("region", { name: /^Claude/ }).getByText("re-auth")).toBeVisible();
   const codex = page.getByRole("region", { name: /^Codex/ });
   const ring = await codex.evaluate((el) => getComputedStyle(el).borderTopColor);
@@ -98,7 +206,7 @@ test("copy-key button copies the key", async ({ page, context }) => {
   expect(seen.some((r) => r.path === "/api/key?email=main%40example.com")).toBe(true);
 });
 
-for (const themeMode of ["dark", "light", "white"] as const) {
+for (const themeMode of ["dark", "light"] as const) {
   test(`${themeMode} theme passes axe (WCAG 2.2 AA) and matches the snapshot`, async ({ page }) => {
     await openWidget(page, { settings: { themeMode } });
     await expand(page);

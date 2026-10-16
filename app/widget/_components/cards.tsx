@@ -12,6 +12,7 @@ import type {
   CursorUsage,
   GrokUsage,
   OpenCodeAccountUsage,
+  ProviderId,
   Settings,
 } from "@/lib/types";
 import type { ProviderSlot } from "../_lib/useWidgetData";
@@ -24,10 +25,28 @@ function nameFor(s: NameSettings, key: string, providerName: string, fallback?: 
   return s.displayNames[key] ?? fallback ?? providerName;
 }
 
-function CachedHint({ slot }: { slot: { stale: boolean; cachedAt: number | null } }) {
-  if (!slot.stale) return null;
-  const when = slot.cachedAt ? new Date(slot.cachedAt).toLocaleString() : null;
-  return <Hint title={when ? `Last known data · ${when}` : "Last known data"}>cached</Hint>;
+/**
+ * Per-account nickname wins. A single account keeps the old title (Cursor
+ * shows the email, the others show the provider name) so one sign-in looks
+ * the same as before. Extra accounts show their own email.
+ */
+export function accountTitle(
+  s: NameSettings,
+  provider: ProviderId,
+  accountId: string | null,
+  providerName: string,
+  label: string | null | undefined,
+  multiple: boolean,
+) {
+  if (s.showProviderNames) return providerName;
+  if (accountId) {
+    const nick = s.displayNames[`${provider}:${accountId}`];
+    if (nick) return nick;
+  }
+  if (multiple && label) return label;
+  if (s.displayNames[provider]) return s.displayNames[provider];
+  if (provider === "cursor" && label) return label;
+  return providerName;
 }
 
 function ReauthHint({ expired, how }: { expired: boolean; how: string }) {
@@ -112,12 +131,7 @@ export function OpenCodeCard({
       }
       title={title}
       titleHint={row.email}
-      hints={
-        <>
-          {peakHint}
-          <CachedHint slot={row} />
-        </>
-      }
+      hints={<>{peakHint}</>}
       badges={
         <Badge scope="w" tone="blue">
           Go
@@ -169,13 +183,26 @@ export function CursorCard({
   slot,
   settings,
   now,
+  accountId = null,
+  accountLabel = null,
+  multiple = false,
 }: {
   slot: ProviderSlot<CursorUsage>;
   settings: Settings;
   now: number;
+  accountId?: string | null;
+  accountLabel?: string | null;
+  multiple?: boolean;
 }) {
   const c = slot.data;
-  const title = nameFor(settings, "cursor", "Cursor", c?.accountName);
+  const title = accountTitle(
+    settings,
+    "cursor",
+    accountId,
+    "Cursor",
+    accountLabel ?? c?.accountName,
+    multiple,
+  );
   const cyclePassed = slot.stale && isPassed(c?.billingCycleEnd, now);
   const exhausted = !!c && !cyclePassed && (c.totalPercentUsed ?? 0) >= 100;
   return (
@@ -188,7 +215,6 @@ export function CursorCard({
       hints={
         <>
           <ReauthHint expired={slot.authExpired} how="open Cursor" />
-          <CachedHint slot={slot} />
         </>
       }
       badges={
@@ -227,13 +253,26 @@ export function GrokCard({
   slot,
   settings,
   now,
+  accountId = null,
+  accountLabel = null,
+  multiple = false,
 }: {
   slot: ProviderSlot<GrokUsage>;
   settings: Settings;
   now: number;
+  accountId?: string | null;
+  accountLabel?: string | null;
+  multiple?: boolean;
 }) {
   const g = slot.data;
-  const title = nameFor(settings, "grok", "Grok Bot");
+  const title = accountTitle(
+    settings,
+    "grok",
+    accountId,
+    "Grok Bot",
+    accountLabel ?? g?.email,
+    multiple,
+  );
   const passed = slot.stale && isPassed(g?.resetAt, now);
   const exhausted = !!g && !passed && (g.percentUsed ?? 0) >= 100;
   const plan = g?.planLabel ?? g?.cursorPlanName;
@@ -250,7 +289,6 @@ export function GrokCard({
       hints={
         <>
           <ReauthHint expired={slot.authExpired} how="open Grok Bot" />
-          <CachedHint slot={slot} />
         </>
       }
       badges={
@@ -282,14 +320,27 @@ export function CodexCard({
   settings,
   now,
   light,
+  accountId = null,
+  accountLabel = null,
+  multiple = false,
 }: {
   slot: ProviderSlot<CodexUsage>;
   settings: Settings;
   now: number;
   light: boolean;
+  accountId?: string | null;
+  accountLabel?: string | null;
+  multiple?: boolean;
 }) {
   const x = slot.data;
-  const title = nameFor(settings, "codex", "Codex");
+  const title = accountTitle(
+    settings,
+    "codex",
+    accountId,
+    "Codex",
+    accountLabel ?? x?.email,
+    multiple,
+  );
   const passed = slot.stale && isPassed(x?.resetAt, now);
   const exhausted = !!x && !passed && (x.limitReached || (x.usedPercent ?? 0) >= 100);
   return (
@@ -302,7 +353,6 @@ export function CodexCard({
       hints={
         <>
           <ReauthHint expired={slot.authExpired} how="run codex" />
-          <CachedHint slot={slot} />
         </>
       }
       badges={
@@ -344,13 +394,26 @@ export function ClaudeCard({
   slot,
   settings,
   now,
+  accountId = null,
+  accountLabel = null,
+  multiple = false,
 }: {
   slot: ProviderSlot<ClaudeUsage>;
   settings: Settings;
   now: number;
+  accountId?: string | null;
+  accountLabel?: string | null;
+  multiple?: boolean;
 }) {
   const c = slot.data;
-  const title = nameFor(settings, "claude", "Claude");
+  const title = accountTitle(
+    settings,
+    "claude",
+    accountId,
+    "Claude",
+    accountLabel ?? c?.email,
+    multiple,
+  );
   const badge = !c
     ? null
     : !c.signedIn
@@ -371,7 +434,6 @@ export function ClaudeCard({
       hints={
         <>
           <ReauthHint expired={slot.authExpired} how="open Claude Code" />
-          <CachedHint slot={slot} />
         </>
       }
       badges={

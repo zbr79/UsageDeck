@@ -1,10 +1,11 @@
 // Shared between the server (lib/, app/api) and the client (widget,
 // settings). Type-only: no runtime imports allowed here.
 
-export type ThemeMode = "auto" | "light" | "dark" | "white";
+export type ThemeMode = "auto" | "light" | "dark";
 export type PanelTheme = "light" | "dark";
 
 export interface Settings {
+  opencodeEnabled: boolean;
   cursorEnabled: boolean;
   grokEnabled: boolean;
   codexEnabled: boolean;
@@ -17,17 +18,34 @@ export interface Settings {
   displayNames: Record<string, string>;
   /** lower-cased OpenCode account emails hidden from the widget */
   disabledAccounts: string[];
+  /** left-to-right provider order, also the top-to-bottom widget order */
+  providerOrder: WidgetProvider[];
 }
 
 export type ProviderId = "cursor" | "grok" | "codex" | "claude";
+/** Providers on the widget, including OpenCode. Order is user-controlled. */
+export type WidgetProvider = "opencode" | ProviderId;
 
-/** JSON shape of every single-provider API route. */
+/** JSON shape of a one-account provider response. */
 export interface ProviderResponse<T> {
   usage: T | null;
   stale: boolean;
   cachedAt: number | null;
   authExpired: boolean;
   error: "failed" | null;
+}
+
+/** One signed-in account of Cursor, Grok Bot, Codex, or Claude. */
+export interface TrackedAccount<T> {
+  id: string;
+  /** email or display name; null when the app didn't share one */
+  label: string | null;
+  /** the account that app is signed into right now */
+  active: boolean;
+  usage: T | null;
+  stale: boolean;
+  cachedAt: number | null;
+  authExpired: boolean;
 }
 
 // ---- OpenCode Go ----------------------------------------------------------

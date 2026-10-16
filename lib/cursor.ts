@@ -1,8 +1,9 @@
 import path from "path";
 import os from "os";
 import { createProvider, type ProviderResult } from "./provider-cache";
+import { collectAccounts } from "./tracked-accounts";
 import { numberOrNull, stringOrNull, toIso } from "./time";
-import type { CursorUsage } from "./types";
+import type { CursorUsage, TrackedAccount } from "./types";
 
 export type { CursorUsage } from "./types";
 
@@ -20,6 +21,12 @@ const PLAN_URL = `${API}/GetPlanInfo`;
 interface CursorState {
   token: string | null;
   accountName: string | null;
+}
+
+interface CursorAccount {
+  id: string;
+  label: string | null;
+  token: string;
 }
 
 let stateCache: { at: number; state: CursorState } | null = null;
@@ -60,6 +67,14 @@ export async function readCursorState(): Promise<CursorState> {
   return state;
 }
 
+/** The account Cursor is signed into now. Cursor keeps only that one token. */
+export async function readCursorAccount(): Promise<CursorAccount | null> {
+  const { token, accountName } = await readCursorState();
+  if (!token) return null;
+  const label = accountName?.trim() || null;
+  return { id: (label ?? "signed-in").toLowerCase(), label, token };
+}
+
 export function cursorHeaders(token: string): Record<string, string> {
   return {
     Authorization: `Bearer ${token}`,
@@ -67,6 +82,13 @@ export function cursorHeaders(token: string): Record<string, string> {
     Accept: "application/json",
     "User-Agent": "Mozilla/5.0",
   };
+}
+
+function cursorPlanName(value: unknown): string | null {
+  const plan = stringOrNull(value);
+  if (!plan) return null;
+  const lower = plan.toLowerCase();
+  return lower.includes("pro") || /\$?\s*20(?:\.00)?\b/.test(lower) ? "Pro" : plan;
 }
 
 export function parseCursorUsage(
@@ -85,16 +107,17 @@ export function parseCursorUsage(
     limit: numberOrNull(pu?.limit),
     bonusSpend: numberOrNull(pu?.bonusSpend),
     accountName,
-    planName: stringOrNull((planJson as Record<string, any> | null)?.planInfo?.planName),
+    planName: cursorPlanName((planJson as Record<string, any> | null)?.planInfo?.planName),
   };
 }
 
 const provider = createProvider<CursorUsage>({
   section: "cursor",
   ttlMs: 30_000,
-  async fetch() {
-    const { token, accountName } = await readCursorState();
-    if (!token) return { ok: false };
+  async fetch(key: string) {
+    const account = await readCursorAccount();
+    if (!account || account.id !== key) return { ok: false };
+    const { token, label: accountName } = account;
     const post = (url: string) =>
       fetch(url, {
         method: "POST",
@@ -114,6 +137,32 @@ const provider = createProvider<CursorUsage>({
   },
 });
 
-export function getCursorUsage(): Promise<ProviderResult<CursorUsage>> {
-  return provider.get();
+const EMPTY: ProviderResult<CursorUsage> = {
+  usage: null,
+  stale: false,
+  cachedAt: null,
+  authExpired: false,
+};
+
+export async function getCursorAccounts(): Promise<TrackedAccount<CursorUsage>[]> {
+  const account = await readCursorAccount();
+  return collectAccounts(
+    "cursor",
+    "cursor",
+    account
+      ? [
+          {
+            id: account.id,
+            label: account.label,
+            active: true,
+            load: () => provider.get(account.id),
+          },
+        ]
+      : [],
+  );
+}
+
+export async function getCursorUsage(): Promise<ProviderResult<CursorUsage>> {
+  const account = await readCursorAccount();
+  return account ? provider.get(account.id) : EMPTY;
 }

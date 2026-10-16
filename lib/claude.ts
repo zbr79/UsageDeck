@@ -4,7 +4,8 @@ import os from "os";
 import { readJson } from "./fs-atomic";
 import { getAppKey, unseal } from "./os-crypt";
 import { createProvider, type ProviderResult } from "./provider-cache";
-import type { ClaudeUsage, ClaudeWindow } from "./types";
+import { collectAccounts } from "./tracked-accounts";
+import type { ClaudeUsage, ClaudeWindow, TrackedAccount } from "./types";
 
 export type { ClaudeUsage, ClaudeWindow } from "./types";
 
@@ -202,17 +203,34 @@ export function buildClaudeUsage(
   };
 }
 
+interface LiveClaude {
+  id: string;
+  label: string | null;
+  account: ClaudeAccount;
+  token: ClaudeToken | null;
+}
+
+/** The account Claude is signed into now. Claude keeps only that one token. */
+async function readLiveClaude(): Promise<LiveClaude | null> {
+  const account = await readAccount();
+  const desktop = await readDesktopToken();
+  const cli = desktop && !desktop.expired ? null : await readCliToken();
+  const token = [desktop, cli].find((t) => t && !t.expired) ?? desktop ?? cli ?? null;
+  if (!token && !account.email) return null;
+  const label = account.email?.trim() || account.displayName?.trim() || null;
+  return { id: (label ?? "signed-in").toLowerCase(), label, account, token };
+}
+
 const provider = createProvider<ClaudeUsage>({
   section: "claude",
   ttlMs: 60_000,
-  async fetch() {
-    const account = await readAccount();
-    const desktop = await readDesktopToken();
-    const cli = desktop && !desktop.expired ? null : await readCliToken();
-    const token = [desktop, cli].find((t) => t && !t.expired) ?? desktop ?? cli ?? null;
+  async fetch(key: string) {
+    const live = await readLiveClaude();
+    if (!live || live.id !== key) return { ok: false };
+    const { account, token } = live;
     // Without live numbers, still show the account/plan we know locally;
     // that partial snapshot is never persisted as "last known usage".
-    const fallback = token || account.email ? buildClaudeUsage(account, token, null) : null;
+    const fallback = buildClaudeUsage(account, token, null);
     if (!token || token.expired) {
       return { ok: false, authExpired: token?.expired === true, fallback };
     }
@@ -235,6 +253,32 @@ const provider = createProvider<ClaudeUsage>({
   },
 });
 
-export function getClaudeUsage(): Promise<ProviderResult<ClaudeUsage>> {
-  return provider.get();
+const EMPTY: ProviderResult<ClaudeUsage> = {
+  usage: null,
+  stale: false,
+  cachedAt: null,
+  authExpired: false,
+};
+
+export async function getClaudeAccounts(): Promise<TrackedAccount<ClaudeUsage>[]> {
+  const live = await readLiveClaude();
+  return collectAccounts(
+    "claude",
+    "claude",
+    live
+      ? [
+          {
+            id: live.id,
+            label: live.label,
+            active: true,
+            load: () => provider.get(live.id),
+          },
+        ]
+      : [],
+  );
+}
+
+export async function getClaudeUsage(): Promise<ProviderResult<ClaudeUsage>> {
+  const live = await readLiveClaude();
+  return live ? provider.get(live.id) : EMPTY;
 }

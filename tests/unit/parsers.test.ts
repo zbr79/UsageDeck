@@ -72,6 +72,14 @@ describe("parseCursorUsage", () => {
     expect(u.autoPercentUsed).toBeNull();
     expect(u.planName).toBeNull();
   });
+  it("normalizes Cursor's $20 tier to Pro", () => {
+    expect(parseCursorUsage({}, { planInfo: { planName: "$20/month" } }, null).planName).toBe(
+      "Pro",
+    );
+    expect(parseCursorUsage({}, { planInfo: { planName: "Cursor Pro" } }, null).planName).toBe(
+      "Pro",
+    );
+  });
 });
 
 describe("parseGrokUsage", () => {

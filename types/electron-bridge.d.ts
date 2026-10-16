@@ -11,7 +11,7 @@ interface WidgetBridge {
   onRefresh(cb: () => void): Unsubscribe;
   onSettingsChanged(cb: () => void): Unsubscribe;
   onServerStatus(cb: (status: { state: "online" | "restarting" | "stopped" }) => void): Unsubscribe;
-  showMenu(): void;
+  menuAction(action: "settings" | "quit"): void;
   startDrag(screenX: number, screenY: number): void;
   moveDrag(screenX: number, screenY: number): void;
   endDrag(): void;

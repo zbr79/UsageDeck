@@ -16,7 +16,6 @@ export function nextBrightness(prev: number | null, sample: number): number | nu
 
 /** Auto: light cards over dark backgrounds, dark cards over bright ones. */
 export function resolveWidgetTheme(mode: ThemeMode, brightness: number | null): WidgetTheme {
-  if (mode === "white") return "white";
   if (mode === "light") return "light";
   if (mode === "dark") return "dark";
   return brightness !== null && brightness < 0.5 ? "light" : "dark";

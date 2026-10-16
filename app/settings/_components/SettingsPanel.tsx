@@ -6,21 +6,21 @@ import Dialog from "@/app/_ui/Dialog";
 import { CloseIcon } from "@/app/_ui/Icons";
 import { cssVars, PANEL_PALETTES } from "@/app/_ui/palette";
 import { TabList, TabPanel } from "@/app/_ui/Tabs";
-import type { ProviderId } from "@/lib/types";
+import type { WidgetProvider } from "@/lib/types";
 import { useSettings, useSummaries } from "../_lib/hooks";
 import GeneralTab from "./GeneralTab";
 import OpenCodeAccounts from "./OpenCodeAccounts";
 import ProviderPanel, { PROVIDERS } from "./ProviderPanel";
 
 type MainTab = "general" | "accounts";
-type AccountTab = "opencode" | ProviderId;
 
-const ACCOUNT_TABS: { id: AccountTab; name: string; icon: string }[] = [
-  { id: "opencode", name: "OpenCode", icon: "/opencode.ico" },
-  ...(Object.entries(PROVIDERS) as [ProviderId, (typeof PROVIDERS)[ProviderId]][]).map(
-    ([id, p]) => ({ id, name: p.name, icon: p.icon }),
-  ),
-];
+function providerTabs(order: readonly WidgetProvider[]) {
+  return order.map((id) => {
+    if (id === "opencode") return { id, name: "OpenCode", icon: "/opencode.ico" };
+    const provider = PROVIDERS[id];
+    return { id, name: provider.name, icon: provider.icon };
+  });
+}
 
 function useDrag() {
   const [offset, setOffset] = useState({ x: 0, y: 0 });
@@ -47,7 +47,7 @@ export default function SettingsPanel({ onClose }: { onClose: () => void }) {
   const { settings, update } = useSettings();
   const summaries = useSummaries();
   const [mainTab, setMainTab] = useState<MainTab>("accounts");
-  const [accountTab, setAccountTab] = useState<AccountTab>("opencode");
+  const [accountTab, setAccountTab] = useState<WidgetProvider>("opencode");
   const drag = useDrag();
   const theme = settings?.panelTheme ?? "dark";
 
@@ -58,7 +58,7 @@ export default function SettingsPanel({ onClose }: { onClose: () => void }) {
         onClose={onClose}
         style={{ transform: `translate(${drag.offset.x}px, ${drag.offset.y}px)` }}
       >
-        <div className="bg-(--p-bg) text-(--p-text) rounded-xl shadow-2xl w-[576px] h-[608px] max-h-[calc(100vh-32px)] flex flex-col border border-(--p-border) overflow-hidden">
+        <div className="bg-(--p-bg) text-(--p-text) rounded-xl shadow-2xl w-[720px] h-[640px] max-w-[calc(100vw-32px)] max-h-[calc(100vh-32px)] flex flex-col border border-(--p-border) overflow-hidden">
           <div
             className="flex items-center justify-between px-5 pt-5 pb-2 cursor-move select-none"
             onMouseDown={drag.onMouseDown}
@@ -94,48 +94,63 @@ export default function SettingsPanel({ onClose }: { onClose: () => void }) {
               <GeneralTab settings={settings} update={update} />
             </TabPanel>
           ) : (
-            <TabPanel idPrefix="main" id="accounts" className="flex-1 min-h-0 flex flex-col">
-              <TabList
-                label="Providers"
-                idPrefix="acct"
-                className="px-5 mb-3"
-                value={accountTab}
-                onChange={setAccountTab}
-                items={ACCOUNT_TABS.map((t) => ({
-                  id: t.id,
-                  label: (
-                    <>
-                      <img
-                        src={t.icon}
-                        alt=""
-                        className={`h-3.5 w-3.5 rounded-[3px] ${t.id === "codex" && theme === "light" ? "invert" : ""}`}
-                      />
-                      {t.name}
-                    </>
-                  ),
-                }))}
-              />
+            <TabPanel idPrefix="main" id="accounts" className="flex-1 min-h-0 flex">
+              <aside className="w-[170px] shrink-0 border-r border-(--p-divider) px-3 pb-5 overflow-y-auto no-scrollbar">
+                <div className="px-2 pb-2 text-[11px] font-medium uppercase tracking-wide text-(--p-muted)">
+                  Providers
+                </div>
+                <p
+                  title="Drag providers up or down to change their order on the widget"
+                  className="px-2 pb-2 text-[10px] leading-3 text-(--p-muted)"
+                >
+                  Drag up or down to reorder on the widget
+                </p>
+                <TabList
+                  label="Providers"
+                  idPrefix="acct"
+                  value={accountTab}
+                  onChange={setAccountTab}
+                  orientation="vertical"
+                  onReorder={(providerOrder) => void update({ providerOrder })}
+                  items={providerTabs(settings.providerOrder).map((t) => ({
+                    id: t.id,
+                    label: (
+                      <>
+                        <img
+                          src={t.icon}
+                          alt=""
+                          draggable={false}
+                          className={`h-3.5 w-3.5 rounded-[3px] ${t.id === "codex" && theme === "light" ? "invert" : ""}`}
+                        />
+                        {t.name}
+                      </>
+                    ),
+                  }))}
+                />
+              </aside>
               <TabPanel
                 idPrefix="acct"
                 id={accountTab}
-                className="flex-1 overflow-y-auto no-scrollbar px-5 pb-5"
+                className="flex-1 min-w-0 overflow-y-auto no-scrollbar px-6 pb-5"
               >
-                {accountTab === "opencode" ? (
-                  <OpenCodeAccounts
-                    accounts={summaries.accounts}
-                    usage={summaries.usage}
-                    settings={settings}
-                    update={update}
-                    reload={summaries.reloadAccounts}
-                  />
-                ) : (
-                  <ProviderPanel
-                    id={accountTab}
-                    summaries={summaries}
-                    settings={settings}
-                    update={update}
-                  />
-                )}
+                <div className="pt-1">
+                  {accountTab === "opencode" ? (
+                    <OpenCodeAccounts
+                      accounts={summaries.accounts}
+                      usage={summaries.usage}
+                      settings={settings}
+                      update={update}
+                      reload={summaries.reloadAccounts}
+                    />
+                  ) : (
+                    <ProviderPanel
+                      id={accountTab}
+                      summaries={summaries}
+                      settings={settings}
+                      update={update}
+                    />
+                  )}
+                </div>
               </TabPanel>
             </TabPanel>
           )}

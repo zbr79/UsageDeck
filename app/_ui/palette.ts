@@ -30,7 +30,7 @@ export interface WidgetPalette {
   badge: Record<Tone, BadgeColors>;
 }
 
-export type WidgetTheme = "dark" | "light" | "white";
+export type WidgetTheme = "dark" | "light";
 
 const darkBadges: Record<Tone, BadgeColors> = {
   blue: { bg: "rgba(59,130,246,0.15)", fg: "#8ec5ff", border: "rgba(96,165,250,0.3)" },
@@ -89,7 +89,6 @@ export const WIDGET_PALETTES: Record<WidgetTheme, WidgetPalette> = {
     badge: darkBadges,
   },
   light: { ...lightBase, card: "#e4e4e7", track: "rgba(113,113,123,0.25)" },
-  white: { ...lightBase, card: "#ffffff", track: "rgba(113,113,123,0.2)" },
 };
 
 export interface PanelPalette {
@@ -97,6 +96,11 @@ export interface PanelPalette {
   surface: string;
   surfaceHover: string;
   border: string;
+  accountActiveBg: string;
+  accountActiveBorder: string;
+  accountInactiveBg: string;
+  accountWarningBg: string;
+  accountWarningBorder: string;
   divider: string;
   text: string;
   textSecondary: string;
@@ -122,6 +126,11 @@ export const PANEL_PALETTES: Record<"dark" | "light", PanelPalette> = {
     surface: "#27272a",
     surfaceHover: "#3f3f46",
     border: "#3f3f46",
+    accountActiveBg: "rgba(16,185,129,0.24)",
+    accountActiveBorder: "rgba(52,211,153,0.55)",
+    accountInactiveBg: "#3f3f46",
+    accountWarningBg: "rgba(245,158,11,0.22)",
+    accountWarningBorder: "rgba(251,191,36,0.6)",
     divider: "#27272a",
     text: "#f4f4f5",
     textSecondary: "#d4d4d8",
@@ -145,6 +154,11 @@ export const PANEL_PALETTES: Record<"dark" | "light", PanelPalette> = {
     surface: "#f4f4f5",
     surfaceHover: "#e4e4e7",
     border: "#d4d4d8",
+    accountActiveBg: "#86b28e",
+    accountActiveBorder: "#2f6f3b",
+    accountInactiveBg: "#d4d4d8",
+    accountWarningBg: "#d7bd70",
+    accountWarningBorder: "#94700c",
     divider: "#e4e4e7",
     text: "#18181b",
     textSecondary: "#3f3f46",

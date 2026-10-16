@@ -1,10 +1,49 @@
 // Pure settings rules, shared by the server (validation) and the client
 // (optimistic updates). No Node imports allowed here.
-import type { PanelTheme, Settings, ThemeMode } from "./types";
+import type { PanelTheme, Settings, ThemeMode, WidgetProvider } from "./types";
 
-const THEME_MODES: readonly ThemeMode[] = ["auto", "light", "dark", "white"];
+export const DEFAULT_PROVIDER_ORDER: readonly WidgetProvider[] = [
+  "opencode",
+  "cursor",
+  "grok",
+  "codex",
+  "claude",
+];
+
+const PROVIDER_IDS = new Set<string>(DEFAULT_PROVIDER_ORDER);
+
+/** Keep a saved order, drop unknowns and duplicates, and append any provider that was missing. */
+export function normalizeProviderOrder(value: unknown): WidgetProvider[] {
+  const seen = new Set<string>();
+  const out: WidgetProvider[] = [];
+  if (Array.isArray(value)) {
+    for (const id of value) {
+      if (typeof id !== "string" || !PROVIDER_IDS.has(id) || seen.has(id)) continue;
+      seen.add(id);
+      out.push(id as WidgetProvider);
+    }
+  }
+  for (const id of DEFAULT_PROVIDER_ORDER) {
+    if (!seen.has(id)) out.push(id);
+  }
+  return out;
+}
+
+/** Move the item at `from` into index `to`. Out-of-range indexes return a copy. */
+export function moveItem<T>(list: readonly T[], from: number, to: number): T[] {
+  if (from === to || from < 0 || to < 0 || from >= list.length || to >= list.length) {
+    return [...list];
+  }
+  const next = [...list];
+  const [item] = next.splice(from, 1);
+  next.splice(to, 0, item);
+  return next;
+}
+
+const THEME_MODES: readonly ThemeMode[] = ["auto", "light", "dark"];
 const PANEL_THEMES: readonly PanelTheme[] = ["light", "dark"];
 const BOOLEAN_KEYS = [
+  "opencodeEnabled",
   "cursorEnabled",
   "grokEnabled",
   "codexEnabled",
@@ -18,6 +57,7 @@ const MAX_KEY_LENGTH = 320;
 const MAX_ENTRIES = 500;
 
 export const DEFAULT_SETTINGS: Settings = {
+  opencodeEnabled: true,
   cursorEnabled: true,
   grokEnabled: true,
   codexEnabled: true,
@@ -28,6 +68,7 @@ export const DEFAULT_SETTINGS: Settings = {
   panelTheme: "dark",
   displayNames: {},
   disabledAccounts: [],
+  providerOrder: [...DEFAULT_PROVIDER_ORDER],
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -75,7 +116,11 @@ export function applySettingsPatch(current: Settings, patch: unknown): Settings 
   for (const key of BOOLEAN_KEYS) {
     if (typeof patch[key] === "boolean") next[key] = patch[key] as boolean;
   }
-  if (THEME_MODES.includes(patch.themeMode as ThemeMode)) {
+  if (patch.themeMode === "white") {
+    // White was the old duplicate of Light. Keep existing settings readable
+    // while converging them on the single light theme.
+    next.themeMode = "light";
+  } else if (THEME_MODES.includes(patch.themeMode as ThemeMode)) {
     next.themeMode = patch.themeMode as ThemeMode;
   }
   if (PANEL_THEMES.includes(patch.panelTheme as PanelTheme)) {
@@ -85,6 +130,9 @@ export function applySettingsPatch(current: Settings, patch: unknown): Settings 
   if (displayNames) next.displayNames = displayNames;
   const disabledAccounts = sanitizeDisabledAccounts(patch.disabledAccounts);
   if (disabledAccounts) next.disabledAccounts = disabledAccounts;
+  if (Array.isArray(patch.providerOrder)) {
+    next.providerOrder = normalizeProviderOrder(patch.providerOrder);
+  }
   return next;
 }
 

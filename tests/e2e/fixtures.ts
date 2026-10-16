@@ -6,8 +6,8 @@ import type {
   GrokUsage,
   OpenCodeAccountSummary,
   OpenCodeAccountUsage,
-  ProviderResponse,
   Settings,
+  TrackedAccount,
 } from "../../lib/types";
 
 export const NOW = new Date("2026-10-12T00:57:00Z"); // a Monday, 3 minutes before peak
@@ -15,6 +15,7 @@ const iso = (msFromNow: number) => new Date(NOW.getTime() + msFromNow).toISOStri
 const H = 3_600_000;
 
 export const settings: Settings = {
+  opencodeEnabled: true,
   cursorEnabled: true,
   grokEnabled: true,
   codexEnabled: true,
@@ -25,6 +26,7 @@ export const settings: Settings = {
   panelTheme: "dark",
   displayNames: { "main@example.com": "Main", "spare@example.com": "Spare" },
   disabledAccounts: ["hidden@example.com"],
+  providerOrder: ["opencode", "cursor", "grok", "codex", "claude"],
 };
 
 const win = (percent: number, resetsIn: number) => ({
@@ -67,17 +69,30 @@ export const accounts: OpenCodeAccountSummary[] = usage.map((u) => ({
   keyHint: "sk-…ab12",
 }));
 
-const ok = <T>(usage: T, extra: Partial<ProviderResponse<T>> = {}): ProviderResponse<T> => ({
-  usage,
-  stale: false,
-  cachedAt: null,
-  authExpired: false,
-  error: null,
-  ...extra,
-});
+function tracked<T>(
+  id: string,
+  label: string,
+  usage: T,
+  extra: Partial<TrackedAccount<T>> = {},
+): { accounts: TrackedAccount<T>[] } {
+  return {
+    accounts: [
+      {
+        id,
+        label,
+        active: true,
+        usage,
+        stale: false,
+        cachedAt: null,
+        authExpired: false,
+        ...extra,
+      },
+    ],
+  };
+}
 
 export const providers = {
-  cursor: ok<CursorUsage>({
+  cursor: tracked<CursorUsage>("dev@example.com", "dev@example.com", {
     autoPercentUsed: 86,
     apiPercentUsed: 54,
     totalPercentUsed: 70,
@@ -88,7 +103,9 @@ export const providers = {
     accountName: "dev@example.com",
     planName: "Pro",
   }),
-  grok: ok<GrokUsage>(
+  grok: tracked<GrokUsage>(
+    "dev@example.com",
+    "dev@example.com",
     {
       email: "dev@example.com",
       name: null,
@@ -100,7 +117,7 @@ export const providers = {
     },
     { stale: true, cachedAt: NOW.getTime() - 3_600_000 },
   ),
-  codex: ok<CodexUsage>({
+  codex: tracked<CodexUsage>("c@example.com", "c@example.com", {
     email: "c@example.com",
     planType: "plus",
     usedPercent: 100,
@@ -110,7 +127,9 @@ export const providers = {
     resetCredits: 1,
     limitReached: true,
   }),
-  claude: ok<ClaudeUsage>(
+  claude: tracked<ClaudeUsage>(
+    "me@example.com",
+    "me@example.com",
     {
       email: "me@example.com",
       displayName: "Me",
@@ -133,6 +152,7 @@ export const providers = {
 
 export interface ApiOverrides {
   settings?: Partial<Settings>;
+  providers?: Partial<typeof providers>;
   fail?: string[]; // route names that should return 500
   onPost?: (path: string, body: unknown) => void;
 }
@@ -141,6 +161,7 @@ export interface ApiOverrides {
 export async function mockApi(page: Page, o: ApiOverrides = {}) {
   const seen: { method: string; path: string; body: unknown; secret: string | null }[] = [];
   let current: Settings = { ...settings, ...o.settings };
+  const payloads = { ...providers, ...o.providers };
   await page.route("**/api/**", async (route: Route) => {
     const req = route.request();
     const url = new URL(req.url());
@@ -175,8 +196,8 @@ export async function mockApi(page: Page, o: ApiOverrides = {}) {
       case "key":
         return route.fulfill({ json: { key: "sk-test-key-123" } });
       default:
-        if (name in providers)
-          return route.fulfill({ json: providers[name as keyof typeof providers] });
+        if (name in payloads)
+          return route.fulfill({ json: payloads[name as keyof typeof payloads] });
         return route.fulfill({ status: 404, json: { error: "not found" } });
     }
   });
@@ -201,7 +222,8 @@ export async function setupWidget(page: Page) {
       onToggleExpand: on("expand"),
       onRefresh: on("refresh"),
       onSettingsChanged: on("settings"),
-      showMenu: () => {},
+      onServerStatus: on("server"),
+      menuAction: () => {},
       startDrag: () => {},
       moveDrag: () => {},
       endDrag: () => {},

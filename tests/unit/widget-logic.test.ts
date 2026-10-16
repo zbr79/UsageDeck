@@ -148,7 +148,7 @@ describe("rankAccounts", () => {
 
 describe("widget theme", () => {
   it("fixed modes ignore brightness; auto puts light cards on dark screens", () => {
-    expect(resolveWidgetTheme("white", 0.9)).toBe("white");
+    expect(resolveWidgetTheme("light", 0.9)).toBe("light");
     expect(resolveWidgetTheme("dark", 0.1)).toBe("dark");
     expect(resolveWidgetTheme("auto", null)).toBe("dark");
     expect(resolveWidgetTheme("auto", 0.2)).toBe("light");

@@ -14,32 +14,18 @@ type Update = (patch: Partial<Settings>, success?: string) => Promise<boolean>;
 
 function ResetBadges({ usage, now }: { usage: OpenCodeAccountUsage | undefined; now: number }) {
   if (!usage) return null;
-  const cachedNote = usage.stale
-    ? ` · last known ${usage.cachedAt ? new Date(usage.cachedAt).toLocaleString() : ""}`
-    : "";
-  const weekly = resetLabel("W", "Weekly", usage.usage?.weekly, usage.stale, now);
-  const monthly = resetLabel("M", "Monthly", usage.usage?.monthly, usage.stale, now);
+  const weekly = resetLabel("Weekly", "Weekly", usage.usage?.weekly, usage.stale, now);
+  const monthly = resetLabel("Monthly", "Monthly", usage.usage?.monthly, usage.stale, now);
   return (
     <>
       {weekly && (
-        <Badge
-          tone={weekly.full ? "red" : usage.stale ? "gray" : "blue"}
-          title={`${weekly.title}${cachedNote}`}
-        >
+        <Badge tone={weekly.full ? "red" : "blue"} title={weekly.title}>
           {weekly.text}
         </Badge>
       )}
       {monthly && (
-        <Badge
-          tone={monthly.full ? "red" : usage.stale ? "gray" : "blue"}
-          title={`${monthly.title}${cachedNote}`}
-        >
+        <Badge tone={monthly.full ? "red" : "blue"} title={monthly.title}>
           {monthly.text}
-        </Badge>
-      )}
-      {usage.stale && (
-        <Badge tone="gray" title={`Showing last known data${cachedNote}`}>
-          cached
         </Badge>
       )}
     </>
@@ -264,6 +250,7 @@ export default function OpenCodeAccounts({
   update: Update;
   reload: () => Promise<void>;
 }) {
+  const showId = useId();
   const [adding, setAdding] = useState(false);
   const [detail, setDetail] = useState<string | null>(null);
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
@@ -280,6 +267,21 @@ export default function OpenCodeAccounts({
 
   return (
     <div>
+      <div className="flex items-center gap-2 mb-3">
+        <Switch
+          labelledBy={showId}
+          checked={settings.opencodeEnabled}
+          onChange={(next) =>
+            void update(
+              { opencodeEnabled: next },
+              next ? "OpenCode shown on widget" : "OpenCode hidden from widget",
+            )
+          }
+        />
+        <span id={showId} className="text-sm text-(--p-textSecondary)">
+          Show on widget
+        </span>
+      </div>
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-sm font-medium text-(--p-textSecondary)">Accounts</h3>
         <button type="button" onClick={() => setAdding(true)} className={primaryButton}>
@@ -306,8 +308,12 @@ export default function OpenCodeAccounts({
           {sorted.map((a) => (
             <li
               key={a.email}
-              className={`bg-(--p-surface) border border-(--p-border) rounded-lg px-3 py-2 ${
-                disabled(a.email) ? "border-dashed" : ""
+              className={`border rounded-lg px-3 py-2 ${
+                disabled(a.email)
+                  ? "bg-(--p-accountInactiveBg) border-transparent"
+                  : usage[a.email]?.subscriptionActive === false
+                    ? "bg-(--p-accountWarningBg) border-(--p-accountWarningBorder)"
+                    : "bg-(--p-accountActiveBg) border-(--p-accountActiveBorder)"
               }`}
             >
               <div className="flex items-center gap-2">
@@ -318,8 +324,7 @@ export default function OpenCodeAccounts({
                 >
                   {a.email}
                 </button>
-                {usage[a.email]?.subscriptionActive === false && <Badge tone="red">inactive</Badge>}
-                {disabled(a.email) && <Badge tone="gray">hidden</Badge>}
+                <Badge tone="blue">Go</Badge>
                 <ResetBadges usage={usage[a.email]} now={now} />
                 {confirmRemove === a.email ? (
                   <span className="flex items-center gap-1 shrink-0">
@@ -360,8 +365,11 @@ export default function OpenCodeAccounts({
                   </span>
                 )}
               </div>
-              <div className="mt-1 text-xs text-(--p-muted) truncate">
-                {settings.displayNames[a.email] ?? "no nickname"}
+              <div
+                aria-hidden={!settings.displayNames[a.email]}
+                className="mt-1 h-4 text-xs text-(--p-text) truncate"
+              >
+                {settings.displayNames[a.email] ?? ""}
               </div>
             </li>
           ))}

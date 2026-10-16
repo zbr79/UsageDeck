@@ -61,7 +61,7 @@ Then start the widget with `desktop/widget-launcher.vbs` (create a shortcut to i
 for one-click launch). The widget starts the server itself if it isn't already running. If that
 server exits, the window stays open and restarts it with backoff. If the server can't start within
 60 seconds it shows an error telling you to run `npm run build`. The desktop log is
-`%APPDATA%\provider-usage-widget\logs\main.log` (widget menu → Open log folder).
+`%APPDATA%\provider-usage-widget\logs\main.log`.
 
 ## Your data
 
@@ -71,8 +71,10 @@ Everything the app stores lives in `data/` (gitignored; override with `USAGE_DAT
   `data/.api-secret`. A plaintext file is encrypted the next time it is read. The settings panel
   only ever shows a hint (`sk-…a1b2`); the full key is only sent to the widget's copy-key button.
 - `settings.json` — toggles, nicknames, hidden accounts.
-- `usage-cache.json` — last known usage per provider, so the widget has something to show after a
-  restart or outage (marked `cached`).
+- `seen-accounts.json` — emails of Cursor, Grok Bot, Codex, and Claude accounts already seen, so
+  switching accounts in those apps does not drop the earlier one. Tokens are not stored.
+- `usage-cache.json` — last known usage per provider and account, so the widget has something to
+  show after a restart or outage (marked `cached`).
 - `.api-secret` — the shared secret between the widget and the server.
 - `accounts.example.json` — committed template showing the format.
 
@@ -84,9 +86,9 @@ corrupt or lose settings.
 ### Widget
 
 - Compact panel with the active OpenCode account plus every enabled provider; right-click →
-  _Toggle Expand_ for all accounts
+  _Expand_ or _Collapse_ for all OpenCode accounts
 - **Adaptive theme** — in `auto`, samples the screen around the widget every 3 s and switches card
-  style with hysteresis; `light`, `white` and `dark` are fixed (no sampling)
+  style with hysteresis; `light` and `dark` are fixed (no sampling)
 - **Change detection** — when an account's usage rises, a ▲ shows for 20 s and the most recently
   used account floats to the top
 - **Reset countdowns** (`5d 7h 45m`) and **reset memory** — cached cards are marked `cached`; a
@@ -100,8 +102,8 @@ corrupt or lose settings.
 ### Settings (right-click widget → Settings)
 
 - General: panel theme, widget theme, show provider names, DeepSeek peak-hour warning
-- Accounts: one tab per provider — show/hide on the widget, nickname, sign-in status
-- Add / remove / hide OpenCode accounts and replace keys without touching files
+- Accounts: one tab per provider. Drag a provider tab sideways to change its order on the widget
+- Every provider can be hidden as a whole. Each account has its own nickname and can be hidden on its own. OpenCode accounts are added with an API key and can all appear on the widget. Cursor, Grok Bot, Codex, and Claude only show the account that app is signed into; other sign-ins stay in Settings so you can nickname or hide them before switching
 - Fully keyboard accessible: real dialogs (focus trapped, Escape closes the topmost), arrow-key tabs,
   switches and radio groups announced to screen readers
 

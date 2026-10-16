@@ -1,20 +1,34 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import {
+  Fragment,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent,
+  type ReactNode,
+} from "react";
+import { CollapseIcon, ExpandIcon, GearIcon, PowerIcon, RefreshIcon } from "@/app/_ui/Icons";
 import { cssVars, WIDGET_PALETTES } from "@/app/_ui/palette";
 import { toastError, toastSuccess } from "@/app/components/toast/toast";
+import { isAccountHidden } from "@/lib/account-key";
 import { getJson } from "@/lib/api-fetch";
 import { formatAgo } from "@/lib/format";
 import { getPeakInfo } from "@/lib/peak";
 import { rankAccounts } from "@/lib/ranking";
 import { DEFAULT_SETTINGS } from "@/lib/settings-schema";
+import type { ProviderId, TrackedAccount, WidgetProvider } from "@/lib/types";
 import { ClaudeCard, CodexCard, CursorCard, GrokCard, OpenCodeCard } from "./_components/cards";
 import { nextBrightness, resolveWidgetTheme } from "./_lib/theme";
-import { useWidgetData } from "./_lib/useWidgetData";
+import { useWidgetData, type AccountList } from "./_lib/useWidgetData";
 
 const WIDTH = 238;
+const MENU_WIDTH = 120;
+const MENU_HEIGHT = 132;
 /** Reset text is minute-resolution, so the whole panel does not re-render every second. */
 const CLOCK_MS = 60_000;
+type MenuAction = "expand" | "collapse" | "refresh" | "settings" | "quit";
 
 async function copyKey(email: string) {
   try {
@@ -47,6 +61,8 @@ export default function WidgetPage() {
   const [expanded, setExpanded] = useState(false);
   const [brightness, setBrightness] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuPosition, setMenuPosition] = useState({ x: 8, y: 8 });
   const rootRef = useRef<HTMLDivElement>(null);
 
   const settings = data.settings ?? DEFAULT_SETTINGS;
@@ -58,19 +74,27 @@ export default function WidgetPage() {
     return () => clearInterval(id);
   }, []);
 
-  // Electron bridge: brightness samples, expand toggle, context menu.
+  // Electron bridge: brightness samples, expand toggle, and context menu.
   useEffect(() => {
     const w = window.widget;
     const offBg = w?.onBg((v) => setBrightness((prev) => nextBrightness(prev, v)));
     const offExpand = w?.onToggleExpand(() => setExpanded((e) => !e));
     const onContextMenu = (e: globalThis.MouseEvent) => {
       e.preventDefault();
-      w?.showMenu();
+      const x = Math.max(4, Math.min(e.clientX, WIDTH - MENU_WIDTH - 4));
+      const y =
+        e.clientY + MENU_HEIGHT <= window.innerHeight - 4
+          ? e.clientY
+          : Math.max(4, e.clientY - MENU_HEIGHT);
+      setMenuPosition({ x, y });
+      setMenuOpen(true);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) {
         e.preventDefault();
-        w?.showMenu();
+        setMenuOpen(true);
+      } else if (e.key === "Escape") {
+        setMenuOpen(false);
       }
     };
     document.addEventListener("contextmenu", onContextMenu);
@@ -82,6 +106,15 @@ export default function WidgetPage() {
       window.removeEventListener("keydown", onKey);
     };
   }, []);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const close = (e: globalThis.PointerEvent) => {
+      if (!(e.target as HTMLElement).closest("[data-widget-menu]")) setMenuOpen(false);
+    };
+    document.addEventListener("pointerdown", close);
+    return () => document.removeEventListener("pointerdown", close);
+  }, [menuOpen]);
 
   // Size the frameless window to the content.
   useEffect(() => {
@@ -104,6 +137,161 @@ export default function WidgetPage() {
   const visible = expanded ? ranked : ranked.slice(0, 1);
   const peak = useMemo(() => getPeakInfo(new Date(now)), [now]);
   const light = theme !== "dark";
+  const menuAction = (action: MenuAction) => {
+    setMenuOpen(false);
+    if (action === "expand") setExpanded(true);
+    else if (action === "collapse") setExpanded(false);
+    else if (action === "refresh") void reload();
+    else window.widget?.menuAction(action);
+  };
+
+  const renderAccounts = <T,>(
+    provider: ProviderId,
+    list: AccountList<T>,
+    card: (account: TrackedAccount<T>, multiple: boolean) => ReactNode,
+    empty: ReactNode,
+  ) => {
+    const enabled =
+      provider === "cursor"
+        ? settings.cursorEnabled
+        : provider === "grok"
+          ? settings.grokEnabled
+          : provider === "codex"
+            ? settings.codexEnabled
+            : settings.claudeEnabled;
+    if (!enabled) return null;
+    // Only the account that app is signed into. OpenCode is separate: it has no
+    // sign-in, so its API-key accounts are rendered above.
+    const shown = list.accounts.filter(
+      (account) =>
+        account.active && !isAccountHidden(settings.disabledAccounts, provider, account.id),
+    );
+    if (shown.length === 0) return list.accounts.length === 0 ? empty : null;
+    const multiple = shown.length > 1;
+    return <Fragment key={provider}>{shown.map((account) => card(account, multiple))}</Fragment>;
+  };
+
+  const slotOf = <T,>(account: TrackedAccount<T> | null, loaded: boolean) => ({
+    data: account?.usage ?? null,
+    stale: account?.stale ?? false,
+    cachedAt: account?.cachedAt ?? null,
+    authExpired: account?.authExpired ?? false,
+    loaded,
+  });
+
+  const renderProvider = (id: WidgetProvider) => {
+    switch (id) {
+      case "opencode":
+        if (!settings.opencodeEnabled) return null;
+        return (
+          <Fragment key="opencode">
+            {visible.map((row, i) => (
+              <OpenCodeCard
+                key={row.email}
+                row={row}
+                active={i === 0}
+                primary={i === 0}
+                settings={settings}
+                peak={peak}
+                now={now}
+                increased={(win) => increased(row.email, win, now)}
+                onCopyKey={() => void copyKey(row.email)}
+              />
+            ))}
+          </Fragment>
+        );
+      case "cursor":
+        return renderAccounts(
+          "cursor",
+          data.cursor,
+          (account, multiple) => (
+            <CursorCard
+              key={account.id}
+              slot={slotOf(account, true)}
+              settings={settings}
+              now={now}
+              accountId={account.id}
+              accountLabel={account.label ?? account.usage?.accountName}
+              multiple={multiple}
+            />
+          ),
+          <CursorCard
+            key="cursor-empty"
+            slot={slotOf(null, data.cursor.loaded)}
+            settings={settings}
+            now={now}
+          />,
+        );
+      case "grok":
+        return renderAccounts(
+          "grok",
+          data.grok,
+          (account, multiple) => (
+            <GrokCard
+              key={account.id}
+              slot={slotOf(account, true)}
+              settings={settings}
+              now={now}
+              accountId={account.id}
+              accountLabel={account.label ?? account.usage?.email}
+              multiple={multiple}
+            />
+          ),
+          <GrokCard
+            key="grok-empty"
+            slot={slotOf(null, data.grok.loaded)}
+            settings={settings}
+            now={now}
+          />,
+        );
+      case "codex":
+        return renderAccounts(
+          "codex",
+          data.codex,
+          (account, multiple) => (
+            <CodexCard
+              key={account.id}
+              slot={slotOf(account, true)}
+              settings={settings}
+              now={now}
+              light={light}
+              accountId={account.id}
+              accountLabel={account.label ?? account.usage?.email}
+              multiple={multiple}
+            />
+          ),
+          <CodexCard
+            key="codex-empty"
+            slot={slotOf(null, data.codex.loaded)}
+            settings={settings}
+            now={now}
+            light={light}
+          />,
+        );
+      case "claude":
+        return renderAccounts(
+          "claude",
+          data.claude,
+          (account, multiple) => (
+            <ClaudeCard
+              key={account.id}
+              slot={slotOf(account, true)}
+              settings={settings}
+              now={now}
+              accountId={account.id}
+              accountLabel={account.label ?? account.usage?.email}
+              multiple={multiple}
+            />
+          ),
+          <ClaudeCard
+            key="claude-empty"
+            slot={slotOf(null, data.claude.loaded)}
+            settings={settings}
+            now={now}
+          />,
+        );
+    }
+  };
 
   return (
     <main
@@ -111,13 +299,13 @@ export default function WidgetPage() {
       aria-label="Provider usage"
       data-theme={theme}
       style={vars}
-      className="w-screen p-1.5 select-none cursor-move"
+      className="relative w-screen p-1.5 select-none cursor-move"
       onMouseDown={startDrag}
     >
       {!data.ready ? (
         <p className="text-[11px] px-1 py-2 text-(--w-muted)">Loading…</p>
       ) : (
-        <div className="space-y-1.5">
+        <div className="space-y-1">
           {data.offline && (
             <div
               role="status"
@@ -136,29 +324,59 @@ export default function WidgetPage() {
               </button>
             </div>
           )}
-          {visible.map((row, i) => (
-            <OpenCodeCard
-              key={row.email}
-              row={row}
-              active={i === 0}
-              primary={i === 0}
-              settings={settings}
-              peak={peak}
-              now={now}
-              increased={(win) => increased(row.email, win, now)}
-              onCopyKey={() => void copyKey(row.email)}
-            />
-          ))}
-          {settings.cursorEnabled && (
-            <CursorCard slot={data.cursor} settings={settings} now={now} />
-          )}
-          {settings.grokEnabled && <GrokCard slot={data.grok} settings={settings} now={now} />}
-          {settings.codexEnabled && (
-            <CodexCard slot={data.codex} settings={settings} now={now} light={light} />
-          )}
-          {settings.claudeEnabled && (
-            <ClaudeCard slot={data.claude} settings={settings} now={now} />
-          )}
+          {settings.providerOrder.map((id) => renderProvider(id))}
+        </div>
+      )}
+      {menuOpen && (
+        <div
+          data-widget-menu
+          role="menu"
+          aria-label="Widget menu"
+          style={{
+            left: menuPosition.x,
+            top: menuPosition.y,
+            width: MENU_WIDTH,
+          }}
+          className="absolute z-50 rounded-lg border border-(--w-border) bg-(--w-card) p-1 shadow-xl text-(--w-text)"
+          onContextMenu={(e) => e.preventDefault()}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => menuAction(expanded ? "collapse" : "expand")}
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] hover:bg-(--w-hover)"
+          >
+            {expanded ? <CollapseIcon size={14} /> : <ExpandIcon size={14} />}
+            {expanded ? "Collapse" : "Expand"}
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => menuAction("refresh")}
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] hover:bg-(--w-hover)"
+          >
+            <RefreshIcon size={14} />
+            Refresh
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => menuAction("settings")}
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] hover:bg-(--w-hover)"
+          >
+            <GearIcon size={14} />
+            Settings
+          </button>
+          <div className="my-1 border-t border-(--w-border)" />
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => menuAction("quit")}
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] text-(--w-barDanger) hover:bg-(--w-hover)"
+          >
+            <PowerIcon size={14} />
+            Quit
+          </button>
         </div>
       )}
     </main>

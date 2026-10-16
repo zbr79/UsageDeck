@@ -1,13 +1,11 @@
 const {
   app,
   BrowserWindow,
-  Menu,
   ipcMain,
   screen,
   desktopCapturer,
   dialog,
   session,
-  shell,
 } = require("electron");
 const fs = require("fs");
 const path = require("path");
@@ -149,10 +147,7 @@ function createWindow() {
     saveTimer = setTimeout(savePos, 300);
   });
 
-  win.webContents.on("context-menu", (e) => {
-    e.preventDefault();
-    showMenu();
-  });
+  win.webContents.on("context-menu", (e) => e.preventDefault());
 
   // If the renderer dies (crash / OOM), bring it back instead of leaving a
   // blank transparent window on screen.
@@ -199,26 +194,6 @@ function openSettingsOverlay() {
   });
 }
 
-function showMenu() {
-  if (!win || win.isDestroyed()) return;
-  Menu.buildFromTemplate([
-    {
-      label: "Toggle Expand / Collapse",
-      click: () => win?.webContents.send("widget-toggle-expand"),
-    },
-    { label: "Refresh", click: () => win?.webContents.send("widget-refresh") },
-    { label: "Settings", click: () => openSettingsOverlay() },
-    {
-      label: "Open log folder",
-      click: () => {
-        if (logFile) void shell.openPath(path.dirname(logFile));
-      },
-    },
-    { type: "separator" },
-    { label: "Quit", click: () => app.quit() },
-  ]).popup({ window: win });
-}
-
 ipcMain.on("get-usage-secret", (e) => {
   e.returnValue = fromApp(e) ? usageSecret : "";
 });
@@ -226,8 +201,10 @@ ipcMain.on("settings-close", (e) => {
   if (!fromApp(e)) return;
   if (settingsWin && !settingsWin.isDestroyed()) settingsWin.close();
 });
-ipcMain.on("widget-show-menu", (e) => {
-  if (fromApp(e)) showMenu();
+ipcMain.on("widget-menu-action", (e, action) => {
+  if (!fromApp(e)) return;
+  if (action === "settings") openSettingsOverlay();
+  else if (action === "quit") app.quit();
 });
 ipcMain.on("widget-drag-start", (e, sx, sy) => {
   if (!fromApp(e) || !win) return;

@@ -5,7 +5,7 @@ import type { PanelTheme, Settings, ThemeMode } from "@/lib/types";
 import { SettingRow } from "./fields";
 
 const PANEL_THEMES: readonly PanelTheme[] = ["light", "dark"];
-const WIDGET_THEMES: readonly ThemeMode[] = ["auto", "light", "white", "dark"];
+const WIDGET_THEMES: readonly ThemeMode[] = ["auto", "light", "dark"];
 
 export default function GeneralTab({
   settings,

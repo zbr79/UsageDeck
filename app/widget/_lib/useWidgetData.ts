@@ -9,8 +9,8 @@ import type {
   CursorUsage,
   GrokUsage,
   OpenCodeAccountUsage,
-  ProviderResponse,
   Settings,
+  TrackedAccount,
 } from "@/lib/types";
 
 export const POLL_MS = 60_000;
@@ -25,21 +25,20 @@ export interface ProviderSlot<T> {
   loaded: boolean;
 }
 
-const emptySlot = <T>(): ProviderSlot<T> => ({
-  data: null,
-  stale: false,
-  cachedAt: null,
-  authExpired: false,
-  loaded: false,
-});
+export interface AccountList<T> {
+  accounts: TrackedAccount<T>[];
+  loaded: boolean;
+}
+
+const emptyList = <T>(): AccountList<T> => ({ accounts: [], loaded: false });
 
 export interface WidgetData {
   settings: Settings | null;
   accounts: OpenCodeAccountUsage[] | null;
-  cursor: ProviderSlot<CursorUsage>;
-  grok: ProviderSlot<GrokUsage>;
-  codex: ProviderSlot<CodexUsage>;
-  claude: ProviderSlot<ClaudeUsage>;
+  cursor: AccountList<CursorUsage>;
+  grok: AccountList<GrokUsage>;
+  codex: AccountList<CodexUsage>;
+  claude: AccountList<ClaudeUsage>;
   /** last time at least one request succeeded */
   updatedAt: number | null;
   /** the most recent refresh could not reach the local server at all */
@@ -56,10 +55,10 @@ export function useWidgetData() {
   const [data, setData] = useState<WidgetData>({
     settings: null,
     accounts: null,
-    cursor: emptySlot(),
-    grok: emptySlot(),
-    codex: emptySlot(),
-    claude: emptySlot(),
+    cursor: emptyList(),
+    grok: emptyList(),
+    codex: emptyList(),
+    claude: emptyList(),
     updatedAt: null,
     offline: false,
     ready: false,
@@ -75,10 +74,10 @@ export function useWidgetData() {
       const [settings, usage, cursor, grok, codex, claude] = await Promise.allSettled([
         getJson<{ settings: Settings }>("/api/settings"),
         getJson<{ accounts: OpenCodeAccountUsage[] }>("/api/usage"),
-        getJson<ProviderResponse<CursorUsage>>("/api/cursor"),
-        getJson<ProviderResponse<GrokUsage>>("/api/grok"),
-        getJson<ProviderResponse<CodexUsage>>("/api/codex"),
-        getJson<ProviderResponse<ClaudeUsage>>("/api/claude"),
+        getJson<{ accounts: TrackedAccount<CursorUsage>[] }>("/api/cursor"),
+        getJson<{ accounts: TrackedAccount<GrokUsage>[] }>("/api/grok"),
+        getJson<{ accounts: TrackedAccount<CodexUsage>[] }>("/api/codex"),
+        getJson<{ accounts: TrackedAccount<ClaudeUsage>[] }>("/api/claude"),
       ]);
       const now = Date.now();
 
@@ -98,29 +97,23 @@ export function useWidgetData() {
         }
       }
 
-      const slot = <T>(
-        prev: ProviderSlot<T>,
-        r: PromiseSettledResult<ProviderResponse<T>>,
-      ): ProviderSlot<T> =>
+      const list = <T>(
+        prev: AccountList<T>,
+        r: PromiseSettledResult<{ accounts: TrackedAccount<T>[] }>,
+      ): AccountList<T> =>
         r.status === "fulfilled"
-          ? {
-              data: r.value.usage,
-              stale: r.value.stale,
-              cachedAt: r.value.cachedAt,
-              authExpired: r.value.authExpired,
-              loaded: true,
-            }
-          : { ...prev, loaded: true }; // keep showing what we had
+          ? { accounts: r.value.accounts ?? [], loaded: true }
+          : { ...prev, loaded: true };
 
       const all = [settings, usage, cursor, grok, codex, claude];
       const anyOk = all.some((r) => r.status === "fulfilled");
       setData((prev) => ({
         settings: settings.status === "fulfilled" ? settings.value.settings : prev.settings,
         accounts: usage.status === "fulfilled" ? usage.value.accounts : prev.accounts,
-        cursor: slot(prev.cursor, cursor),
-        grok: slot(prev.grok, grok),
-        codex: slot(prev.codex, codex),
-        claude: slot(prev.claude, claude),
+        cursor: list(prev.cursor, cursor),
+        grok: list(prev.grok, grok),
+        codex: list(prev.codex, codex),
+        claude: list(prev.claude, claude),
         updatedAt: anyOk ? now : prev.updatedAt,
         offline: !anyOk,
         ready: true,
@@ -137,7 +130,7 @@ export function useWidgetData() {
     const offs = [
       w?.onSettingsChanged(() => void load()),
       w?.onRefresh(() => void load()),
-      w?.onServerStatus((status) => {
+      w?.onServerStatus?.((status) => {
         if (status.state === "online") void load();
         else setData((prev) => ({ ...prev, offline: true }));
       }),
