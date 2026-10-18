@@ -132,6 +132,34 @@ after intentional UI changes.
 
 CI (GitHub Actions, Windows) runs all of the above plus `npm audit` on every push and pull request.
 
+## Native app (new)
+
+`native/` holds a Tauri 2 rebuild of the widget: a single `usagedeck.exe` with no Node server and
+no Electron. It reads the same providers and shows the same cards.
+
+| Command (run in `native/`)                  | Description                                          |
+| ------------------------------------------- | ---------------------------------------------------- |
+| `npm install`                               | Install the frontend and Tauri CLI                   |
+| `npm run tauri dev`                         | Run the app with hot reload (Vite on port 1420)      |
+| `npm test` / `npm run build`                | Frontend unit tests / production build               |
+| `cargo test --lib` (in `native/src-tauri/`) | Rust unit tests                                      |
+| `npm run tauri build`                       | Release exe plus the per-user NSIS installer         |
+
+Command-line modes (headless, print a short report and exit):
+
+- `usagedeck.exe --import-old-data <old data dir>`: one-time copy of the old app's `data/` folder.
+  Settings go through the usual validation; the seen-accounts list and usage cache are copied when
+  their shape matches; OpenCode keys (plaintext or `enc:v1:`) move into Windows Credential Manager
+  (service `UsageDeck`). Keys are never printed.
+- `usagedeck.exe --dump`: fetch every provider once and print a redacted JSON summary (label cut to
+  two characters, plan, each window's percent and reset, stale / authExpired / error).
+
+Data lives in `%APPDATA%\com.usagedeck.app` (`settings.json`, `accounts.json` with emails only,
+`usage-cache.json`, `seen-accounts.json`, `window-pos.json`). The installed app starts at login;
+copies run from a cargo `target` folder never register autostart.
+
+The old app (Next.js + Electron) above still works unchanged until it is retired.
+
 ## Project layout
 
 ```

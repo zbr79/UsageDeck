@@ -132,7 +132,16 @@ export function OpenCodeCard({
       }
       title={title}
       titleHint={row.email}
-      hints={<>{peakHint}</>}
+      hints={
+        <>
+          {row.authExpired && (
+            <Hint color="warn" title="OpenCode rejected this API key · add a new key in Settings">
+              key rejected
+            </Hint>
+          )}
+          {peakHint}
+        </>
+      }
       badges={
         <Badge scope="w" tone="blue">
           Go

@@ -2,6 +2,7 @@
 //! Window behaviour is ported from desktop/main.js.
 
 pub mod api;
+pub mod cli;
 pub mod providers;
 pub mod store;
 pub mod win;
@@ -211,8 +212,24 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+/// True when the exe sits inside a cargo target folder: any `target` component, or an ancestor
+/// holding cargo's `CACHEDIR.TAG` / `.rustc_info.json` (covers a custom CARGO_TARGET_DIR).
+#[cfg_attr(debug_assertions, allow(dead_code))]
+fn running_from_cargo_target() -> bool {
+    let Ok(exe) = std::env::current_exe() else { return true };
+    exe.ancestors().skip(1).any(|dir| {
+        dir.file_name().is_some_and(|n| n.eq_ignore_ascii_case("target"))
+            || dir.join("CACHEDIR.TAG").is_file()
+            || dir.join(".rustc_info.json").is_file()
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // `--import-old-data <dir>` and `--dump` run headless and exit before any window exists.
+    if let Some(code) = cli::try_run() {
+        std::process::exit(code);
+    }
     tauri::Builder::default()
         // must be first: a second launch focuses the running widget instead
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_widget(app)))
@@ -237,9 +254,10 @@ pub fn run() {
             app.manage(Core::new(Store::new(dir, Box::new(CredentialVault))));
             app.manage(PosSaver(AtomicU64::new(0)));
 
-            // Start at login. Release builds only, so a dev run never registers a debug binary.
+            // Start at login. Release builds only, and never from a cargo target folder, so dev
+            // and test runs never write the Run key.
             #[cfg(not(debug_assertions))]
-            {
+            if !running_from_cargo_target() {
                 use tauri_plugin_autostart::ManagerExt;
                 if let Err(e) = app.autolaunch().enable() {
                     log::warn!("could not enable autostart: {e}");
