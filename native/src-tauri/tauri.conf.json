@@ -13,6 +13,7 @@
     "windows": [
       {
         "label": "widget",
+        "title": "UsageDeck",
         "url": "widget.html",
         "width": 238,
         "height": 150,
@@ -26,6 +27,7 @@
       },
       {
         "label": "settings",
+        "title": "UsageDeck Settings",
         "url": "settings.html",
         "visible": false,
         "decorations": false,
