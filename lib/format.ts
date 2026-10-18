@@ -3,6 +3,7 @@
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
+const SEVEN_DAYS = 7 * DAY;
 
 /**
  * "15d 20h 28m" / "4h 40m" / "3m". Starts at the largest non-zero unit and
@@ -24,15 +25,35 @@ export function formatDuration(ms: number, maxUnits = 3): string {
     .join(" ");
 }
 
+/** Compact reset countdown: hours + minutes under one day, days + hours under seven days. */
+export function formatResetDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return "0m";
+  if (ms < DAY) {
+    const hours = Math.floor(ms / HOUR);
+    const minutes = Math.floor((ms % HOUR) / MINUTE);
+    return hours ? `${hours}h ${minutes}m` : `${minutes}m`;
+  }
+  if (ms < SEVEN_DAYS) {
+    const days = Math.floor(ms / DAY);
+    const hours = Math.floor((ms % DAY) / HOUR);
+    return hours ? `${days}d ${hours}h` : `${days}d`;
+  }
+  return `${Math.floor(ms / DAY)}d`;
+}
+
 /** Time until an ISO timestamp, formatted; null if unparseable. */
 export function formatUntil(
   iso: string | null | undefined,
   now: number,
-  maxUnits = 3,
+  maxUnits?: number,
 ): string | null {
   if (!iso) return null;
   const t = new Date(iso).getTime();
-  return Number.isFinite(t) ? formatDuration(t - now, maxUnits) : null;
+  return Number.isFinite(t)
+    ? maxUnits === undefined
+      ? formatResetDuration(t - now)
+      : formatDuration(t - now, maxUnits)
+    : null;
 }
 
 /** Whole percent, except 99.x stays precise so "100%" is never shown early. */

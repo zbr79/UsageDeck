@@ -99,8 +99,6 @@ export interface PanelPalette {
   accountActiveBg: string;
   accountActiveBorder: string;
   accountInactiveBg: string;
-  accountWarningBg: string;
-  accountWarningBorder: string;
   divider: string;
   text: string;
   textSecondary: string;
@@ -129,8 +127,6 @@ export const PANEL_PALETTES: Record<"dark" | "light", PanelPalette> = {
     accountActiveBg: "rgba(16,185,129,0.24)",
     accountActiveBorder: "rgba(52,211,153,0.55)",
     accountInactiveBg: "#3f3f46",
-    accountWarningBg: "rgba(245,158,11,0.22)",
-    accountWarningBorder: "rgba(251,191,36,0.6)",
     divider: "#27272a",
     text: "#f4f4f5",
     textSecondary: "#d4d4d8",
@@ -157,8 +153,6 @@ export const PANEL_PALETTES: Record<"dark" | "light", PanelPalette> = {
     accountActiveBg: "#86b28e",
     accountActiveBorder: "#2f6f3b",
     accountInactiveBg: "#d4d4d8",
-    accountWarningBg: "#d7bd70",
-    accountWarningBorder: "#94700c",
     divider: "#e4e4e7",
     text: "#18181b",
     textSecondary: "#3f3f46",

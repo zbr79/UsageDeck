@@ -26,6 +26,7 @@ import { useWidgetData, type AccountList } from "./_lib/useWidgetData";
 const WIDTH = 238;
 const MENU_WIDTH = 120;
 const MENU_HEIGHT = 132;
+const COMPACT_MENU_HEIGHT = 100;
 /** Reset text is minute-resolution, so the whole panel does not re-render every second. */
 const CLOCK_MS = 60_000;
 type MenuAction = "expand" | "collapse" | "refresh" | "settings" | "quit";
@@ -68,6 +69,11 @@ export default function WidgetPage() {
   const settings = data.settings ?? DEFAULT_SETTINGS;
   const theme = resolveWidgetTheme(settings.themeMode, brightness);
   const vars = useMemo(() => cssVars("w", WIDGET_PALETTES[theme]), [theme]);
+  const ranked = useMemo(
+    () => (data.accounts ? rankAccounts(data.accounts, lastUsed, now) : []),
+    [data.accounts, lastUsed, now],
+  );
+  const canToggleExpand = settings.opencodeEnabled && ranked.length > 1;
 
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), CLOCK_MS);
@@ -82,10 +88,11 @@ export default function WidgetPage() {
     const onContextMenu = (e: globalThis.MouseEvent) => {
       e.preventDefault();
       const x = Math.max(4, Math.min(e.clientX, WIDTH - MENU_WIDTH - 4));
+      const menuHeight = canToggleExpand ? MENU_HEIGHT : COMPACT_MENU_HEIGHT;
       const y =
-        e.clientY + MENU_HEIGHT <= window.innerHeight - 4
+        e.clientY + menuHeight <= window.innerHeight - 4
           ? e.clientY
-          : Math.max(4, e.clientY - MENU_HEIGHT);
+          : Math.max(4, e.clientY - menuHeight);
       setMenuPosition({ x, y });
       setMenuOpen(true);
     };
@@ -105,7 +112,7 @@ export default function WidgetPage() {
       document.removeEventListener("contextmenu", onContextMenu);
       window.removeEventListener("keydown", onKey);
     };
-  }, []);
+  }, [canToggleExpand]);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -130,10 +137,6 @@ export default function WidgetPage() {
     return () => ro.disconnect();
   }, []);
 
-  const ranked = useMemo(
-    () => (data.accounts ? rankAccounts(data.accounts, lastUsed, now) : []),
-    [data.accounts, lastUsed, now],
-  );
   const visible = expanded ? ranked : ranked.slice(0, 1);
   const peak = useMemo(() => getPeakInfo(new Date(now)), [now]);
   const light = theme !== "dark";
@@ -340,15 +343,17 @@ export default function WidgetPage() {
           className="absolute z-50 rounded-lg border border-(--w-border) bg-(--w-card) p-1 shadow-xl text-(--w-text)"
           onContextMenu={(e) => e.preventDefault()}
         >
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => menuAction(expanded ? "collapse" : "expand")}
-            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] hover:bg-(--w-hover)"
-          >
-            {expanded ? <CollapseIcon size={14} /> : <ExpandIcon size={14} />}
-            {expanded ? "Collapse" : "Expand"}
-          </button>
+          {canToggleExpand && (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => menuAction(expanded ? "collapse" : "expand")}
+              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] hover:bg-(--w-hover)"
+            >
+              {expanded ? <CollapseIcon size={14} /> : <ExpandIcon size={14} />}
+              {expanded ? "Collapse" : "Expand"}
+            </button>
+          )}
           <button
             type="button"
             role="menuitem"

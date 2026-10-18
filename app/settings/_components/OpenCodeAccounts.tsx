@@ -3,32 +3,32 @@
 import { useEffect, useId, useState, type FormEvent } from "react";
 import { Badge, IconButton, Switch } from "@/app/_ui/controls";
 import Dialog from "@/app/_ui/Dialog";
-import { CloseIcon, GearIcon, PencilIcon, TrashIcon } from "@/app/_ui/Icons";
+import { CloseIcon, GearIcon, PencilIcon, PlusIcon, TrashIcon } from "@/app/_ui/Icons";
 import { toastSuccess } from "@/app/components/toast/toast";
-import { resetLabel } from "@/lib/ranking";
 import type { OpenCodeAccountSummary, OpenCodeAccountUsage, Settings } from "@/lib/types";
 import { removeAccount, saveAccount } from "../_lib/hooks";
 import { inputClass, NicknameField, primaryButton, secondaryButton } from "./fields";
 
 type Update = (patch: Partial<Settings>, success?: string) => Promise<boolean>;
 
-function ResetBadges({ usage, now }: { usage: OpenCodeAccountUsage | undefined; now: number }) {
-  if (!usage) return null;
-  const weekly = resetLabel("Weekly", "Weekly", usage.usage?.weekly, usage.stale, now);
-  const monthly = resetLabel("Monthly", "Monthly", usage.usage?.monthly, usage.stale, now);
+function ResetBadges({
+  usage,
+  inactive,
+  now,
+}: {
+  usage: OpenCodeAccountUsage | undefined;
+  inactive: boolean;
+  now: number;
+}) {
+  if (!usage || !inactive) return null;
+  const resetsAt = usage.usage?.monthly?.resetsAt;
+  const ms = resetsAt ? new Date(resetsAt).getTime() - now : 0;
+  if (!Number.isFinite(ms) || ms <= 0) return null;
+  const days = Math.ceil(ms / (24 * 60 * 60 * 1000));
   return (
-    <>
-      {weekly && (
-        <Badge tone={weekly.full ? "red" : "blue"} title={weekly.title}>
-          {weekly.text}
-        </Badge>
-      )}
-      {monthly && (
-        <Badge tone={monthly.full ? "red" : "blue"} title={monthly.title}>
-          {monthly.text}
-        </Badge>
-      )}
-    </>
+    <Badge tone="red" title={`Resets in ${days} day${days === 1 ? "" : "s"}`}>
+      Resets in {days} day{days === 1 ? "" : "s"}
+    </Badge>
   );
 }
 
@@ -208,7 +208,7 @@ function AccountDialog({
           <div className="flex items-center gap-2">
             <Switch labelledBy={switchId} checked={enabled} onChange={toggle} />
             <span id={switchId} className="text-sm text-(--p-textSecondary)">
-              Show on widget
+              Active
             </span>
           </div>
           <NicknameField
@@ -267,25 +267,30 @@ export default function OpenCodeAccounts({
 
   return (
     <div>
-      <div className="flex items-center gap-2 mb-3">
-        <Switch
-          labelledBy={showId}
-          checked={settings.opencodeEnabled}
-          onChange={(next) =>
-            void update(
-              { opencodeEnabled: next },
-              next ? "OpenCode shown on widget" : "OpenCode hidden from widget",
-            )
-          }
-        />
-        <span id={showId} className="text-sm text-(--p-textSecondary)">
-          Show on widget
-        </span>
-      </div>
       <div className="flex items-center justify-between mb-3">
-        <h3 className="text-sm font-medium text-(--p-textSecondary)">Accounts</h3>
-        <button type="button" onClick={() => setAdding(true)} className={primaryButton}>
-          Add
+        <div className="flex items-center gap-2">
+          <Switch
+            labelledBy={showId}
+            checked={settings.opencodeEnabled}
+            onChange={(next) =>
+              void update(
+                { opencodeEnabled: next },
+                next ? "OpenCode shown on widget" : "OpenCode hidden from widget",
+              )
+            }
+          />
+          <span id={showId} className="text-sm text-(--p-textSecondary)">
+            Active
+          </span>
+        </div>
+        <button
+          type="button"
+          aria-label="Add OpenCode account"
+          title="Add OpenCode account"
+          onClick={() => setAdding(true)}
+          className="h-7 w-7 rounded border border-(--p-border) bg-(--p-surface) text-(--p-muted) hover:bg-(--p-surfaceHover) hover:text-(--p-text) flex items-center justify-center shrink-0"
+        >
+          <PlusIcon size={16} />
         </button>
       </div>
       {adding && (
@@ -305,74 +310,83 @@ export default function OpenCodeAccounts({
         </p>
       ) : (
         <ul className="space-y-2">
-          {sorted.map((a) => (
-            <li
-              key={a.email}
-              className={`border rounded-lg px-3 py-2 ${
-                disabled(a.email)
-                  ? "bg-(--p-accountInactiveBg) border-transparent"
-                  : usage[a.email]?.subscriptionActive === false
-                    ? "bg-(--p-accountWarningBg) border-(--p-accountWarningBorder)"
+          {sorted.map((a) => {
+            const inactive = disabled(a.email) || usage[a.email]?.subscriptionActive === false;
+            return (
+              <li
+                key={a.email}
+                className={`border rounded-lg px-3 py-2 ${
+                  inactive
+                    ? "bg-(--p-accountInactiveBg) border-transparent"
                     : "bg-(--p-accountActiveBg) border-(--p-accountActiveBorder)"
-              }`}
-            >
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setDetail(a.email)}
-                  className="flex-1 min-w-0 text-left text-sm text-(--p-text) truncate hover:underline"
-                >
-                  {a.email}
-                </button>
-                <Badge tone="blue">Go</Badge>
-                <ResetBadges usage={usage[a.email]} now={now} />
-                {confirmRemove === a.email ? (
-                  <span className="flex items-center gap-1 shrink-0">
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        setConfirmRemove(null);
-                        if (await removeAccount(a.email)) {
-                          toastSuccess("Account removed");
-                          void reload();
-                        }
-                      }}
-                      className="text-[11px] px-2 py-1 rounded bg-(--p-dangerBg) text-(--p-dangerFg) hover:opacity-90"
-                    >
-                      Remove
-                    </button>
-                    <button
-                      type="button"
-                      autoFocus
-                      onClick={() => setConfirmRemove(null)}
-                      className="text-[11px] px-2 py-1 rounded text-(--p-textSecondary) hover:bg-(--p-surfaceHover)"
-                    >
-                      Cancel
-                    </button>
-                  </span>
-                ) : (
-                  <span className="flex items-center gap-0.5 shrink-0">
-                    <IconButton label={`Details for ${a.email}`} onClick={() => setDetail(a.email)}>
-                      <GearIcon />
-                    </IconButton>
-                    <IconButton
-                      label={`Remove ${a.email}`}
-                      danger
-                      onClick={() => setConfirmRemove(a.email)}
-                    >
-                      <TrashIcon />
-                    </IconButton>
-                  </span>
-                )}
-              </div>
-              <div
-                aria-hidden={!settings.displayNames[a.email]}
-                className="mt-1 h-4 text-xs text-(--p-text) truncate"
+                }`}
               >
-                {settings.displayNames[a.email] ?? ""}
-              </div>
-            </li>
-          ))}
+                <div className="flex items-center gap-2">
+                  <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setDetail(a.email)}
+                      className="min-w-0 flex-1 text-left text-sm text-(--p-text) truncate hover:underline"
+                    >
+                      {a.email}
+                    </button>
+                    {inactive ? (
+                      <ResetBadges usage={usage[a.email]} inactive now={now} />
+                    ) : (
+                      <Badge tone="blue">Go</Badge>
+                    )}
+                  </div>
+                  {confirmRemove === a.email ? (
+                    <span className="flex items-center gap-1 shrink-0">
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          setConfirmRemove(null);
+                          if (await removeAccount(a.email)) {
+                            toastSuccess("Account removed");
+                            void reload();
+                          }
+                        }}
+                        className="text-[11px] px-2 py-1 rounded bg-(--p-dangerBg) text-(--p-dangerFg) hover:opacity-90"
+                      >
+                        Remove
+                      </button>
+                      <button
+                        type="button"
+                        autoFocus
+                        onClick={() => setConfirmRemove(null)}
+                        className="text-[11px] px-2 py-1 rounded text-(--p-textSecondary) hover:bg-(--p-surfaceHover)"
+                      >
+                        Cancel
+                      </button>
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-0.5 shrink-0">
+                      <IconButton
+                        label={`Details for ${a.email}`}
+                        onClick={() => setDetail(a.email)}
+                      >
+                        <GearIcon />
+                      </IconButton>
+                      <IconButton
+                        label={`Remove ${a.email}`}
+                        danger
+                        onClick={() => setConfirmRemove(a.email)}
+                      >
+                        <TrashIcon />
+                      </IconButton>
+                    </span>
+                  )}
+                </div>
+                <div
+                  aria-hidden={!settings.displayNames[a.email]}
+                  className="mt-1 h-4 text-xs text-(--p-text) truncate"
+                >
+                  {settings.displayNames[a.email] ?? ""}
+                </div>
+              </li>
+            );
+          })}
         </ul>
       )}
       {detailAccount && (

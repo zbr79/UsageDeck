@@ -68,6 +68,15 @@ test("right-click menu has icon actions and a red Quit action", async ({ page })
   );
 });
 
+test("right-click menu omits expand when there is nothing to expand", async ({ page }) => {
+  await openWidget(page, { settings: { opencodeEnabled: false } });
+  const main = page.getByRole("main", { name: "Provider usage" });
+  await main.click({ button: "right", position: { x: 180, y: 80 } });
+  const menu = page.getByRole("menu", { name: "Widget menu" });
+  await expect(menu.getByRole("menuitem", { name: "Expand" })).toHaveCount(0);
+  await expect(menu.getByRole("menuitem", { name: "Refresh" })).toBeVisible();
+});
+
 test("the widget shows only the account a provider is signed into", async ({ page }) => {
   const current = providers.cursor.accounts[0];
   await openWidget(page, {

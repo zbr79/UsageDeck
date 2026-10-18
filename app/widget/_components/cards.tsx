@@ -59,7 +59,10 @@ function ReauthHint({ expired, how }: { expired: boolean; how: string }) {
 }
 
 function planTone(plan: string): Tone {
-  return plan.toLowerCase() === "free" ? "green" : "blue";
+  const normalized = plan.toLowerCase();
+  if (normalized === "free") return "green";
+  if (normalized === "max 20x") return "amber";
+  return "blue";
 }
 
 function Unavailable<T>({ slot }: { slot: ProviderSlot<T> }) {

@@ -135,9 +135,15 @@ async function readAccount(): Promise<ClaudeAccount> {
 export function planNameOf(
   subscriptionType: string | null,
   organizationType: string | null,
+  rateLimitTier: string | null = null,
 ): string | null {
-  const raw = (subscriptionType ?? organizationType ?? "").toLowerCase();
+  const raw = [subscriptionType, organizationType, rateLimitTier]
+    .filter((value): value is string => !!value)
+    .join(" ")
+    .toLowerCase();
   if (!raw) return null;
+  if (raw.includes("20x")) return "Max 20X";
+  if (raw.includes("5x")) return "Max 5X";
   if (raw.includes("max")) return "Max";
   if (raw.includes("pro")) return "Pro";
   if (raw.includes("free")) return "Free";
@@ -191,7 +197,7 @@ export function buildClaudeUsage(
       (account.billingType != null && account.billingType !== "none") ||
       account.seatTier != null,
     subscriptionType,
-    planName: planNameOf(subscriptionType, account.organizationType),
+    planName: planNameOf(subscriptionType, account.organizationType, token?.rateLimitTier),
     fiveHour: windowOf(usageJson?.five_hour),
     weekly: windowOf(usageJson?.seven_day),
     weeklyOpus: usageJson?.seven_day_opus ? windowOf(usageJson.seven_day_opus) : null,

@@ -1,4 +1,4 @@
-import { formatDuration } from "./format";
+import { formatResetDuration } from "./format";
 import type { OpenCodeAccountUsage, OpenCodeUsage, UsageWindow } from "./types";
 
 // Ranking rules for OpenCode accounts on the widget:
@@ -72,12 +72,12 @@ export function resetLabel(
   const ms = new Date(window.resetsAt).getTime() - now;
   if (!Number.isFinite(ms) || ms <= 0) return null;
   const full = isExhaustedWindow(window, stale, now);
-  const left = formatDuration(ms, 1);
+  const left = formatResetDuration(ms);
   return {
     text: full ? `${shortName} full ${left}` : `${shortName} ${left}`,
     title: full
-      ? `${longName} is used up and resets in ${formatDuration(ms, 2)}`
-      : `${longName} resets in ${formatDuration(ms, 2)}`,
+      ? `${longName} is used up and resets in ${formatResetDuration(ms)}`
+      : `${longName} resets in ${formatResetDuration(ms)}`,
     full,
   };
 }

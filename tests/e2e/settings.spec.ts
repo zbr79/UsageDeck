@@ -140,7 +140,7 @@ test("a Cursor account can be nicknamed and hidden on its own", async ({ page })
 
 test("OpenCode can be hidden from the widget as a whole", async ({ page }) => {
   const { seen, dialog } = await openSettings(page);
-  const sw = dialog.getByRole("switch", { name: "Show on widget" });
+  const sw = dialog.getByRole("switch", { name: "Active" });
   await expect(sw).toHaveAttribute("aria-checked", "true");
   await sw.click();
   await expect(sw).toHaveAttribute("aria-checked", "false");
@@ -149,9 +149,24 @@ test("OpenCode can be hidden from the widget as a whole", async ({ page }) => {
   });
 });
 
+test("OpenCode account cards replace inactive Go badges with reset badges", async ({ page }) => {
+  const { dialog } = await openSettings(page);
+  const main = dialog.getByRole("listitem").filter({ hasText: "main@example.com" });
+  const lapsed = dialog.getByRole("listitem").filter({ hasText: "lapsed@example.com" });
+
+  await expect(dialog.getByText(/^Weekly /)).toHaveCount(0);
+  await expect(main.getByText("Go", { exact: true })).toBeVisible();
+  await expect(main.getByText("Monthly 15d", { exact: true })).toHaveCount(0);
+  await expect(lapsed.getByText("Go", { exact: true })).toHaveCount(0);
+  const resetBadge = lapsed.getByText("Resets in 15 days", { exact: true });
+  await expect(resetBadge).toBeVisible();
+  await expect(resetBadge).toHaveCSS("background-color", "rgba(239, 68, 68, 0.15)");
+});
+
 test("adding an account validates the key and posts it", async ({ page }) => {
   const { seen, dialog } = await openSettings(page);
-  await dialog.getByRole("button", { name: "Add", exact: true }).click();
+  await expect(dialog.getByRole("heading", { name: "Accounts" })).toHaveCount(0);
+  await dialog.getByRole("button", { name: "Add OpenCode account" }).click();
   const add = page.getByRole("dialog", { name: "Add OpenCode account" });
   await add.getByLabel("Email or label").fill("new@example.com");
   await add.getByLabel("API key").fill("not-a-key");

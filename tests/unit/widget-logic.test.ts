@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { formatAgo, formatDuration, formatPercent, formatUntil } from "@/lib/format";
+import {
+  formatAgo,
+  formatDuration,
+  formatPercent,
+  formatResetDuration,
+  formatUntil,
+} from "@/lib/format";
 import { getPeakInfo } from "@/lib/peak";
 import { increasedWindows, isAccountExhausted, rankAccounts, resetLabel } from "@/lib/ranking";
 import type { OpenCodeAccountUsage } from "@/lib/types";
@@ -23,10 +29,17 @@ describe("formatDuration", () => {
     expect(formatDuration(-5 * M)).toBe("0m");
     expect(formatDuration(NaN)).toBe("0m");
   });
+  it("uses compact reset units by range", () => {
+    expect(formatResetDuration(45 * M)).toBe("45m");
+    expect(formatResetDuration(1 * H + 47 * M)).toBe("1h 47m");
+    expect(formatResetDuration(2 * D + 4 * H)).toBe("2d 4h");
+    expect(formatResetDuration(6 * D + 4 * H)).toBe("6d 4h");
+    expect(formatResetDuration(27 * D + 8 * H)).toBe("27d");
+  });
   it("formatUntil handles bad input", () => {
     expect(formatUntil(null, 0)).toBeNull();
     expect(formatUntil("nope", 0)).toBeNull();
-    expect(formatUntil(new Date(2 * H).toISOString(), 0)).toBe("2h 0m");
+    expect(formatUntil(new Date(2 * D + 4 * H).toISOString(), 0)).toBe("2d 4h");
   });
 });
 

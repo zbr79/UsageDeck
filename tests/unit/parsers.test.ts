@@ -136,6 +136,8 @@ describe("claude helpers", () => {
   });
   it("planNameOf maps subscription types", () => {
     expect(planNameOf("claude_max", null)).toBe("Max");
+    expect(planNameOf("claude_max", null, "default_claude_max_5x")).toBe("Max 5X");
+    expect(planNameOf("claude_max", null, "default_claude_max_20x")).toBe("Max 20X");
     expect(planNameOf(null, "claude_pro")).toBe("Pro");
     expect(planNameOf(null, null)).toBeNull();
   });

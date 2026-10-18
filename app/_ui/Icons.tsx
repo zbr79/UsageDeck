@@ -36,6 +36,13 @@ export const CheckIcon = (p: IconProps) => (
   </Icon>
 );
 
+export const PlusIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M12 5v14" />
+    <path d="M5 12h14" />
+  </Icon>
+);
+
 export const TrashIcon = (p: IconProps) => (
   <Icon {...p}>
     <path d="M3 6h18" />

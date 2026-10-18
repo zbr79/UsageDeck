@@ -65,7 +65,14 @@ function planOf(id: ProviderId, account: AnyAccount): { text: string; tone: Tone
       ? "not signed in"
       : (c.planName ?? (c.subscribed ? (c.subscriptionType ?? "subscribed") : "Free"));
   if (!plan) return null;
-  const tone: Tone = plan === "Free" ? "green" : plan === "not signed in" ? "gray" : "blue";
+  const tone: Tone =
+    plan === "Free"
+      ? "green"
+      : plan === "not signed in"
+        ? "gray"
+        : plan.toLowerCase() === "max 20x"
+          ? "amber"
+          : "blue";
   return { text: plan, tone };
 }
 
@@ -183,10 +190,9 @@ export default function ProviderPanel({
           }
         />
         <span id={showId} className="text-sm text-(--p-textSecondary)">
-          Show on widget
+          Active
         </span>
       </div>
-      <h3 className="text-sm font-medium text-(--p-textSecondary) mb-1">Accounts</h3>
       {sorted === null ? (
         <p className="text-sm text-(--p-muted)">Loading…</p>
       ) : sorted.length === 0 ? (
