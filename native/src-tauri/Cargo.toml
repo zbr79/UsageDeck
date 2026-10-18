@@ -25,3 +25,4 @@ thiserror = "2"
 chrono = { version = "0.4", features = ["serde"] }
 keyring = { version = "3", features = ["windows-native"] }
 log = "0.4"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
