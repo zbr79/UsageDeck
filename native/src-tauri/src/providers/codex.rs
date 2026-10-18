@@ -152,7 +152,22 @@ struct CodexAccount {
     account_id: Option<String>,
 }
 
+/// Unit tests never read this PC's real sign-ins; only the `#[ignore]` live tests switch it on.
+#[cfg(test)]
+pub(crate) static REAL_SIGN_INS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// True when the real sign-in files may be read (always outside tests).
+pub(crate) fn real_sign_ins() -> bool {
+    #[cfg(test)]
+    return REAL_SIGN_INS.load(std::sync::atomic::Ordering::Relaxed);
+    #[cfg(not(test))]
+    true
+}
+
 fn auth_file() -> PathBuf {
+    if !real_sign_ins() {
+        return PathBuf::from("no-real-sign-in-in-tests");
+    }
     let home = std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .map(PathBuf::from)
@@ -339,6 +354,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn codex_live() {
+        REAL_SIGN_INS.store(true, std::sync::atomic::Ordering::Relaxed);
         let Some(account) = read_codex_account() else {
             println!("codex live: no sign-in");
             return;

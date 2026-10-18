@@ -97,6 +97,9 @@ struct CursorAccount {
 }
 
 fn state_db() -> PathBuf {
+    if !super::codex::real_sign_ins() {
+        return PathBuf::from("no-real-sign-in-in-tests");
+    }
     let roaming = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(|| {
         let home = std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_default();
         home.join("AppData").join("Roaming")
@@ -396,6 +399,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn cursor_live() {
+        crate::providers::codex::REAL_SIGN_INS.store(true, std::sync::atomic::Ordering::Relaxed);
         let account = match current_state(&state_db(), BUSY_TIMEOUT).map(account_of) {
             Ok(Some(a)) => a,
             other => {
