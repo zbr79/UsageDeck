@@ -75,6 +75,8 @@ export interface OpenCodeAccountUsage {
   subscriptionActive: boolean | null;
   lastChangeAt: number | null;
   lastChangeDetail: string | null;
+  /** true when OpenCode rejected the API key (401 / 403) */
+  authExpired?: boolean;
 }
 
 export interface OpenCodeAccountSummary {
