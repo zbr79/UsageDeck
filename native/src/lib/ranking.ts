@@ -3,7 +3,7 @@ import type { OpenCodeAccountUsage, OpenCodeUsage, UsageWindow } from "./types";
 
 // Ranking rules for OpenCode accounts on the widget:
 //  1. accounts exhausted on the weekly or monthly window sink to the bottom;
-//  2. among those, the one resetting soonest ranks first;
+//  2. among those, the one usable again soonest ranks first;
 //  3. otherwise the most recently used account floats to the top.
 
 export function isPassed(iso: string | null | undefined, now = Date.now()): boolean {
@@ -30,14 +30,18 @@ export function isAccountExhausted(r: OpenCodeAccountUsage, now = Date.now()): b
   );
 }
 
-function earliestReset(r: OpenCodeAccountUsage, now: number): number {
+/**
+ * When an exhausted account becomes usable again: an account full on several windows waits for
+ * the LATEST of their resets (the old code took the earliest).
+ */
+export function usableAgainAt(r: OpenCodeAccountUsage, now: number): number {
   const u = r.usage;
   if (!u) return 0;
   const times = (["monthly", "weekly"] as const)
     .filter((k) => isExhaustedWindow(u[k], r.stale, now))
     .map((k) => new Date(u[k].resetsAt).getTime())
     .filter(Number.isFinite);
-  return times.length ? Math.min(...times) : 0;
+  return times.length ? Math.max(...times) : 0;
 }
 
 /** Visible accounts (enabled, subscription not known-inactive), best first. */
@@ -52,7 +56,7 @@ export function rankAccounts(
       const ea = isAccountExhausted(a, now);
       const eb = isAccountExhausted(b, now);
       if (ea !== eb) return ea ? 1 : -1;
-      if (ea) return earliestReset(a, now) - earliestReset(b, now);
+      if (ea) return usableAgainAt(a, now) - usableAgainAt(b, now);
       return lastUsedAt(b.email) - lastUsedAt(a.email);
     });
 }
