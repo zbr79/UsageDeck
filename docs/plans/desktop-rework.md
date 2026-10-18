@@ -250,3 +250,53 @@ Row 6 disappears with the server.
   data sources, stale-data dimming.
 - OpenUsage: https://github.com/robinebers/openusage. Pipeline of auth -> usage -> mapper ->
   snapshot; cached values first, then refresh.
+
+## 10. Build status (native rebuild, wave 3)
+
+**Done** (branch `wave3-finish`, on top of the wave 2 merge):
+
+- Rust shell, store, API dispatcher, five providers, DPAPI cookie decrypt and theme sampler
+  (waves 1-2). `cargo test --lib`: 34 passed, 5 ignored; `npm test`: 85 passed; `npm run build` clean.
+- The OpenCode card shows a "key rejected" hint when OpenCode refuses the key (`authExpired`).
+- `usagedeck.exe --import-old-data <dir>`: settings through the patch rules, seen-accounts and usage
+  cache when the shape matches, OpenCode keys (plaintext or `enc:v1:`) into Credential Manager.
+  Run once on the owner's PC: 6 of 6 keys moved, settings / seen list / cache imported.
+- `usagedeck.exe --dump`: redacted JSON of every provider route.
+- Autostart: release builds only, and never when the exe runs from a cargo target folder.
+- `npm run tauri build` produces the per-user NSIS installer (about 4 MB).
+- Comparison with the old widget on the same PC: every provider's plan and window percentages
+  match within 1 point (OpenCode 6 accounts, Cursor, Grok, Codex, Claude). Both apps see the
+  Codex sign-in as expired and OpenCode answering HTTP 403.
+- Visual smoke: the release widget renders the Claude and OpenCode cards with their bars.
+
+**What differs from the old app:**
+
+- No local server, no `x-usage-secret`, no port 3100; the frontend calls Rust through `invoke`.
+- OpenCode keys live in Windows Credential Manager, not AES-encrypted in `accounts.json`.
+- A rejected OpenCode key (401 / 403) is flagged as `authExpired` and shown as "key rejected";
+  the old app only showed the row as stale.
+- Data lives in `%APPDATA%\com.usagedeck.app`, not in the repo's `data/` folder.
+
+**Left:**
+
+- The owner installs the NSIS build, checks it for a day, then retires the old Electron widget
+  (remove its shortcut / process) and later `app/`, `lib/`, `desktop/`.
+- The OpenCode card hides its title when both "key rejected" and the peak hint show (width).
+- The identifier ends in `.app` (Tauri warns; harmless on Windows, kept to match the contract).
+
+### Review map (wave 3)
+
+- `native/src-tauri/src/cli.rs:28-57` `try_run`: picks a headless mode before any window exists.
+- `cli.rs:66-78` `attach_console`: GUI-subsystem exe attaches to the parent console when stdout
+  is not inherited.
+- `cli.rs:81-114` `aes_key`, `b64url`, `decrypt_key`: port of `lib/key-crypto.ts` decrypt.
+- `cli.rs:117-226` `seen_compatible`, `cache_compatible`, `import_old_data`: the import; keys go
+  through `Store::update_accounts`, never printed.
+- `cli.rs:229-325` `mask`, `reset_for`, `windows_of`, `plan_of`, `redact_account`, `dump`: the
+  redacted summary.
+- `cli.rs:325-369` tests: `enc:v1` round trip with a value encrypted in the test; redaction.
+- `native/src-tauri/src/lib.rs:215-226` `running_from_cargo_target`; `lib.rs:229-233` CLI hook in
+  `run`; `lib.rs:257-264` autostart guarded by it.
+- `native/src-tauri/Cargo.toml`: `sha2` (already locked via tauri), `Win32_System_Console`.
+- `native/src/lib/types.ts:78-79` `authExpired?`; `native/src/widget/_components/cards.tsx:135-144`
+  "key rejected" hint on the OpenCode card.
