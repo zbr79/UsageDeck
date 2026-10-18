@@ -40,7 +40,8 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# secrets
+# secrets (all local app data)
+/data/
 /data/accounts.json
 /data/settings.json
 /data/.api-secret
