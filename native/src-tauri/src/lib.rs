@@ -4,6 +4,7 @@
 pub mod api;
 pub mod providers;
 pub mod store;
+pub mod win;
 
 use providers::{SeenAccounts, UsageCache};
 use serde_json::Value;
@@ -265,6 +266,7 @@ pub fn run() {
                 });
             }
             build_tray(app)?;
+            win::screen::start_sampler(app.handle().clone());
             Ok(())
         })
         .run(tauri::generate_context!())

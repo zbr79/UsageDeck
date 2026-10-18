@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getJson, onSettingsChanged } from "@/lib/api";
 import { onRefresh } from "@/lib/bridge";
 import { increasedWindows } from "@/lib/ranking";
@@ -47,6 +47,33 @@ export interface WidgetData {
 }
 
 /**
+ * Wrap `task` so only one run is in flight. A call made while a run is in flight queues one
+ * follow-up run (several calls fold into one) instead of being dropped, so a reload asked for
+ * after settings were saved always reads them. Every caller's promise settles when the queue drains.
+ */
+export function queuedRunner(task: () => Promise<void>): () => Promise<void> {
+  let inflight: Promise<void> | null = null;
+  let again = false;
+  return () => {
+    if (inflight) {
+      again = true;
+      return inflight;
+    }
+    inflight = (async () => {
+      try {
+        do {
+          again = false;
+          await task().catch(() => undefined);
+        } while (again);
+      } finally {
+        inflight = null;
+      }
+    })();
+    return inflight;
+  };
+}
+
+/**
  * Polls every endpoint independently: one slow or failing provider never
  * blocks or blanks the others.
  */
@@ -64,63 +91,58 @@ export function useWidgetData() {
   });
   const lastUsedAt = useRef(new Map<string, number>());
   const increaseAt = useRef(new Map<string, number>());
-  const inflight = useRef(false);
 
-  const load = useCallback(async () => {
-    if (inflight.current) return;
-    inflight.current = true;
-    try {
-      const [settings, usage, cursor, grok, codex, claude] = await Promise.allSettled([
-        getJson<{ settings: Settings }>("/api/settings"),
-        getJson<{ accounts: OpenCodeAccountUsage[] }>("/api/usage"),
-        getJson<{ accounts: TrackedAccount<CursorUsage>[] }>("/api/cursor"),
-        getJson<{ accounts: TrackedAccount<GrokUsage>[] }>("/api/grok"),
-        getJson<{ accounts: TrackedAccount<CodexUsage>[] }>("/api/codex"),
-        getJson<{ accounts: TrackedAccount<ClaudeUsage>[] }>("/api/claude"),
-      ]);
-      const now = Date.now();
+  const loadOnce = useCallback(async () => {
+    const [settings, usage, cursor, grok, codex, claude] = await Promise.allSettled([
+      getJson<{ settings: Settings }>("/api/settings"),
+      getJson<{ accounts: OpenCodeAccountUsage[] }>("/api/usage"),
+      getJson<{ accounts: TrackedAccount<CursorUsage>[] }>("/api/cursor"),
+      getJson<{ accounts: TrackedAccount<GrokUsage>[] }>("/api/grok"),
+      getJson<{ accounts: TrackedAccount<CodexUsage>[] }>("/api/codex"),
+      getJson<{ accounts: TrackedAccount<ClaudeUsage>[] }>("/api/claude"),
+    ]);
+    const now = Date.now();
 
-      if (usage.status === "fulfilled") {
-        for (const row of usage.value.accounts) {
-          if (row.lastChangeAt) {
-            const prev = lastUsedAt.current.get(row.email) ?? 0;
-            if (row.lastChangeAt >= prev) lastUsedAt.current.set(row.email, row.lastChangeAt);
-          }
-          if (!row.usage) continue;
-          const up = new Set(increasedWindows(row.usage, row.prev));
-          for (const win of ["rolling", "weekly", "monthly"] as const) {
-            const key = `${row.email}:${win}`;
-            if (!up.has(win)) increaseAt.current.delete(key);
-            else if (!increaseAt.current.has(key)) increaseAt.current.set(key, now);
-          }
+    if (usage.status === "fulfilled") {
+      for (const row of usage.value.accounts) {
+        if (row.lastChangeAt) {
+          const prev = lastUsedAt.current.get(row.email) ?? 0;
+          if (row.lastChangeAt >= prev) lastUsedAt.current.set(row.email, row.lastChangeAt);
+        }
+        if (!row.usage) continue;
+        const up = new Set(increasedWindows(row.usage, row.prev));
+        for (const win of ["rolling", "weekly", "monthly"] as const) {
+          const key = `${row.email}:${win}`;
+          if (!up.has(win)) increaseAt.current.delete(key);
+          else if (!increaseAt.current.has(key)) increaseAt.current.set(key, now);
         }
       }
-
-      const list = <T>(
-        prev: AccountList<T>,
-        r: PromiseSettledResult<{ accounts: TrackedAccount<T>[] }>,
-      ): AccountList<T> =>
-        r.status === "fulfilled"
-          ? { accounts: r.value.accounts ?? [], loaded: true }
-          : { ...prev, loaded: true };
-
-      const all = [settings, usage, cursor, grok, codex, claude];
-      const anyOk = all.some((r) => r.status === "fulfilled");
-      setData((prev) => ({
-        settings: settings.status === "fulfilled" ? settings.value.settings : prev.settings,
-        accounts: usage.status === "fulfilled" ? usage.value.accounts : prev.accounts,
-        cursor: list(prev.cursor, cursor),
-        grok: list(prev.grok, grok),
-        codex: list(prev.codex, codex),
-        claude: list(prev.claude, claude),
-        updatedAt: anyOk ? now : prev.updatedAt,
-        offline: !anyOk,
-        ready: true,
-      }));
-    } finally {
-      inflight.current = false;
     }
+
+    const list = <T>(
+      prev: AccountList<T>,
+      r: PromiseSettledResult<{ accounts: TrackedAccount<T>[] }>,
+    ): AccountList<T> =>
+      r.status === "fulfilled"
+        ? { accounts: r.value.accounts ?? [], loaded: true }
+        : { ...prev, loaded: true };
+
+    const all = [settings, usage, cursor, grok, codex, claude];
+    const anyOk = all.some((r) => r.status === "fulfilled");
+    setData((prev) => ({
+      settings: settings.status === "fulfilled" ? settings.value.settings : prev.settings,
+      accounts: usage.status === "fulfilled" ? usage.value.accounts : prev.accounts,
+      cursor: list(prev.cursor, cursor),
+      grok: list(prev.grok, grok),
+      codex: list(prev.codex, codex),
+      claude: list(prev.claude, claude),
+      updatedAt: anyOk ? now : prev.updatedAt,
+      offline: !anyOk,
+      ready: true,
+    }));
   }, []);
+
+  const load = useMemo(() => queuedRunner(loadOnce), [loadOnce]);
 
   useEffect(() => {
     void load();

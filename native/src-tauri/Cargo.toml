@@ -26,3 +26,13 @@ chrono = { version = "0.4", features = ["serde"] }
 keyring = { version = "3", features = ["windows-native"] }
 log = "0.4"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
+aes-gcm = "0.10"
+base64 = "0.22"
+
+# Windows-only app: DPAPI for safeStorage keys, GDI for the theme sampler.
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_Security_Cryptography",
+  "Win32_Graphics_Gdi",
+  "Win32_UI_WindowsAndMessaging",
+] }

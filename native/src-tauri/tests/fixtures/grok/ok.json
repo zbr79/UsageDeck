@@ -1,0 +1,40 @@
+{
+  "currentPeriodStart": "2026-10-18T22:15:02.859Z",
+  "nextResetTimestampUtc": "2026-10-25T22:15:02.859Z",
+  "usagePercent": 0.957435,
+  "hasAvailableUsage": true,
+  "hasNonZeroIncludedLimit": true,
+  "upgradeRecommendation": {
+    "cta": {
+      "label": "See Unified Plans",
+      "url": {
+        "url": "https://example.com/REDACTED"
+      }
+    },
+    "supportingText": "REDACTED",
+    "kind": "redirect-to-unified-plans"
+  },
+  "upgradeRecommendations": [
+    {
+      "cta": {
+        "label": "See Unified Plans",
+        "url": {
+          "url": "https://example.com/REDACTED"
+        }
+      },
+      "supportingText": "REDACTED",
+      "kind": "redirect-to-unified-plans"
+    }
+  ],
+  "onDemandSettings": {
+    "visible": true,
+    "eligible": true,
+    "dashboardUrl": "https://example.com/REDACTED"
+  },
+  "grokPlanLabel": "Grok Bot Plan",
+  "cursorPlanName": "Pro Student",
+  "billingBrand": "SAND_BILLING_BRAND_CURSOR",
+  "unifiedPlanMigration": {
+    "href": "https://example.com/REDACTED"
+  }
+}
