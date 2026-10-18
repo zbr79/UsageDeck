@@ -343,7 +343,12 @@ export function CodexCard({
     multiple,
   );
   const passed = slot.stale && isPassed(x?.resetAt, now);
-  const exhausted = !!x && !passed && (x.limitReached || (x.usedPercent ?? 0) >= 100);
+  const hasWeekly = x?.weeklyUsedPercent != null;
+  const weeklyPassed = slot.stale && isPassed(x?.weeklyResetAt, now);
+  const exhausted =
+    !!x &&
+    ((!passed && (x.limitReached || (x.usedPercent ?? 0) >= 100)) ||
+      (hasWeekly && !weeklyPassed && (x.weeklyUsedPercent ?? 0) >= 100));
   return (
     <Card
       label={`Codex ${title}`}
@@ -378,9 +383,26 @@ export function CodexCard({
       {x ? (
         <>
           <div className="flex gap-2">
-            <Meter label="Usage" name="Codex usage" percent={x.usedPercent} unknown={passed} />
+            <Meter
+              label={hasWeekly && x.limitWindowSeconds === 18000 ? "5h" : "Usage"}
+              name="Codex usage"
+              percent={x.usedPercent}
+              unknown={passed}
+              reset={hasWeekly && x.resetAt && !passed ? formatUntil(x.resetAt, now) : undefined}
+            />
+            {hasWeekly && (
+              <Meter
+                label="Weekly"
+                name="Codex weekly usage"
+                percent={x.weeklyUsedPercent}
+                unknown={weeklyPassed}
+                reset={x.weeklyResetAt && !weeklyPassed ? formatUntil(x.weeklyResetAt, now) : null}
+              />
+            )}
           </div>
-          {x.resetAt && !passed && <ResetLine>Resets {formatUntil(x.resetAt, now)}</ResetLine>}
+          {!hasWeekly && x.resetAt && !passed && (
+            <ResetLine>Resets {formatUntil(x.resetAt, now)}</ResetLine>
+          )}
         </>
       ) : (
         <Unavailable slot={slot} />

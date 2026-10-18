@@ -118,6 +118,10 @@ export interface CodexUsage {
   usedPercent: number | null;
   limitWindowSeconds: number | null;
   resetAt: string | null;
+  /** weekly limit (`rate_limit.secondary_window`) */
+  weeklyUsedPercent: number | null;
+  weeklyLimitWindowSeconds: number | null;
+  weeklyResetAt: string | null;
   creditsBalance: number | null;
   resetCredits: number | null;
   limitReached: boolean;
