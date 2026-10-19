@@ -8,6 +8,10 @@ import {
   formatUsd,
   formatUsdRate,
   headerRate,
+  SPEND_BAND_TONE,
+  spendBand,
+  spendRateTitle,
+  targetBandText,
   hourlyOldestFirst,
   hourlySummary,
   meterPaceText,
@@ -103,6 +107,45 @@ describe("headerRate", () => {
   it("shows nothing while backfilling or without pace", () => {
     expect(headerRate(pace({ backfilling: true }))).toBeNull();
     expect(headerRate(null)).toBeNull();
+  });
+});
+
+describe("spendBand", () => {
+  it("is none without a target and idle at zero spend", () => {
+    expect(spendBand(50, null)).toBe("none");
+    expect(spendBand(0, 100)).toBe("idle");
+  });
+  it("is below under 80%, on from 80% to 120%, above over 120%", () => {
+    expect(spendBand(79.9, 100)).toBe("below");
+    expect(spendBand(0.5, 100)).toBe("below");
+    expect(spendBand(80, 100)).toBe("on");
+    expect(spendBand(100, 100)).toBe("on");
+    expect(spendBand(120, 100)).toBe("on");
+    expect(spendBand(120.1, 100)).toBe("above");
+  });
+  it("maps to the muted, warning, success and danger text colours", () => {
+    expect(SPEND_BAND_TONE.none).toBe("muted");
+    expect(SPEND_BAND_TONE.idle).toBe("muted");
+    expect(SPEND_BAND_TONE.below).toBe("warning");
+    expect(SPEND_BAND_TONE.on).toBe("success");
+    expect(SPEND_BAND_TONE.above).toBe("danger");
+  });
+});
+
+describe("spend target text", () => {
+  it("states the green band", () => {
+    expect(targetBandText(100)).toBe("Green between $80 and $120 per hour");
+    expect(targetBandText(5)).toBe("Green between $4.0 and $6.0 per hour");
+  });
+  it("tooltip says what the number is, the target, the band and where the rate falls", () => {
+    const base = "Claude Code spend over the last hour (API-equivalent, this PC)";
+    expect(spendRateTitle(35, null)).toBe(base);
+    expect(spendRateTitle(35, 100)).toBe(
+      `${base} · target $100/h · below target (green $80–$120/h)`,
+    );
+    expect(spendRateTitle(100, 100)).toContain("· on target (green $80–$120/h)");
+    expect(spendRateTitle(128, 100)).toContain("· above target");
+    expect(spendRateTitle(0, 100)).toBe(`${base} · target $100/h · idle`);
   });
 });
 

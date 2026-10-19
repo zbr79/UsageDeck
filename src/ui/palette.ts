@@ -34,6 +34,9 @@ export interface WidgetPalette {
   peakActive: string;
   peakNext: string;
   warn: string;
+  /** spend on target / above target (the Claude header vs the hourly target; `warn` is below) */
+  success: string;
+  danger: string;
   hover: string;
   /** keyboard focus ring (the settings panel's --p-focus values, 3:1 against the card) */
   focus: string;
@@ -80,6 +83,8 @@ const lightBase: Omit<WidgetPalette, "card" | "track"> = {
   peakActive: "#9f0712",
   peakNext: "#006045",
   warn: "#973c00",
+  success: "#006045",
+  danger: "#9f0712",
   hover: "rgba(0,0,0,0.08)",
   focus: "#1447e6",
   badge: lightBadges,
@@ -108,6 +113,8 @@ export const WIDGET_PALETTES: Record<WidgetTheme, WidgetPalette> = {
     peakActive: "#ffa2a2",
     peakNext: "#5ee9b5",
     warn: "#ffd230",
+    success: "#5ee9b5",
+    danger: "#ffa2a2",
     hover: "rgba(255,255,255,0.1)",
     focus: "#8ec5ff",
     badge: darkBadges,
@@ -156,6 +163,8 @@ export interface PanelPalette {
   dangerFg: string;
   danger: string;
   success: string;
+  /** amber text (spend below the hourly target) */
+  warning: string;
   badge: Record<Tone, BadgeColors>;
 }
 
@@ -184,6 +193,7 @@ export const PANEL_PALETTES: Record<"dark" | "light", PanelPalette> = {
     dangerFg: "#ffffff",
     danger: "#ffa2a2",
     success: "#5ee9b5",
+    warning: "#ffd230",
     badge: darkBadges,
   },
   light: {
@@ -210,9 +220,25 @@ export const PANEL_PALETTES: Record<"dark" | "light", PanelPalette> = {
     dangerFg: "#ffffff",
     danger: "#9f0712",
     success: "#006045",
+    warning: "#973c00",
     badge: lightBadges,
   },
 };
+
+/** The settings rows' card colour (`--s-card` in settings/App.tsx). */
+export const SETTINGS_ROW_CARD = { dark: "#2b2b2b", light: "#fbfbfb" } as const;
+
+/** Text colour per spend tone (see `SPEND_BAND_TONE` in lib/pace.ts); "muted" keeps each place's own muted style. */
+export const WIDGET_SPEND_TONE = {
+  warning: "warn",
+  success: "success",
+  danger: "danger",
+} as const satisfies Record<string, keyof WidgetPalette>;
+export const PANEL_SPEND_TONE = {
+  warning: "warning",
+  success: "success",
+  danger: "danger",
+} as const satisfies Record<string, keyof PanelPalette>;
 
 /** Flatten a palette into CSS custom properties: { '--w-card': … }. */
 export function cssVars(prefix: string, palette: WidgetPalette | PanelPalette): CSSProperties {
