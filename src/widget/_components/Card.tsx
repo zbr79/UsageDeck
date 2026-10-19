@@ -7,21 +7,21 @@ export type CardState = "normal" | "active" | "exhausted";
 export interface CardExtras {
   /** highlight as the signed-in account (an exhausted card keeps its red ring) */
   active?: boolean;
-  /** an OpenCode account whose subscription lapsed: dim the meters */
+  /** a gray card: hidden from the widget, or an OpenCode subscription that lapsed */
   dimmed?: boolean;
-  /** hidden from the widget: dashed border */
-  dashed?: boolean;
-  /** controls at the right end of the header row (settings: show switch, "more" button) */
+  /** hidden from the widget: an eye-slash icon after the name */
+  hidden?: boolean;
+  /** no badges and no hints (a lapsed OpenCode subscription is just a gray card) */
+  plain?: boolean;
+  /** controls at the right end of the header row (settings: the "more" button) */
   headerActions?: ReactNode;
-  /** an actionable note (settings: "Subscription inactive"), shown with the hints below the title */
-  headerNote?: ReactNode;
 }
 
-/** What a settings account cell hands its card: the header controls and the note. */
-export type CardHeader = Pick<CardExtras, "headerActions" | "headerNote">;
+/** What a settings account cell hands its card: the header controls. */
+export type CardHeader = Pick<CardExtras, "headerActions">;
 
 /**
- * A dimmed card's meters read the palette's dim tokens instead of fading with opacity, so text
+ * A dimmed card's text and meters read the palette's dim tokens instead of fading with opacity, so text
  * keeps 4.5:1 and meter fills 3:1 against the card (tests/palette.test.ts).
  */
 const DIM_VARS = {
@@ -57,7 +57,7 @@ export function Card({
   extras?: CardExtras;
   children: ReactNode;
 }) {
-  // Settings cards also hold a switch and a "more" button, so header hints move to their own
+  // Settings cards also hold a "more" button, so header hints move to their own
   // line below the title and the account name keeps its width. The widget keeps them inline.
   const hintsBelow = extras?.headerActions !== undefined;
   const shown: CardState = state === "normal" && extras?.active ? "active" : state;
@@ -70,7 +70,8 @@ export function Card({
   return (
     <section
       aria-label={label}
-      className={`relative rounded-lg p-2 border bg-(--w-card) transition-colors duration-700 ${ring}${extras?.dashed ? " border-dashed" : ""}`}
+      className={`relative rounded-lg p-2 border border-solid bg-(--w-card) transition-colors duration-700 ${ring}`}
+      style={extras?.dimmed ? DIM_VARS : undefined}
     >
       <div className="flex items-center gap-1.5 mb-1.5 min-w-0">
         {icon}
@@ -80,21 +81,50 @@ export function Card({
         >
           {title}
         </span>
+        {extras?.hidden && <HiddenIcon />}
         {!hintsBelow && hints}
-        <span className="ml-auto flex items-center gap-1 shrink-0">{badges}</span>
+        <span className="ml-auto flex items-center gap-1 shrink-0">{!extras?.plain && badges}</span>
         {extras?.headerActions && (
           <span className="flex items-center gap-1 shrink-0">{extras.headerActions}</span>
         )}
       </div>
-      {hintsBelow && (
+      {hintsBelow && !extras?.plain && (
         // Hidden while every hint is empty (a hint group with nothing to say).
         <div className="ud-card-hints hidden has-[*:not(:empty)]:flex flex-wrap items-center gap-x-1.5 -mt-0.5 mb-1.5 min-w-0">
-          {extras?.headerNote}
           {hints}
         </div>
       )}
-      {extras?.dimmed ? <div style={DIM_VARS}>{children}</div> : children}
+      {children}
     </section>
+  );
+}
+
+/** Settings: the account is hidden from the widget. The native tooltip shows on hover. */
+function HiddenIcon() {
+  return (
+    <span
+      role="img"
+      aria-label="Hidden from widget"
+      title="Hidden from widget"
+      className="flex size-4 shrink-0 items-center justify-center text-(--w-muted)"
+    >
+      <svg
+        aria-hidden="true"
+        width="16"
+        height="16"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <path d="M10.7 5.1A10.4 10.4 0 0 1 12 5c5 0 9 4.5 10 7a13.2 13.2 0 0 1-2.2 3.3" />
+        <path d="M6.6 6.6C4.4 8 2.8 10.1 2 12c1 2.5 5 7 10 7 1.9 0 3.6-.6 5.1-1.5" />
+        <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" />
+        <path d="m2 2 20 20" />
+      </svg>
+    </span>
   );
 }
 

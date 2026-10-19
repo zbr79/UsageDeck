@@ -4,6 +4,7 @@ import { copyKey } from "@/lib/copy-key";
 import type { PeakInfo } from "@/lib/peak";
 import type { OpenCodeAccountSummary, OpenCodeAccountUsage, Settings } from "@/lib/types";
 import { OpenCodeCard } from "@/widget/_components/cards";
+import { orderOpenCode } from "../_lib/order";
 import { PROVIDER_ICONS } from "../_lib/pages";
 import { refreshWidget, removeAccount } from "../_lib/hooks";
 import { AccountCell, CardGrid, EmptyState, ProviderLogo, useNow } from "./CardGrid";
@@ -52,8 +53,13 @@ export default function OpenCodeAccounts({
   const [pending, setPending] = useState<Pending | null>(null);
   const now = useNow();
   const disabled = (email: string) => settings.disabledAccounts.includes(email.toLowerCase());
+  // The widget's order first, then hidden, lapsed and no-data accounts (../_lib/order.ts).
   const sorted = accounts
-    ? [...accounts].sort((a, b) => Number(disabled(a.email)) - Number(disabled(b.email)))
+    ? orderOpenCode(
+        accounts.map((a) => usage[a.email] ?? emptyRow(a.email)),
+        disabled,
+        now,
+      ).map((row) => accounts.find((a) => a.email === row.email)!)
     : null;
   const nickname = (email: string) => settings.displayNames[email] ?? "";
   const close = () => setPending(null);
@@ -89,7 +95,6 @@ export default function OpenCodeAccounts({
                 key={a.email}
                 name={nickname(a.email) || a.email}
                 shown={!off}
-                note={lapsed ? "Subscription inactive" : null}
                 onShownChange={(next) =>
                   void update(
                     {
@@ -131,7 +136,7 @@ export default function OpenCodeAccounts({
                     now={now}
                     increased={() => false}
                     onCopyKey={() => void copyKey(a.email)}
-                    extras={{ dimmed: lapsed, dashed: off, ...header }}
+                    extras={{ dimmed: off || lapsed, hidden: off, plain: lapsed, ...header }}
                     fullEmail
                   />
                 )}

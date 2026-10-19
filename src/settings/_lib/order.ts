@@ -103,12 +103,12 @@ export function isUsedUp(
  * Claude / Codex / Cursor / Grok cards: shown accounts before hidden ones; within each, the
  * signed-in account first, used-up accounts last, then the most recent cached use first.
  */
-export function orderTracked<A extends TrackedAccount<AnyUsage>>(
+export function orderTracked(
   id: ProviderId,
-  accounts: A[],
+  accounts: readonly TrackedAccount<AnyUsage>[],
   hidden: (accountId: string) => boolean,
   now = Date.now(),
-): A[] {
+): TrackedAccount<AnyUsage>[] {
   return [...accounts].sort(
     (a, b) =>
       Number(hidden(a.id)) - Number(hidden(b.id)) ||

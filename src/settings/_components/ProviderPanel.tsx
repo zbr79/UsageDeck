@@ -15,6 +15,7 @@ import { slotFromAccount as widgetSlot } from "@/widget/_lib/useWidgetData";
 import { cardErrorKind } from "@/lib/errors";
 import { PAGE_TITLES, PROVIDER_ICONS } from "../_lib/pages";
 import { refreshWidget, type Summaries } from "../_lib/hooks";
+import { orderTracked } from "../_lib/order";
 import { usePanelTheme } from "../_lib/theme";
 import { AccountCell, CardGrid, EmptyState, ProviderLogo, useNow } from "./CardGrid";
 import { RenameDialog } from "./dialogs";
@@ -49,8 +50,8 @@ function providerCard(
   hidden: boolean,
   light: boolean,
 ) {
-  // Cached usage looks like fresh usage: no status note and no dimming.
-  const extras = { active: account.active, dashed: hidden, ...header };
+  // Cached usage looks like fresh usage: no status note and no dimming. A hidden account is gray.
+  const extras = { active: account.active, dimmed: hidden, hidden, ...header };
   // `multiple` makes every card title the account's own label (or nickname), not the provider.
   const common = { settings, now, accountId: account.id, multiple: true, extras };
   const label = account.label;
@@ -116,12 +117,7 @@ export default function ProviderPanel({
   const accounts = summaries[id]?.accounts ?? null;
   const hidden = (accountId: string) =>
     settings.disabledAccounts.includes(accountKey(id, accountId));
-  const sorted = accounts
-    ? [...accounts].sort(
-        (a, b) =>
-          Number(hidden(a.id)) - Number(hidden(b.id)) || Number(b.active) - Number(a.active),
-      )
-    : null;
+  const sorted = accounts ? orderTracked(id, accounts, hidden, now) : null;
   const nickname = (accountId: string) => settings.displayNames[accountKey(id, accountId)] ?? "";
   const renameAccount = accounts?.find((a) => a.id === renaming) ?? null;
 
