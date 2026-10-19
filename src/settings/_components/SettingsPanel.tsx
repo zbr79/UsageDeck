@@ -51,7 +51,7 @@ function useDrag() {
   return { offset, onMouseDown };
 }
 
-export default function SettingsPanel({ onClose }: { onClose: () => void }) {
+export default function SettingsPanel({ onClose }: { onClose: (reason: string) => void }) {
   const { settings, update } = useSettings();
   const summaries = useSummaries();
   const [initial] = useState(initialTabs);
@@ -80,7 +80,7 @@ export default function SettingsPanel({ onClose }: { onClose: () => void }) {
             <h2 id="settings-title" className="text-lg font-bold">
               Settings
             </h2>
-            <IconButton label="Close settings" onClick={onClose}>
+            <IconButton label="Close settings" onClick={() => onClose("close button")}>
               <CloseIcon size={16} />
             </IconButton>
           </div>
