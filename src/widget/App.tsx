@@ -323,7 +323,7 @@ export default function WidgetPage() {
           {data.offline && (
             <div
               role="status"
-              className="flex items-center justify-between gap-2 rounded-lg border border-(--w-ringDanger) bg-(--w-card) px-2 py-1 text-[10px] text-(--w-text)"
+              className="flex items-center justify-between gap-2 rounded-lg border border-(--w-ringDanger) bg-(--w-card) px-2 py-1 text-[11px] text-(--w-text)"
             >
               <span>
                 Usage unavailable

@@ -67,7 +67,7 @@ export function Card({
       <div className="flex items-center gap-1.5 mb-1.5 min-w-0">
         {icon}
         <span
-          className="text-[11px] leading-4 font-medium truncate min-w-0 text-(--w-text) transition-colors duration-700"
+          className="text-[12px] leading-4 font-semibold truncate min-w-0 text-(--w-text) transition-colors duration-700"
           title={titleHint}
         >
           {title}
@@ -103,7 +103,7 @@ export function Hint({
   return (
     <span
       title={title}
-      className="text-[10px] leading-3 font-medium whitespace-nowrap transition-colors duration-700"
+      className="text-[11px] leading-4 font-medium whitespace-nowrap transition-colors duration-700"
       style={{ color: `var(--w-${color})` }}
     >
       {children}
@@ -122,7 +122,7 @@ export function Meter({
   reset,
 }: {
   label: string;
-  /** spoken name, e.g. "Weekly usage" */
+  /** full name, spoken and shown as the tooltip, e.g. "Rolling 5-hour window" */
   name: string;
   percent: number | null;
   unknown?: boolean;
@@ -144,11 +144,17 @@ export function Meter({
     ? `${formatPercent(value)}%${reset ? `, resets in ${reset}` : ""}`
     : "unknown";
   return (
-    <div className="flex-1 min-w-0">
-      <div className="flex justify-between text-[10px] leading-3 mb-0.5">
-        <span className="text-(--w-label) transition-colors duration-700">{label}</span>
+    <div className="flex-1 min-w-0" title={name}>
+      {/* the meter below speaks the full name, value and reset, so the compact text is hidden */}
+      <div
+        aria-hidden="true"
+        className="flex items-baseline justify-between gap-1 text-[11px] leading-4 mb-0.5"
+      >
+        <span className="truncate min-w-0 text-(--w-label) transition-colors duration-700">
+          {label}
+        </span>
         <span
-          className={`transition-colors duration-700 ${known && !dimmed ? "text-(--w-text)" : "text-(--w-muted)"}`}
+          className={`shrink-0 text-[12px] font-semibold tabular-nums transition-colors duration-700 ${known && !dimmed ? "text-(--w-text)" : "text-(--w-muted)"}`}
         >
           {known ? (
             <>
@@ -179,7 +185,10 @@ export function Meter({
         />
       </div>
       {reset && known && (
-        <div className="text-[10px] leading-3 mt-0.5 text-(--w-muted) transition-colors duration-700">
+        <div
+          aria-hidden="true"
+          className="text-[11px] leading-4 text-(--w-muted) transition-colors duration-700"
+        >
           {reset}
         </div>
       )}
@@ -188,12 +197,12 @@ export function Meter({
 }
 
 export function Note({ children }: { children: ReactNode }) {
-  return <div className="text-[10px] leading-3 text-(--w-muted)">{children}</div>;
+  return <div className="text-[11px] leading-4 text-(--w-muted)">{children}</div>;
 }
 
 export function ResetLine({ children }: { children: ReactNode }) {
   return (
-    <div className="text-[10px] leading-3 mt-1 text-(--w-muted) transition-colors duration-700">
+    <div className="text-[11px] leading-4 mt-1 text-(--w-muted) transition-colors duration-700">
       {children}
     </div>
   );
