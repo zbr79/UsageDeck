@@ -16,9 +16,10 @@ import type {
 } from "@/lib/types";
 import type { CardExtras } from "@/widget/_components/Card";
 import { ClaudeCard, CodexCard, CursorCard, GrokCard } from "@/widget/_components/cards";
-import { slotFromAccount } from "@/widget/_lib/useWidgetData";
+import { slotFromAccount as widgetSlot } from "@/widget/_lib/useWidgetData";
+import { cardErrorKind } from "@/lib/errors";
 import type { Summaries } from "../_lib/hooks";
-import { CardFooter, CardGrid, updatedNote, useNow } from "./CardGrid";
+import { CardFooter, CardGrid, useNow } from "./CardGrid";
 import { NicknameField } from "./fields";
 
 type Update = (patch: Partial<Settings>, success?: string) => Promise<boolean>;
@@ -76,6 +77,11 @@ function planOf(id: ProviderId, account: AnyAccount): { text: string; tone: Tone
           ? "amber"
           : "blue";
   return { text: plan, tone };
+}
+
+/** The widget's slot for an account; a missing sign-in is named only on the signed-in account. */
+function slotFromAccount<T>(account: TrackedAccount<T>) {
+  return { ...widgetSlot(account), error: cardErrorKind(account.error, account.active) };
 }
 
 /** The widget's own card for one account, fed from its cached or live usage. */
@@ -255,18 +261,12 @@ export default function ProviderPanel({
           {sorted.map((account) => {
             const label = labelOf(id, account);
             const isHidden = hidden(account.id);
-            const updated = updatedNote(account.cachedAt, now);
-            const note = account.active
-              ? account.stale && updated
-                ? `Signed in · ${updated}`
-                : "Signed in"
-              : `Not signed in · ${updated ?? "nothing cached"}`;
+            // Cached usage looks like fresh usage: no status note and no dimming.
             const extras: CardExtras = {
               active: account.active,
-              dimmed: !account.active,
               dashed: isHidden,
               footer: (
-                <CardFooter note={note} hidden={isHidden}>
+                <CardFooter hidden={isHidden}>
                   <IconButton label={`Details for ${label}`} onClick={() => setDetail(account.id)}>
                     <GearIcon size={12} />
                   </IconButton>
