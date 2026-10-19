@@ -1,75 +1,85 @@
-import { useEffect, useEffectEvent, useRef, type CSSProperties, type ReactNode } from "react";
-import { backdropReason, cancelReason } from "./close-reason";
+import { useEffect, useEffectEvent, useId, useRef, type FormEvent, type ReactNode } from "react";
 
 /**
- * Modal built on the native <dialog>: the browser provides the focus trap,
- * inert background, Escape handling (topmost dialog only) and focus
- * restoration on close. Clicking the backdrop closes it. The settings overlay's
- * backdrop covers the whole work area, so any real click outside the panel
- * closes Settings (as in Electron); `onClose` gets the path, for the log.
+ * A 440 px modal over the settings window (WinUI ContentDialog layout: title, body, buttons on
+ * a footer band). Built on the native <dialog>: the browser traps focus, makes the page inert,
+ * turns Esc into `cancel` (topmost dialog only) and restores focus on close. Clicking outside
+ * does nothing. With `onSubmit` the dialog is a form, so Enter submits.
  */
 export default function Dialog({
-  labelledBy,
+  title,
   onClose,
+  onSubmit,
+  footer,
   children,
-  className = "",
-  style,
 }: {
-  labelledBy: string;
-  /** `reason` names the close path, for logs: "escape (...)" or "backdrop (...)". */
-  onClose: (reason: string) => void;
+  title: ReactNode;
+  onClose: () => void;
+  onSubmit?: () => void;
+  footer: ReactNode;
   children: ReactNode;
-  className?: string;
-  style?: CSSProperties;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
-  const bodyRef = useRef<HTMLDivElement>(null);
-  const requestClose = useEffectEvent((reason: string) => onClose(reason));
-  const openedAt = useRef(0);
-  const lastKey = useRef<string | null>(null);
+  const titleId = useId();
+  const requestClose = useEffectEvent(() => onClose());
 
   useEffect(() => {
     const dialog = ref.current;
     if (!dialog) return;
+    const previous = document.activeElement as HTMLElement | null;
     if (!dialog.open) dialog.showModal();
-    openedAt.current = performance.now();
-    // Focus a field marked data-autofocus, else the dialog body itself (no
-    // focus ring on the first button just because the dialog opened).
-    const target = dialog.querySelector<HTMLElement>("[data-autofocus]") ?? bodyRef.current;
+    // A field marked data-autofocus, else the first control.
+    const target =
+      dialog.querySelector<HTMLElement>("[data-autofocus]") ??
+      dialog.querySelector<HTMLElement>("input, button");
     target?.focus();
-    const onKey = (e: KeyboardEvent) => {
-      lastKey.current = e.key;
-    };
     const onCancel = (e: Event) => {
       e.preventDefault(); // we unmount instead of letting the browser close it
-      const ms = Math.round(performance.now() - openedAt.current);
-      requestClose(cancelReason(e, lastKey.current, ms));
+      requestClose();
     };
-    document.addEventListener("keydown", onKey, true);
     dialog.addEventListener("cancel", onCancel);
     return () => {
-      document.removeEventListener("keydown", onKey, true);
       dialog.removeEventListener("cancel", onCancel);
       if (dialog.open) dialog.close();
+      if (previous?.isConnected) previous.focus();
     };
   }, []);
+
+  const body = (
+    <>
+      <div className="px-6 pt-6 pb-5">
+        <h2 id={titleId} className="mb-3 text-xl leading-7 font-semibold break-words">
+          {title}
+        </h2>
+        <div className="text-sm text-(--p-text)">{children}</div>
+      </div>
+      <div className="flex justify-end gap-2 rounded-b-lg border-t border-(--p-border) bg-(--p-surface) px-6 py-4">
+        {footer}
+      </div>
+    </>
+  );
+  const frame =
+    "w-[440px] max-w-[calc(100vw-32px)] rounded-lg border border-(--p-border) bg-(--p-bg) shadow-2xl";
 
   return (
     <dialog
       ref={ref}
-      aria-labelledby={labelledBy}
-      className={`m-auto bg-transparent p-0 backdrop:bg-transparent text-(--p-text) ${className}`}
-      style={style}
-      onMouseDown={(e) => {
-        // Only the backdrop area has the <dialog> itself as target.
-        if (e.target !== e.currentTarget) return;
-        const ms = Math.round(performance.now() - openedAt.current);
-        onClose(backdropReason(e, ms));
-      }}
+      aria-labelledby={titleId}
+      className="m-auto overflow-visible bg-transparent p-0 text-(--p-text) backdrop:bg-black/40"
     >
-      <div ref={bodyRef} tabIndex={-1} className="outline-none">
-        {children}
-      </div>
+      {onSubmit ? (
+        <form
+          className={frame}
+          onSubmit={(e: FormEvent) => {
+            e.preventDefault();
+            onSubmit();
+          }}
+        >
+          {body}
+        </form>
+      ) : (
+        <div className={frame}>{body}</div>
+      )}
     </dialog>
   );
 }
