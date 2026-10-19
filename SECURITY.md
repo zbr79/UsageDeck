@@ -48,6 +48,7 @@ instead. No token-refresh endpoint is ever called.
 | App            | What is read (read-only)                                                                                    |
 | -------------- | ----------------------------------------------------------------------------------------------------------- |
 | Claude Code    | `~/.claude/.credentials.json` (`claudeAiOauth`), `~/.claude.json` (account email / plan)                    |
+| Claude Code transcripts | `~/.claude/projects/**/*.jsonl`, shared-read; only reply token counts, model and time are parsed; only per-minute token totals are stored (`spend-buckets.json`, `claude-logs-index.json`, `usage-history.jsonl` holds hashed account ids and percentages) |
 | Claude desktop | `%APPDATA%\Claude\config.json` token cache and `Local State` key (or the Microsoft Store package equivalent) |
 | Codex CLI      | `~/.codex/auth.json`                                                                                        |
 | Cursor         | `%APPDATA%\Cursor\User\globalStorage\state.vscdb` (SQLite, opened with `SQLITE_OPEN_READ_ONLY`)             |
