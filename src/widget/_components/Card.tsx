@@ -7,7 +7,7 @@ export type CardState = "normal" | "active" | "exhausted";
 export interface CardExtras {
   /** highlight as the signed-in account (an exhausted card keeps its red ring) */
   active?: boolean;
-  /** cached usage of an account that isn't signed in: dim the meters */
+  /** an OpenCode account whose subscription lapsed: dim the meters */
   dimmed?: boolean;
   /** hidden from the widget: dashed border */
   dashed?: boolean;
@@ -38,7 +38,6 @@ export function Card({
   hints,
   badges,
   state = "normal",
-  age,
   extras,
   children,
 }: {
@@ -50,8 +49,6 @@ export function Card({
   hints?: ReactNode;
   badges?: ReactNode;
   state?: CardState;
-  /** "updated 2h ago" for cached data; the widget shows it, settings has its own footer note */
-  age?: string | null;
   extras?: CardExtras;
   children: ReactNode;
 }) {
@@ -79,11 +76,6 @@ export function Card({
         <span className="ml-auto flex items-center gap-1 shrink-0">{badges}</span>
       </div>
       {extras?.dimmed ? <div style={DIM_VARS}>{children}</div> : children}
-      {age && !extras && (
-        <div className="mt-1.5 pt-1 border-t border-(--w-cardBorder) truncate text-[10px] leading-3 text-(--w-muted) transition-colors duration-700">
-          {age}
-        </div>
-      )}
       {extras?.footer}
     </section>
   );

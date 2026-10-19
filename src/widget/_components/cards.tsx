@@ -3,7 +3,7 @@ import { Badge, HIT_24 } from "@/ui/controls";
 import { CopyIcon } from "@/ui/Icons";
 import type { Tone } from "@/ui/palette";
 import { errorHint, isAuthRejected } from "@/lib/errors";
-import { capitalize, formatDuration, formatUntil, staleAge } from "@/lib/format";
+import { capitalize, formatDuration, formatUntil } from "@/lib/format";
 import type { PeakInfo } from "@/lib/peak";
 import { isAccountExhausted, isExhaustedWindow, isPassed, isUnknownWindow } from "@/lib/ranking";
 import type {
@@ -159,7 +159,6 @@ export function OpenCodeCard({
   return (
     <Card
       extras={extras}
-      age={staleAge(row.stale, row.cachedAt, now)}
       label={`OpenCode account ${title}`}
       state={state}
       icon={
@@ -274,7 +273,6 @@ export function CursorCard({
   return (
     <Card
       extras={extras}
-      age={staleAge(slot.stale, slot.cachedAt, now)}
       label={`Cursor ${title}`}
       icon={<ProviderIcon src="/cursor.ico" alt="" />}
       title={title}
@@ -349,7 +347,6 @@ export function GrokCard({
   return (
     <Card
       extras={extras}
-      age={staleAge(slot.stale, slot.cachedAt, now)}
       label={`Grok Bot ${title}`}
       icon={<ProviderIcon src="/grokbot.ico" alt="" />}
       title={title}
@@ -419,7 +416,6 @@ export function CodexCard({
   return (
     <Card
       extras={extras}
-      age={staleAge(slot.stale, slot.cachedAt, now)}
       label={`Codex ${title}`}
       icon={<ProviderIcon src="/openai.png" alt="" invert={light} />}
       title={title}
@@ -518,7 +514,6 @@ export function ClaudeCard({
   return (
     <Card
       extras={extras}
-      age={staleAge(slot.stale, slot.cachedAt, now)}
       label={`Claude ${title}`}
       icon={<ProviderIcon src="/claude.ico" alt="" />}
       title={title}
