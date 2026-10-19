@@ -4,6 +4,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type KeyboardEvent,
   type MouseEvent,
   type ReactNode,
 } from "react";
@@ -25,6 +26,7 @@ import { DEFAULT_SETTINGS } from "@/lib/settings-schema";
 import type { ProviderId, TrackedAccount, WidgetProvider } from "@/lib/types";
 import { ClaudeCard, CodexCard, CursorCard, GrokCard, OpenCodeCard } from "./_components/cards";
 import { nextBrightness, resolveWidgetTheme } from "./_lib/theme";
+import { menuNavIndex } from "./_lib/menu-nav";
 import { slotFromAccount, useWidgetData, type AccountList } from "./_lib/useWidgetData";
 
 const WIDTH = 238;
@@ -49,6 +51,7 @@ export default function WidgetPage() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuPosition, setMenuPosition] = useState({ x: 8, y: 8 });
   const rootRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   const settings = data.settings ?? DEFAULT_SETTINGS;
   const theme = resolveWidgetTheme(settings.themeMode, brightness);
@@ -79,7 +82,7 @@ export default function WidgetPage() {
       setMenuPosition({ x, y });
       setMenuOpen(true);
     };
-    const onKey = (e: KeyboardEvent) => {
+    const onKey = (e: globalThis.KeyboardEvent) => {
       if (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) {
         e.preventDefault();
         setMenuOpen(true);
@@ -105,6 +108,37 @@ export default function WidgetPage() {
     document.addEventListener("pointerdown", close);
     return () => document.removeEventListener("pointerdown", close);
   }, [menuOpen]);
+
+  // Menu focus: the first item on open, back to where it was on close.
+  useEffect(() => {
+    if (!menuOpen) return;
+    const previous = document.activeElement;
+    menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+    return () => {
+      if (previous instanceof HTMLElement && previous !== document.body && previous.isConnected) {
+        previous.focus();
+      }
+    };
+  }, [menuOpen]);
+
+  // Up / Down / Home / End move between items; Enter and Space activate the focused
+  // button natively; Esc closes (window keydown above); Tab closes like a native menu.
+  const onMenuKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === "Tab") {
+      e.preventDefault();
+      setMenuOpen(false);
+      return;
+    }
+    const items = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]'));
+    const next = menuNavIndex(
+      e.key,
+      items.indexOf(document.activeElement as HTMLElement),
+      items.length,
+    );
+    if (next == null) return;
+    e.preventDefault();
+    items[next]?.focus();
+  };
 
   // Size the frameless window to the content.
   useEffect(() => {
@@ -309,6 +343,7 @@ export default function WidgetPage() {
       )}
       {menuOpen && (
         <div
+          ref={menuRef}
           data-widget-menu
           role="menu"
           aria-label="Widget menu"
@@ -319,13 +354,15 @@ export default function WidgetPage() {
           }}
           className="absolute z-50 rounded-lg border border-(--w-cardBorder) bg-(--w-card) p-1 shadow-xl text-(--w-text)"
           onContextMenu={(e) => e.preventDefault()}
+          onKeyDown={onMenuKeyDown}
         >
           {canToggleExpand && (
             <button
               type="button"
               role="menuitem"
+              tabIndex={-1}
               onClick={() => menuAction(expanded ? "collapse" : "expand")}
-              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] hover:bg-(--w-hover)"
+              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] hover:bg-(--w-hover) focus-visible:bg-(--w-hover)"
             >
               {expanded ? <CollapseIcon size={14} /> : <ExpandIcon size={14} />}
               {expanded ? "Collapse" : "Expand"}
@@ -334,8 +371,9 @@ export default function WidgetPage() {
           <button
             type="button"
             role="menuitem"
+            tabIndex={-1}
             onClick={() => menuAction("refresh")}
-            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] hover:bg-(--w-hover)"
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] hover:bg-(--w-hover) focus-visible:bg-(--w-hover)"
           >
             <RefreshIcon size={14} />
             Refresh
@@ -343,18 +381,20 @@ export default function WidgetPage() {
           <button
             type="button"
             role="menuitem"
+            tabIndex={-1}
             onClick={() => menuAction("settings")}
-            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] hover:bg-(--w-hover)"
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] hover:bg-(--w-hover) focus-visible:bg-(--w-hover)"
           >
             <GearIcon size={14} />
             Settings
           </button>
-          <div className="my-1 border-t border-(--w-cardBorder)" />
+          <div role="separator" className="my-1 border-t border-(--w-cardBorder)" />
           <button
             type="button"
             role="menuitem"
+            tabIndex={-1}
             onClick={() => menuAction("quit")}
-            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] text-(--w-barDanger) hover:bg-(--w-hover)"
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] text-(--w-barDanger) hover:bg-(--w-hover) focus-visible:bg-(--w-hover)"
           >
             <PowerIcon size={14} />
             Quit
