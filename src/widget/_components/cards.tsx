@@ -4,14 +4,7 @@ import { CopyIcon } from "@/ui/Icons";
 import type { Tone } from "@/ui/palette";
 import { errorHint, isAuthRejected } from "@/lib/errors";
 import { capitalize, formatDuration, formatUntil } from "@/lib/format";
-import {
-  evenPacePct,
-  headerRate,
-  meterPaceText,
-  meterSeverity,
-  WINDOW_MS,
-  type PaceWindowKey,
-} from "@/lib/pace";
+import { headerRate, meterPaceText, meterSeverity } from "@/lib/pace";
 import type { PeakInfo } from "@/lib/peak";
 import { isAccountExhausted, isExhaustedWindow, isPassed, isUnknownWindow } from "@/lib/ranking";
 import type {
@@ -486,21 +479,13 @@ export function CodexCard({
 // ---- Claude ---------------------------------------------------------------
 
 /**
- * A Claude meter's pace: the even-pace tick (the server's, else from the reset time; works without
- * pace data), the fill severity and the tooltip details.
+ * A Claude meter's pace: the fill severity and the tooltip details. No even-pace tick: the owner
+ * found it confusing (nobody aims to use a whole window exactly by its reset).
  */
-function claudeMeterPace(
-  percent: number,
-  pw: PaceWindow | null,
-  key: PaceWindowKey,
-  w: ClaudeUsage["fiveHour"],
-  now: number,
-) {
-  const tick = evenPacePct(pw?.resetsAt ?? w.resetsAt, WINDOW_MS[key], now, pw?.evenPacePct);
+function claudeMeterPace(percent: number, pw: PaceWindow | null, now: number) {
   return {
-    tick,
     severity: meterSeverity(percent, pw, now),
-    detail: meterPaceText(percent, tick, pw, now),
+    detail: meterPaceText(percent, null, pw, now),
   };
 }
 
@@ -599,7 +584,7 @@ export function ClaudeCard({
             ).map(([label, name, w, key]) => {
               const unknown = windowUnknown(w);
               const pw = pace?.windows[key] ?? null;
-              const meterPace = unknown ? null : claudeMeterPace(w.percent!, pw, key, w, now);
+              const meterPace = unknown ? null : claudeMeterPace(w.percent!, pw, now);
               return (
                 <Meter
                   key={label}
@@ -608,7 +593,6 @@ export function ClaudeCard({
                   percent={w.percent}
                   unknown={unknown}
                   reset={unknown ? null : formatUntil(w.resetsAt, now)}
-                  pacePct={meterPace?.tick}
                   severity={meterPace?.severity}
                   detail={meterPace?.detail}
                 />
