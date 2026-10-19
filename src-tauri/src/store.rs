@@ -416,6 +416,8 @@ pub struct Settings {
     pub codex_enabled: bool,
     pub claude_enabled: bool,
     pub deepseek_peak_hour_warning: bool,
+    /// hide the widget while a full-screen app is in front on its monitor
+    pub hide_in_fullscreen: bool,
     pub show_provider_names: bool,
     pub theme_mode: ThemeMode,
     pub panel_theme: PanelTheme,
@@ -439,6 +441,7 @@ impl Default for Settings {
             codex_enabled: true,
             claude_enabled: true,
             deepseek_peak_hour_warning: true,
+            hide_in_fullscreen: true,
             show_provider_names: false,
             theme_mode: ThemeMode::Auto,
             panel_theme: PanelTheme::Dark,
@@ -540,7 +543,7 @@ pub fn apply_settings_patch(current: &Settings, patch: &Value) -> Settings {
     };
     let mut next = current.clone();
     {
-        let bools: [(&str, &mut bool); 8] = [
+        let bools: [(&str, &mut bool); 9] = [
             ("opencodeEnabled", &mut next.opencode_enabled),
             ("cursorEnabled", &mut next.cursor_enabled),
             ("grokEnabled", &mut next.grok_enabled),
@@ -550,6 +553,7 @@ pub fn apply_settings_patch(current: &Settings, patch: &Value) -> Settings {
                 "deepseekPeakHourWarning",
                 &mut next.deepseek_peak_hour_warning,
             ),
+            ("hideInFullscreen", &mut next.hide_in_fullscreen),
             ("showProviderNames", &mut next.show_provider_names),
             ("startAtLogin", &mut next.start_at_login),
         ];
@@ -797,6 +801,28 @@ mod tests {
         assert!(on.start_at_login);
         // an old settings file without the field starts at login
         assert!(normalize_settings(Some(&json!({ "grokEnabled": false }))).start_at_login);
+    }
+
+    #[test]
+    fn settings_patch_hide_in_fullscreen() {
+        let current = Settings::default();
+        assert!(current.hide_in_fullscreen);
+        assert_eq!(
+            serde_json::to_value(&current).unwrap()["hideInFullscreen"],
+            json!(true)
+        );
+        let off = apply_settings_patch(&current, &json!({ "hideInFullscreen": false }));
+        assert!(!off.hide_in_fullscreen);
+        // wrong types are ignored
+        let same = apply_settings_patch(&off, &json!({ "hideInFullscreen": 1 }));
+        assert!(!same.hide_in_fullscreen);
+        let on = apply_settings_patch(&off, &json!({ "hideInFullscreen": true }));
+        assert!(on.hide_in_fullscreen);
+        // an old settings file without the field hides during full screen
+        assert!(normalize_settings(Some(&json!({ "grokEnabled": false }))).hide_in_fullscreen);
+        assert!(
+            !normalize_settings(Some(&json!({ "hideInFullscreen": false }))).hide_in_fullscreen
+        );
     }
 
     #[test]
