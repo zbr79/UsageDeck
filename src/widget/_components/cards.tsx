@@ -133,14 +133,18 @@ export function OpenCodeCard({
       title={title}
       titleHint={row.email}
       hints={
-        <>
-          {row.authExpired && (
-            <Hint color="warn" title="OpenCode rejected this API key · add a new key in Settings">
-              key rejected
-            </Hint>
-          )}
-          {peakHint}
-        </>
+        (row.authExpired || peakHint) && (
+          // The widget is 238 px wide: when both hints show, they wrap onto a second line (this
+          // group shrinks first, down to its widest hint) so the account name keeps its width.
+          <span className="flex flex-wrap items-center gap-x-1.5 shrink-[100]">
+            {row.authExpired && (
+              <Hint color="warn" title="OpenCode rejected this API key · add a new key in Settings">
+                key rejected
+              </Hint>
+            )}
+            {peakHint}
+          </span>
+        )
       }
       badges={
         <Badge scope="w" tone="blue">

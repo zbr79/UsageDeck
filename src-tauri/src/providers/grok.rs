@@ -4,10 +4,12 @@
 //! has none, Cursor's current sign-in (same backend) is used as a single account. Both are only
 //! ever read.
 
-use super::{collect_accounts, CachedProvider, FetchError, LiveAccount, ProviderError, TrackedAccount};
+use super::util::{string_or_null, to_iso};
+use super::{
+    collect_accounts, CachedProvider, FetchError, LiveAccount, ProviderError, TrackedAccount,
+};
 use crate::win::os_crypt::{app_key, unseal, AppKey};
 use crate::Core;
-use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -55,33 +57,6 @@ pub fn parse_sand_reply(bytes: &[u8]) -> Result<SandReply, ProviderError> {
     Ok(reply)
 }
 
-/// `toIso` in lib/time.ts: epoch seconds or ms (number or numeric string), or a date string.
-pub fn to_iso(value: Option<&Value>) -> Option<String> {
-    let iso = |d: DateTime<Utc>| d.to_rfc3339_opts(SecondsFormat::Millis, true);
-    let from_number = |n: f64| {
-        let ms = if n < 1e12 { n * 1000.0 } else { n };
-        DateTime::from_timestamp_millis(ms as i64).map(iso)
-    };
-    match value? {
-        Value::Number(n) => from_number(n.as_f64()?),
-        Value::String(s) => {
-            let t = s.trim();
-            if t.is_empty() {
-                None
-            } else if let Ok(n) = t.parse::<f64>() {
-                from_number(n)
-            } else {
-                DateTime::parse_from_rfc3339(t).ok().map(|d| iso(d.with_timezone(&Utc)))
-            }
-        }
-        _ => None,
-    }
-}
-
-fn string_or_null(v: Option<&Value>) -> Option<String> {
-    v.and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string)
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct GrokAccount {
     pub id: String,
@@ -97,9 +72,9 @@ pub fn build_usage(reply: &SandReply, account: &GrokAccount) -> GrokUsage {
         email: account.email.clone(),
         name: account.name.clone(),
         percent_used: reply.usage_percent.filter(|p| p.is_finite()),
-        reset_at: to_iso(reply.next_reset_timestamp_utc.as_ref()),
-        plan_label: string_or_null(reply.grok_plan_label.as_ref()),
-        cursor_plan_name: string_or_null(reply.cursor_plan_name.as_ref()),
+        reset_at: reply.next_reset_timestamp_utc.as_ref().and_then(to_iso),
+        plan_label: reply.grok_plan_label.as_ref().and_then(string_or_null),
+        cursor_plan_name: reply.cursor_plan_name.as_ref().and_then(string_or_null),
         source: account.source.to_string(),
     }
 }
@@ -107,7 +82,11 @@ pub fn build_usage(reply: &SandReply, account: &GrokAccount) -> GrokUsage {
 fn appdata() -> PathBuf {
     std::env::var_os("APPDATA")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(std::env::var_os("USERPROFILE").unwrap_or_default()).join("AppData").join("Roaming"))
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var_os("USERPROFILE").unwrap_or_default())
+                .join("AppData")
+                .join("Roaming")
+        })
 }
 
 /// Every account stored by Grok Bot, not only the one selected in the app.
@@ -125,18 +104,35 @@ pub fn grok_bot_accounts(secrets: &Value, key: &AppKey) -> Vec<GrokAccount> {
     let active_key = parsed.get("active").and_then(Value::as_str).unwrap_or("");
     let mut out: Vec<GrokAccount> = Vec::new();
     for (storage_id, entry) in entries {
-        let Some(token) = unseal(key, entry.get("cursor-access-token")) else { continue };
+        let Some(token) = unseal(key, entry.get("cursor-access-token")) else {
+            continue;
+        };
         let profile = unseal(key, entry.get("cursor-account-profile"))
             .and_then(|raw| serde_json::from_str::<Value>(&raw).ok());
-        let email = string_or_null(profile.as_ref().and_then(|p| p.get("email")));
-        let name = string_or_null(profile.as_ref().and_then(|p| p.get("name")));
+        let email = profile
+            .as_ref()
+            .and_then(|p| p.get("email"))
+            .and_then(string_or_null);
+        let name = profile
+            .as_ref()
+            .and_then(|p| p.get("name"))
+            .and_then(string_or_null);
         let id = email.as_deref().unwrap_or(storage_id).trim().to_lowercase();
         if id.is_empty() {
             continue;
         }
         let active = storage_id == active_key
-            || email.as_deref().is_some_and(|e| e.to_lowercase() == active_key.to_lowercase());
-        let account = GrokAccount { id, token, email, name, source: "grok-bot", active };
+            || email
+                .as_deref()
+                .is_some_and(|e| e.to_lowercase() == active_key.to_lowercase());
+        let account = GrokAccount {
+            id,
+            token,
+            email,
+            name,
+            source: "grok-bot",
+            active,
+        };
         match out.iter_mut().find(|a| a.id == account.id) {
             Some(prev) if account.active && !prev.active => *prev = account,
             Some(_) => {}
@@ -157,29 +153,17 @@ fn read_grok_bot_accounts() -> Vec<GrokAccount> {
     else {
         return Vec::new();
     };
-    let Some(key) = app_key(&dir.join("Local State")) else { return Vec::new() };
+    let Some(key) = app_key(&dir.join("Local State")) else {
+        return Vec::new();
+    };
     grok_bot_accounts(&secrets, &key)
 }
 
-/// Cursor's current sign-in (`readCursorState` in lib/cursor.ts), read-only. Kept here rather
-/// than shared with providers/cursor.rs, which another builder owns in this wave.
+/// Cursor's current sign-in (`readCursorState` in lib/cursor.ts), read-only through the Cursor
+/// provider's reader. A busy DB counts as no sign-in here.
 fn read_cursor_sign_in() -> Option<(String, Option<String>)> {
-    use rusqlite::{Connection, OpenFlags, OptionalExtension};
-    let db = appdata().join("Cursor").join("User").join("globalStorage").join("state.vscdb");
-    let conn = Connection::open_with_flags(&db, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX).ok()?;
-    let get = |key: &str| -> Option<String> {
-        conn.query_row("SELECT value FROM ItemTable WHERE key = ?1", [key], |r| r.get::<_, String>(0))
-            .optional()
-            .ok()
-            .flatten()
-    };
-    let token = get("cursorAuth/accessToken")?;
-    let name = get("cursorAuth/cachedEmail").or_else(|| {
-        get("cursorAuth/cachedScopedProfile")
-            .and_then(|p| serde_json::from_str::<Value>(&p).ok())
-            .and_then(|p| p.get("displayName").and_then(Value::as_str).map(str::to_string))
-    });
-    Some((token, name))
+    let state = super::cursor::read_state(&super::cursor::state_db(), Duration::ZERO).ok()??;
+    Some((state.token?, state.account_name))
 }
 
 /// Grok Bot's saved sign-ins; when it has none, Cursor's current sign-in as a single account.
@@ -188,10 +172,15 @@ fn read_accounts() -> Vec<GrokAccount> {
     if !own.is_empty() {
         return own;
     }
-    let Some((token, name)) = read_cursor_sign_in() else { return Vec::new() };
+    let Some((token, name)) = read_cursor_sign_in() else {
+        return Vec::new();
+    };
     let label = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
     vec![GrokAccount {
-        id: label.clone().unwrap_or_else(|| "cursor".into()).to_lowercase(),
+        id: label
+            .clone()
+            .unwrap_or_else(|| "cursor".into())
+            .to_lowercase(),
         token,
         email: label,
         name: None,
@@ -201,7 +190,10 @@ fn read_accounts() -> Vec<GrokAccount> {
 }
 
 /// POST the usage request (Cursor's headers). 401/403 -> AuthRejected, 429 -> RateLimited.
-pub async fn fetch_reply(http: &reqwest::Client, token: &str) -> Result<(SandReply, Vec<u8>), ProviderError> {
+pub async fn fetch_reply(
+    http: &reqwest::Client,
+    token: &str,
+) -> Result<(SandReply, Vec<u8>), ProviderError> {
     let resp = http
         .post(SAND_URL)
         .bearer_auth(token)
@@ -222,18 +214,27 @@ pub async fn fetch_reply(http: &reqwest::Client, token: &str) -> Result<(SandRep
         s if !(200..300).contains(&s) => return Err(ProviderError::Http(s)),
         _ => {}
     }
-    let bytes = resp.bytes().await.map_err(|_| ProviderError::Network)?.to_vec();
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|_| ProviderError::Network)?
+        .to_vec();
     Ok((parse_sand_reply(&bytes)?, bytes))
 }
 
-async fn fetch(http: reqwest::Client, account: GrokAccount) -> Result<GrokUsage, FetchError<GrokUsage>> {
+async fn fetch(
+    http: reqwest::Client,
+    account: GrokAccount,
+) -> Result<GrokUsage, FetchError<GrokUsage>> {
     let (reply, _) = fetch_reply(&http, &account.token).await?;
     Ok(build_usage(&reply, &account))
 }
 
 /// Rows for the `accounts` array of the old route's JSON body (`TrackedAccount<GrokUsage>` each).
 pub async fn accounts(core: &Core) -> Vec<Value> {
-    let accounts = tokio::task::spawn_blocking(read_accounts).await.unwrap_or_default();
+    let accounts = tokio::task::spawn_blocking(read_accounts)
+        .await
+        .unwrap_or_default();
     let live: Vec<LiveAccount<'_, GrokUsage>> = accounts
         .into_iter()
         .map(|account| {
@@ -245,13 +246,20 @@ pub async fn accounts(core: &Core) -> Vec<Value> {
                 id: id.clone(),
                 label,
                 active,
-                load: Box::pin(async move { CACHE.get(&core.cache, &id, move |_| fetch(http, account)).await }),
+                load: Box::pin(async move {
+                    CACHE
+                        .get(&core.cache, &id, move |_| fetch(http, account))
+                        .await
+                }),
                 label_from: None,
             }
         })
         .collect();
-    let rows: Vec<TrackedAccount<GrokUsage>> = collect_accounts(&core.seen, &core.cache, PROVIDER, SECTION, live).await;
-    rows.into_iter().filter_map(|r| serde_json::to_value(r).ok()).collect()
+    let rows: Vec<TrackedAccount<GrokUsage>> =
+        collect_accounts(&core.seen, &core.cache, PROVIDER, SECTION, live).await;
+    rows.into_iter()
+        .filter_map(|r| serde_json::to_value(r).ok())
+        .collect()
 }
 
 #[cfg(test)]
@@ -289,22 +297,35 @@ mod tests {
 
     #[test]
     fn to_iso_matches_lib_time() {
-        assert_eq!(to_iso(Some(&json!(1_760_000_000))).as_deref(), Some("2025-10-09T08:53:20.000Z"));
-        assert_eq!(to_iso(Some(&json!("2025-10-09T08:53:20Z"))).as_deref(), Some("2025-10-09T08:53:20.000Z"));
-        assert_eq!(to_iso(Some(&json!(""))), None);
-        assert_eq!(to_iso(Some(&json!(true))), None);
+        assert_eq!(
+            to_iso(&json!(1_760_000_000)).as_deref(),
+            Some("2025-10-09T08:53:20.000Z")
+        );
+        assert_eq!(
+            to_iso(&json!("2025-10-09T08:53:20Z")).as_deref(),
+            Some("2025-10-09T08:53:20.000Z")
+        );
+        assert_eq!(to_iso(&json!("")), None);
+        assert_eq!(to_iso(&json!(true)), None);
     }
 
     #[tokio::test]
     async fn invalid_fixture_is_schema_changed_and_keeps_last_good() {
-        assert_eq!(parse_sand_reply(INVALID).err(), Some(ProviderError::SchemaChanged));
+        assert_eq!(
+            parse_sand_reply(INVALID).err(),
+            Some(ProviderError::SchemaChanged)
+        );
         // the old check: a reply without usagePercent is a failure, not an all-null success
-        assert_eq!(parse_sand_reply(b"{}").err(), Some(ProviderError::SchemaChanged));
+        assert_eq!(
+            parse_sand_reply(b"{}").err(),
+            Some(ProviderError::SchemaChanged)
+        );
 
         let dir = std::env::temp_dir().join(format!("usagedeck-grok-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let cache = UsageCache::new(dir.join("usage-cache.json"));
-        let provider: CachedProvider<GrokUsage> = CachedProvider::new(SECTION, Duration::from_secs(30), None);
+        let provider: CachedProvider<GrokUsage> =
+            CachedProvider::new(SECTION, Duration::from_secs(30), None);
         let parse = |bytes: &'static [u8]| {
             move |_| async move {
                 let reply = parse_sand_reply(bytes).map_err(FetchError::from)?;
@@ -314,7 +335,9 @@ mod tests {
         let good = provider.get(&cache, "user@example.com", parse(OK)).await;
         assert!(!good.stale && good.usage.is_some());
         provider.invalidate(None);
-        let bad = provider.get(&cache, "user@example.com", parse(INVALID)).await;
+        let bad = provider
+            .get(&cache, "user@example.com", parse(INVALID))
+            .await;
         assert_eq!(bad.error, Some(ProviderError::SchemaChanged));
         assert!(bad.stale);
         assert_eq!(bad.usage, good.usage);
@@ -347,13 +370,27 @@ mod tests {
     #[ignore]
     async fn live_grok() {
         let accounts = read_accounts();
-        println!("accounts: {} (source {:?})", accounts.len(), accounts.first().map(|a| a.source));
-        let account = accounts.iter().find(|a| a.active).or(accounts.first()).expect("a sign-in").clone();
-        let (reply, raw) = fetch_reply(&reqwest::Client::new(), &account.token).await.expect("live reply");
+        println!(
+            "accounts: {} (source {:?})",
+            accounts.len(),
+            accounts.first().map(|a| a.source)
+        );
+        let account = accounts
+            .iter()
+            .find(|a| a.active)
+            .or(accounts.first())
+            .expect("a sign-in")
+            .clone();
+        let (reply, raw) = fetch_reply(&reqwest::Client::new(), &account.token)
+            .await
+            .expect("live reply");
         if let Some(out) = std::env::var_os("USAGEDECK_FIXTURE_OUT") {
             std::fs::write(out, raw).unwrap();
         }
         let u = build_usage(&reply, &account);
-        println!("plan={:?} cursorPlan={:?} used={:?}% resets {:?}", u.plan_label, u.cursor_plan_name, u.percent_used, u.reset_at);
+        println!(
+            "plan={:?} cursorPlan={:?} used={:?}% resets {:?}",
+            u.plan_label, u.cursor_plan_name, u.percent_used, u.reset_at
+        );
     }
 }

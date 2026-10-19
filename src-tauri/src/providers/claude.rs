@@ -8,7 +8,9 @@
 //! Claude desktop token is filed under Claude Code's email only when both apps are signed into
 //! the same account (desktop `lastKnownAccountUuid` == `~/.claude.json` `oauthAccount.accountUuid`).
 
-use super::{collect_accounts, CachedProvider, FetchError, LiveAccount, ProviderError, TrackedAccount};
+use super::{
+    collect_accounts, CachedProvider, FetchError, LiveAccount, ProviderError, TrackedAccount,
+};
 use crate::win::os_crypt::{app_key, unseal};
 use crate::Core;
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -24,7 +26,11 @@ const PROVIDER: &str = "claude";
 
 /// This endpoint rate-limits hard: a good value is reused for 60 s, a failure for 120 s.
 static CACHE: LazyLock<CachedProvider<ClaudeUsage>> = LazyLock::new(|| {
-    CachedProvider::new(SECTION, Duration::from_secs(60), Some(Duration::from_secs(120)))
+    CachedProvider::new(
+        SECTION,
+        Duration::from_secs(60),
+        Some(Duration::from_secs(120)),
+    )
 });
 
 // ---- JSON shapes (lib/types.ts) -------------------------------------------------------------
@@ -106,11 +112,18 @@ fn iso(d: DateTime<Utc>) -> String {
 
 fn window_of(w: Option<&WindowReply>) -> ClaudeWindow {
     let Some(w) = w else {
-        return ClaudeWindow { percent: None, resets_at: None };
+        return ClaudeWindow {
+            percent: None,
+            resets_at: None,
+        };
     };
     let resets_at = match w.resets_at.as_ref().or(w.resets_at_camel.as_ref()) {
-        Some(ResetValue::Seconds(s)) => DateTime::from_timestamp_millis((s * 1000.0) as i64).map(iso),
-        Some(ResetValue::Text(t)) => DateTime::parse_from_rfc3339(t.trim()).ok().map(|d| iso(d.with_timezone(&Utc))),
+        Some(ResetValue::Seconds(s)) => {
+            DateTime::from_timestamp_millis((s * 1000.0) as i64).map(iso)
+        }
+        Some(ResetValue::Text(t)) => DateTime::parse_from_rfc3339(t.trim())
+            .ok()
+            .map(|d| iso(d.with_timezone(&Utc))),
         None => None,
     };
     ClaudeWindow {
@@ -120,8 +133,15 @@ fn window_of(w: Option<&WindowReply>) -> ClaudeWindow {
 }
 
 fn reset_credits_of(rest: &Map<String, Value>) -> Option<i64> {
-    for key in ["cedar_ember", "juniper_tide", "iguana_necktie", "amber_gauge"] {
-        let Some(v) = rest.get(key).and_then(Value::as_object) else { continue };
+    for key in [
+        "cedar_ember",
+        "juniper_tide",
+        "iguana_necktie",
+        "amber_gauge",
+    ] {
+        let Some(v) = rest.get(key).and_then(Value::as_object) else {
+            continue;
+        };
         if v.get("eligible") == Some(&Value::Bool(false)) {
             continue;
         }
@@ -159,10 +179,17 @@ fn str_of(v: Option<&Value>) -> Option<String> {
 pub fn pick_token(entries: &Value) -> Option<ClaudeToken> {
     let mut candidates: Vec<(u8, ClaudeToken)> = Vec::new();
     for (name, entry) in entries.as_object()? {
-        let Some(token) = entry.get("token").and_then(Value::as_str).filter(|t| !t.is_empty()) else {
+        let Some(token) = entry
+            .get("token")
+            .and_then(Value::as_str)
+            .filter(|t| !t.is_empty())
+        else {
             continue;
         };
-        let expires_at = entry.get("expiresAt").and_then(Value::as_f64).map(|t| t as i64);
+        let expires_at = entry
+            .get("expiresAt")
+            .and_then(Value::as_f64)
+            .map(|t| t as i64);
         let expired = is_expired(expires_at);
         let rank = if expired { 2 } else { 0 } + if name.contains("claude_code") { 0 } else { 1 };
         candidates.push((
@@ -185,7 +212,9 @@ fn read_json(path: &Path) -> Option<Value> {
 }
 
 fn home() -> PathBuf {
-    std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_default()
+    std::env::var_os("USERPROFILE")
+        .map(PathBuf::from)
+        .unwrap_or_default()
 }
 
 /// Claude desktop config dirs: the MSIX package's virtualised Roaming dir, then %APPDATA%\Claude.
@@ -196,7 +225,13 @@ fn desktop_config_dirs() -> Vec<PathBuf> {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_lowercase();
                 if entry.file_type().is_ok_and(|t| t.is_dir()) && name.starts_with("claude_") {
-                    dirs.push(entry.path().join("LocalCache").join("Roaming").join("Claude"));
+                    dirs.push(
+                        entry
+                            .path()
+                            .join("LocalCache")
+                            .join("Roaming")
+                            .join("Claude"),
+                    );
                 }
             }
         }
@@ -216,14 +251,24 @@ pub struct DesktopToken {
 
 fn read_desktop_token() -> Option<DesktopToken> {
     for dir in desktop_config_dirs() {
-        let Some(config) = read_json(&dir.join("config.json")) else { continue };
-        let sealed = config.get("oauth:tokenCacheV2").or_else(|| config.get("oauth:tokenCache"));
+        let Some(config) = read_json(&dir.join("config.json")) else {
+            continue;
+        };
+        let sealed = config
+            .get("oauth:tokenCacheV2")
+            .or_else(|| config.get("oauth:tokenCache"));
         if !sealed.is_some_and(Value::is_string) {
             continue;
         }
-        let Some(key) = app_key(&dir.join("Local State")) else { continue };
-        let Some(raw) = unseal(&key, sealed) else { continue };
-        let Ok(entries) = serde_json::from_str::<Value>(&raw) else { continue };
+        let Some(key) = app_key(&dir.join("Local State")) else {
+            continue;
+        };
+        let Some(raw) = unseal(&key, sealed) else {
+            continue;
+        };
+        let Ok(entries) = serde_json::from_str::<Value>(&raw) else {
+            continue;
+        };
         if let Some(token) = pick_token(&entries) {
             return Some(DesktopToken {
                 token,
@@ -238,7 +283,10 @@ fn read_cli_token() -> Option<ClaudeToken> {
     let creds = read_json(&home().join(".claude").join(".credentials.json"))?;
     let oauth = creds.get("claudeAiOauth")?;
     let token = oauth.get("accessToken")?.as_str()?.to_string();
-    let expires_at = oauth.get("expiresAt").and_then(Value::as_f64).map(|t| t as i64);
+    let expires_at = oauth
+        .get("expiresAt")
+        .and_then(Value::as_f64)
+        .map(|t| t as i64);
     Some(ClaudeToken {
         token,
         subscription_type: str_of(oauth.get("subscriptionType")),
@@ -275,7 +323,9 @@ pub fn account_of(claude_json: &Value) -> ClaudeAccount {
 }
 
 fn read_cli_account() -> ClaudeAccount {
-    read_json(&home().join(".claude.json")).map(|v| account_of(&v)).unwrap_or_default()
+    read_json(&home().join(".claude.json"))
+        .map(|v| account_of(&v))
+        .unwrap_or_default()
 }
 
 pub fn plan_name_of(
@@ -310,7 +360,11 @@ pub fn plan_name_of(
     subscription_type.or(organization_type).map(str::to_string)
 }
 
-pub fn build_usage(account: &ClaudeAccount, token: Option<&ClaudeToken>, reply: Option<&UsageReply>) -> ClaudeUsage {
+pub fn build_usage(
+    account: &ClaudeAccount,
+    token: Option<&ClaudeToken>,
+    reply: Option<&UsageReply>,
+) -> ClaudeUsage {
     let subscription_type = token.and_then(|t| t.subscription_type.clone());
     let rate_limit_tier = token.and_then(|t| t.rate_limit_tier.clone());
     ClaudeUsage {
@@ -328,8 +382,12 @@ pub fn build_usage(account: &ClaudeAccount, token: Option<&ClaudeToken>, reply: 
         subscription_type,
         five_hour: window_of(reply.and_then(|r| r.five_hour.as_ref())),
         weekly: window_of(reply.and_then(|r| r.seven_day.as_ref())),
-        weekly_opus: reply.and_then(|r| r.seven_day_opus.as_ref()).map(|w| window_of(Some(w))),
-        weekly_sonnet: reply.and_then(|r| r.seven_day_sonnet.as_ref()).map(|w| window_of(Some(w))),
+        weekly_opus: reply
+            .and_then(|r| r.seven_day_opus.as_ref())
+            .map(|w| window_of(Some(w))),
+        weekly_sonnet: reply
+            .and_then(|r| r.seven_day_sonnet.as_ref())
+            .map(|w| window_of(Some(w))),
         reset_credits: reply.and_then(|r| reset_credits_of(&r.rest)),
         billing_type: account.billing_type.clone(),
         rate_limit_tier,
@@ -349,7 +407,11 @@ pub struct LiveClaude {
 
 /// Choose the token as the old code did (live desktop > live CLI > expired desktop > expired
 /// CLI), then take the identity from the same app as that token.
-pub fn resolve_live(cli_account: ClaudeAccount, desktop: Option<DesktopToken>, cli: Option<ClaudeToken>) -> Option<LiveClaude> {
+pub fn resolve_live(
+    cli_account: ClaudeAccount,
+    desktop: Option<DesktopToken>,
+    cli: Option<ClaudeToken>,
+) -> Option<LiveClaude> {
     let desktop_live = desktop.as_ref().is_some_and(|d| !d.token.expired);
     let cli_live = cli.as_ref().is_some_and(|t| !t.expired);
     let use_desktop = desktop_live || (desktop.is_some() && !cli_live);
@@ -363,7 +425,9 @@ pub fn resolve_live(cli_account: ClaudeAccount, desktop: Option<DesktopToken>, c
             // Claude desktop is signed into an account we hold no email for: never borrow
             // Claude Code's identity for it.
             let id = match &d.account_uuid {
-                Some(uuid) if !uuid.trim().is_empty() => format!("desktop-{}", uuid.trim().to_lowercase()),
+                Some(uuid) if !uuid.trim().is_empty() => {
+                    format!("desktop-{}", uuid.trim().to_lowercase())
+                }
                 _ => "claude-desktop".to_string(),
             };
             return Some(LiveClaude {
@@ -382,10 +446,23 @@ pub fn resolve_live(cli_account: ClaudeAccount, desktop: Option<DesktopToken>, c
 }
 
 fn live_with(account: ClaudeAccount, token: Option<ClaudeToken>) -> LiveClaude {
-    let trimmed = |v: &Option<String>| v.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    let trimmed = |v: &Option<String>| {
+        v.as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
     let label = trimmed(&account.email).or_else(|| trimmed(&account.display_name));
-    let id = label.clone().unwrap_or_else(|| "signed-in".to_string()).to_lowercase();
-    LiveClaude { id, label, account, token }
+    let id = label
+        .clone()
+        .unwrap_or_else(|| "signed-in".to_string())
+        .to_lowercase();
+    LiveClaude {
+        id,
+        label,
+        account,
+        token,
+    }
 }
 
 fn read_live_claude() -> Option<LiveClaude> {
@@ -402,7 +479,10 @@ fn read_live_claude() -> Option<LiveClaude> {
 // ---- fetch ----------------------------------------------------------------------------------
 
 /// GET the usage reply. 401/403 -> AuthRejected, 429 -> RateLimited.
-pub async fn fetch_reply(http: &reqwest::Client, token: &str) -> Result<(UsageReply, Vec<u8>), ProviderError> {
+pub async fn fetch_reply(
+    http: &reqwest::Client,
+    token: &str,
+) -> Result<(UsageReply, Vec<u8>), ProviderError> {
     let resp = http
         .get(USAGE_URL)
         .bearer_auth(token)
@@ -423,17 +503,24 @@ pub async fn fetch_reply(http: &reqwest::Client, token: &str) -> Result<(UsageRe
         s if !(200..300).contains(&s) => return Err(ProviderError::Http(s)),
         _ => {}
     }
-    let bytes = resp.bytes().await.map_err(|_| ProviderError::Network)?.to_vec();
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|_| ProviderError::Network)?
+        .to_vec();
     Ok((parse_usage_reply(&bytes)?, bytes))
 }
 
-async fn fetch(http: reqwest::Client, live: LiveClaude) -> Result<ClaudeUsage, FetchError<ClaudeUsage>> {
+async fn fetch(
+    http: reqwest::Client,
+    live: LiveClaude,
+) -> Result<ClaudeUsage, FetchError<ClaudeUsage>> {
     // Without live numbers, still show the account/plan we know locally; that partial snapshot
     // is never persisted as "last known usage".
     let fallback = build_usage(&live.account, live.token.as_ref(), None);
     let fail = |error| FetchError {
         error,
-        fallback: Some(fallback.clone()),
+        fallback: Some(Box::new(fallback.clone())),
     };
     let Some(token) = live.token.as_ref() else {
         return Err(fail(ProviderError::MissingCredentials));
@@ -447,7 +534,10 @@ async fn fetch(http: reqwest::Client, live: LiveClaude) -> Result<ClaudeUsage, F
 
 /// Rows for the `accounts` array of the old route's JSON body (`TrackedAccount<ClaudeUsage>` each).
 pub async fn accounts(core: &Core) -> Vec<Value> {
-    let live = tokio::task::spawn_blocking(read_live_claude).await.ok().flatten();
+    let live = tokio::task::spawn_blocking(read_live_claude)
+        .await
+        .ok()
+        .flatten();
     let rows: Vec<LiveAccount<'_, ClaudeUsage>> = live
         .into_iter()
         .map(|live| {
@@ -458,7 +548,11 @@ pub async fn accounts(core: &Core) -> Vec<Value> {
                 id: id.clone(),
                 label,
                 active: true,
-                load: Box::pin(async move { CACHE.get(&core.cache, &id, move |_| fetch(http, live)).await }),
+                load: Box::pin(async move {
+                    CACHE
+                        .get(&core.cache, &id, move |_| fetch(http, live))
+                        .await
+                }),
                 label_from: None,
             }
         })
@@ -504,12 +598,26 @@ mod tests {
         assert_eq!(usage.plan_name.as_deref(), Some("Max 20X"));
         assert!(usage.signed_in && usage.subscribed);
         assert_eq!(usage.five_hour.percent, Some(68.0));
-        assert_eq!(usage.five_hour.resets_at.as_deref(), Some("2026-10-19T00:49:59.594Z"));
+        assert_eq!(
+            usage.five_hour.resets_at.as_deref(),
+            Some("2026-10-19T00:49:59.594Z")
+        );
         assert_eq!(usage.weekly.percent, Some(47.0));
-        assert_eq!(usage.weekly.resets_at.as_deref(), Some("2026-10-21T04:59:59.594Z"));
+        assert_eq!(
+            usage.weekly.resets_at.as_deref(),
+            Some("2026-10-21T04:59:59.594Z")
+        );
         // JSON field names are the old camelCase ones
         let v = serde_json::to_value(&usage).unwrap();
-        for k in ["fiveHour", "weekly", "weeklyOpus", "weeklySonnet", "resetCredits", "planName", "orgUuid"] {
+        for k in [
+            "fiveHour",
+            "weekly",
+            "weeklyOpus",
+            "weeklySonnet",
+            "resetCredits",
+            "planName",
+            "orgUuid",
+        ] {
             assert!(v.get(k).is_some(), "{k}");
         }
         assert_eq!(usage.weekly_opus, None);
@@ -519,15 +627,26 @@ mod tests {
 
     #[test]
     fn window_and_plan_helpers_match_the_old_code() {
-        let w: WindowReply = serde_json::from_value(json!({ "percent": 5, "resetsAt": 1_760_000_000 })).unwrap();
+        let w: WindowReply =
+            serde_json::from_value(json!({ "percent": 5, "resetsAt": 1_760_000_000 })).unwrap();
         assert_eq!(
             window_of(Some(&w)),
-            ClaudeWindow { percent: Some(5.0), resets_at: Some("2025-10-09T08:53:20.000Z".into()) }
+            ClaudeWindow {
+                percent: Some(5.0),
+                resets_at: Some("2025-10-09T08:53:20.000Z".into())
+            }
         );
-        assert_eq!(plan_name_of(Some("pro"), None, None).as_deref(), Some("Pro"));
-        assert_eq!(plan_name_of(None, Some("odd_org"), None).as_deref(), Some("odd_org"));
+        assert_eq!(
+            plan_name_of(Some("pro"), None, None).as_deref(),
+            Some("Pro")
+        );
+        assert_eq!(
+            plan_name_of(None, Some("odd_org"), None).as_deref(),
+            Some("odd_org")
+        );
         assert_eq!(plan_name_of(None, None, None), None);
-        let rest = json!({ "cedar_ember": { "eligible": false }, "juniper_tide": { "grants": [1, 2] } });
+        let rest =
+            json!({ "cedar_ember": { "eligible": false }, "juniper_tide": { "grants": [1, 2] } });
         assert_eq!(reset_credits_of(rest.as_object().unwrap()), Some(2));
     }
 
@@ -539,18 +658,29 @@ mod tests {
             "old:claude_code": { "token": "c", "expiresAt": 1 },
         });
         assert_eq!(pick_token(&entries).unwrap().token, "b");
-        assert_eq!(pick_token(&json!({ "only": { "token": "c", "expiresAt": 1 } })).unwrap().expired, true);
+        assert!(
+            pick_token(&json!({ "only": { "token": "c", "expiresAt": 1 } }))
+                .unwrap()
+                .expired
+        );
     }
 
     #[tokio::test]
     async fn invalid_fixture_is_schema_changed_and_keeps_last_good() {
-        assert_eq!(parse_usage_reply(INVALID).err(), Some(ProviderError::SchemaChanged));
-        assert_eq!(parse_usage_reply(b"{}").err(), Some(ProviderError::SchemaChanged));
+        assert_eq!(
+            parse_usage_reply(INVALID).err(),
+            Some(ProviderError::SchemaChanged)
+        );
+        assert_eq!(
+            parse_usage_reply(b"{}").err(),
+            Some(ProviderError::SchemaChanged)
+        );
 
         let dir = std::env::temp_dir().join(format!("usagedeck-claude-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let cache = UsageCache::new(dir.join("usage-cache.json"));
-        let provider: CachedProvider<ClaudeUsage> = CachedProvider::new(SECTION, Duration::from_secs(60), None);
+        let provider: CachedProvider<ClaudeUsage> =
+            CachedProvider::new(SECTION, Duration::from_secs(60), None);
         let account = cli_account("u1");
         let parse = |bytes: &'static [u8]| {
             let account = account.clone();
@@ -562,7 +692,9 @@ mod tests {
         let good = provider.get(&cache, "cli@example.com", parse(OK)).await;
         assert!(!good.stale);
         provider.invalidate(None);
-        let bad = provider.get(&cache, "cli@example.com", parse(INVALID)).await;
+        let bad = provider
+            .get(&cache, "cli@example.com", parse(INVALID))
+            .await;
         assert_eq!(bad.error, Some(ProviderError::SchemaChanged));
         assert!(bad.stale);
         assert_eq!(bad.usage, good.usage);
@@ -575,7 +707,12 @@ mod tests {
             token: token("desktop"),
             account_uuid: Some("UUID-DESKTOP".into()),
         };
-        let live = resolve_live(cli_account("uuid-cli"), Some(desktop.clone()), Some(token("cli"))).unwrap();
+        let live = resolve_live(
+            cli_account("uuid-cli"),
+            Some(desktop.clone()),
+            Some(token("cli")),
+        )
+        .unwrap();
         assert_eq!(live.token.as_ref().unwrap().token, "desktop");
         assert_eq!(live.id, "desktop-uuid-desktop");
         assert_eq!(live.label.as_deref(), Some("Claude desktop"));
@@ -585,8 +722,16 @@ mod tests {
         assert_eq!(usage.org_uuid, None);
 
         // desktop without a known account: still not the CLI email
-        let unknown = DesktopToken { account_uuid: None, ..desktop.clone() };
-        assert_eq!(resolve_live(cli_account("uuid-cli"), Some(unknown), None).unwrap().id, "claude-desktop");
+        let unknown = DesktopToken {
+            account_uuid: None,
+            ..desktop.clone()
+        };
+        assert_eq!(
+            resolve_live(cli_account("uuid-cli"), Some(unknown), None)
+                .unwrap()
+                .id,
+            "claude-desktop"
+        );
 
         // same account in both apps: the CLI email is right
         let same = resolve_live(cli_account("uuid-desktop"), Some(desktop.clone()), None).unwrap();
@@ -595,7 +740,10 @@ mod tests {
 
         // an expired desktop token with a live CLI token: the CLI token and its own email
         let expired = DesktopToken {
-            token: ClaudeToken { expired: true, ..token("desktop") },
+            token: ClaudeToken {
+                expired: true,
+                ..token("desktop")
+            },
             ..desktop
         };
         let cli = resolve_live(cli_account("uuid-cli"), Some(expired), Some(token("cli"))).unwrap();
@@ -612,8 +760,18 @@ mod tests {
     async fn live_claude() {
         let live = read_live_claude().expect("a local Claude sign-in");
         let token = live.token.clone().expect("a token");
-        println!("identity: {} (desktop/cli by id), token expired: {}", if live.account.email.is_some() { "email" } else { "none" }, token.expired);
-        let (reply, raw) = fetch_reply(&reqwest::Client::new(), &token.token).await.expect("live reply");
+        println!(
+            "identity: {} (desktop/cli by id), token expired: {}",
+            if live.account.email.is_some() {
+                "email"
+            } else {
+                "none"
+            },
+            token.expired
+        );
+        let (reply, raw) = fetch_reply(&reqwest::Client::new(), &token.token)
+            .await
+            .expect("live reply");
         if let Some(out) = std::env::var_os("USAGEDECK_FIXTURE_OUT") {
             std::fs::write(out, raw).unwrap();
         }

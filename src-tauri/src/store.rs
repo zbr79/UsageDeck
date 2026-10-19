@@ -128,7 +128,10 @@ impl KeyVault for MemoryVault {
         self.0.lock().unwrap().get(user).cloned()
     }
     fn set(&self, user: &str, key: &str) -> Result<(), StoreError> {
-        self.0.lock().unwrap().insert(user.to_string(), key.to_string());
+        self.0
+            .lock()
+            .unwrap()
+            .insert(user.to_string(), key.to_string());
         Ok(())
     }
     fn delete(&self, user: &str) -> Result<(), StoreError> {
@@ -177,7 +180,11 @@ impl Store {
         read_json(&self.file(name))
     }
 
-    pub fn write_json<T: Serialize + ?Sized>(&self, name: &str, value: &T) -> Result<(), StoreError> {
+    pub fn write_json<T: Serialize + ?Sized>(
+        &self,
+        name: &str,
+        value: &T,
+    ) -> Result<(), StoreError> {
         write_json_atomic(&self.file(name), value)
     }
 
@@ -245,7 +252,8 @@ impl Store {
         let before = self.load_accounts();
         let next = change(before.clone());
         for account in &next {
-            self.vault.set(&account.email.to_lowercase(), &account.key)?;
+            self.vault
+                .set(&account.email.to_lowercase(), &account.key)?;
         }
         let kept: HashSet<String> = next.iter().map(|a| a.email.to_lowercase()).collect();
         for old in &before {
@@ -414,12 +422,16 @@ pub fn normalize_provider_order(value: &Value) -> Vec<WidgetProvider> {
 
 /// Merge nickname changes: a non-empty name sets it, an empty one removes it. Merging (rather
 /// than replacing the map) means a client holding a stale copy cannot wipe out other nicknames.
-pub fn merge_display_names(current: &Map<String, Value>, changes: &Value) -> Option<Map<String, Value>> {
+pub fn merge_display_names(
+    current: &Map<String, Value>,
+    changes: &Value,
+) -> Option<Map<String, Value>> {
     let changes = changes.as_object()?;
     let mut out = current.clone();
     for (key, name) in changes {
         let Some(name) = name.as_str() else { continue };
-        if key.is_empty() || js_len(key) > MAX_KEY_LENGTH || FORBIDDEN_KEYS.contains(&key.as_str()) {
+        if key.is_empty() || js_len(key) > MAX_KEY_LENGTH || FORBIDDEN_KEYS.contains(&key.as_str())
+        {
             continue;
         }
         let trimmed = js_slice(name.trim(), MAX_NICKNAME_LENGTH);
@@ -464,7 +476,10 @@ pub fn apply_settings_patch(current: &Settings, patch: &Value) -> Settings {
             ("grokEnabled", &mut next.grok_enabled),
             ("codexEnabled", &mut next.codex_enabled),
             ("claudeEnabled", &mut next.claude_enabled),
-            ("deepseekPeakHourWarning", &mut next.deepseek_peak_hour_warning),
+            (
+                "deepseekPeakHourWarning",
+                &mut next.deepseek_peak_hour_warning,
+            ),
             ("showProviderNames", &mut next.show_provider_names),
         ];
         for (key, slot) in bools {
@@ -485,10 +500,16 @@ pub fn apply_settings_patch(current: &Settings, patch: &Value) -> Settings {
         Some("dark") => next.panel_theme = PanelTheme::Dark,
         _ => {}
     }
-    if let Some(names) = obj.get("displayNames").and_then(|v| merge_display_names(&current.display_names, v)) {
+    if let Some(names) = obj
+        .get("displayNames")
+        .and_then(|v| merge_display_names(&current.display_names, v))
+    {
         next.display_names = names;
     }
-    if let Some(disabled) = obj.get("disabledAccounts").and_then(sanitize_disabled_accounts) {
+    if let Some(disabled) = obj
+        .get("disabledAccounts")
+        .and_then(sanitize_disabled_accounts)
+    {
         next.disabled_accounts = disabled;
     }
     if let Some(order @ Value::Array(_)) = obj.get("providerOrder") {
@@ -591,11 +612,17 @@ mod tests {
         assert_eq!(next.panel_theme, PanelTheme::Light);
         assert_eq!(next.display_names.get("keep@x.com"), Some(&json!("Keep")));
         assert!(next.display_names.get("drop@x.com").is_none());
-        assert_eq!(next.display_names.get("new@x.com"), Some(&json!("n".repeat(64))));
+        assert_eq!(
+            next.display_names.get("new@x.com"),
+            Some(&json!("n".repeat(64)))
+        );
         assert_eq!(next.display_names.len(), 2);
         assert_eq!(next.disabled_accounts, vec!["a@x.com", "b@x.com"]);
         use WidgetProvider::*;
-        assert_eq!(next.provider_order, vec![Claude, Grok, Opencode, Cursor, Codex]);
+        assert_eq!(
+            next.provider_order,
+            vec![Claude, Grok, Opencode, Cursor, Codex]
+        );
         let out = serde_json::to_value(&next).unwrap();
         assert_eq!(out["themeMode"], json!("light"));
         assert_eq!(out["providerOrder"][0], json!("claude"));
@@ -604,7 +631,10 @@ mod tests {
 
     #[test]
     fn corrupt_settings_file_gives_defaults() {
-        assert_eq!(normalize_settings(Some(&json!("garbage"))), Settings::default());
+        assert_eq!(
+            normalize_settings(Some(&json!("garbage"))),
+            Settings::default()
+        );
         assert_eq!(normalize_settings(None), Settings::default());
     }
 

@@ -13,6 +13,7 @@ pub mod codex;
 pub mod cursor;
 pub mod grok;
 pub mod opencode;
+pub mod util;
 
 use crate::store::{read_json, write_json_atomic};
 use serde::de::DeserializeOwned;
@@ -55,10 +56,11 @@ impl ProviderError {
 }
 
 /// A failed fetch. `fallback` is shown only when there is no cached value either (never persisted).
+/// Boxed so the `Err` side of a fetch stays small.
 #[derive(Clone, Debug)]
 pub struct FetchError<T> {
     pub error: ProviderError,
-    pub fallback: Option<T>,
+    pub fallback: Option<Box<T>>,
 }
 
 impl<T> From<ProviderError> for FetchError<T> {
@@ -81,7 +83,9 @@ pub fn parse_reply<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, ProviderError
 /// Send a request and deserialise a 2xx JSON reply. 401/403 -> AuthRejected, 429 -> RateLimited,
 /// other non-2xx -> Http(code), transport errors -> Network, wrong shape -> SchemaChanged.
 /// Providers whose service uses other codes can map the reply themselves.
-pub async fn fetch_json<T: DeserializeOwned>(req: reqwest::RequestBuilder) -> Result<T, ProviderError> {
+pub async fn fetch_json<T: DeserializeOwned>(
+    req: reqwest::RequestBuilder,
+) -> Result<T, ProviderError> {
     let resp = req.send().await.map_err(|e| {
         log::warn!("provider request failed: {e}");
         ProviderError::Network
@@ -178,7 +182,9 @@ impl UsageCache {
     /// Store a good value and write the file at once, merged with what is on disk (newest entry
     /// wins) so other sections are never clobbered. Best-effort: a write error is only logged.
     pub async fn write<T: Serialize>(&self, section: &str, key: &str, data: &T) {
-        let Ok(data) = serde_json::to_value(data) else { return };
+        let Ok(data) = serde_json::to_value(data) else {
+            return;
+        };
         let mut state = self.state.lock().await;
         if state.is_none() {
             *state = Some(self.read_disk());
@@ -193,14 +199,21 @@ impl UsageCache {
         }
         let mut merged = self.read_disk();
         for (section, entries) in mine.iter() {
-            let Some(entries) = entries.as_object() else { continue };
+            let Some(entries) = entries.as_object() else {
+                continue;
+            };
             if !merged.get(section).is_some_and(Value::is_object) {
                 merged.insert(section.clone(), Value::Object(Map::new()));
             }
-            let Some(Value::Object(target)) = merged.get_mut(section) else { continue };
+            let Some(Value::Object(target)) = merged.get_mut(section) else {
+                continue;
+            };
             for (k, entry) in entries {
                 let ours = entry.get("savedAt").and_then(Value::as_i64).unwrap_or(0);
-                let theirs = target.get(k).and_then(|t| t.get("savedAt")).and_then(Value::as_i64);
+                let theirs = target
+                    .get(k)
+                    .and_then(|t| t.get("savedAt"))
+                    .and_then(Value::as_i64);
                 if theirs.is_none_or(|t| t <= ours) {
                     target.insert(k.clone(), entry.clone());
                 }
@@ -300,7 +313,7 @@ where
                         error: Some(error),
                     },
                     None => ProviderResult {
-                        usage: fallback,
+                        usage: fallback.map(|b| *b),
                         stale: false,
                         cached_at: None,
                         auth_expired,
@@ -388,7 +401,11 @@ impl SeenAccounts {
             let mut seen = HashSet::new();
             let mut list = Vec::new();
             for row in rows {
-                let id = row.get("id").and_then(Value::as_str).map(normalize_id).unwrap_or_default();
+                let id = row
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(normalize_id)
+                    .unwrap_or_default();
                 if id.is_empty() || id.chars().count() > MAX_ID || !seen.insert(id.clone()) {
                     continue;
                 }
@@ -454,7 +471,12 @@ impl SeenAccounts {
         *list = keep_newest(std::mem::take(list));
         let out: Map<String, Value> = roster
             .into_iter()
-            .map(|(p, list)| (p, serde_json::to_value(list).unwrap_or(Value::Array(Vec::new()))))
+            .map(|(p, list)| {
+                (
+                    p,
+                    serde_json::to_value(list).unwrap_or(Value::Array(Vec::new())),
+                )
+            })
             .collect();
         if let Err(e) = write_json_atomic(&self.file, &out) {
             log::warn!("seen-accounts write failed: {e}");
@@ -471,7 +493,7 @@ pub fn account_key(provider: &str, id: &str) -> String {
 
 pub fn is_account_hidden(disabled: &[String], provider: &str, id: &str) -> bool {
     let key = account_key(provider, id);
-    disabled.iter().any(|d| *d == key)
+    disabled.contains(&key)
 }
 
 // ---- tracked accounts (lib/tracked-accounts.ts) ---------------------------------------------
@@ -624,7 +646,8 @@ mod tests {
     async fn cache_keeps_last_good_on_failure_and_invalid_reply() {
         let dir = temp_dir("cache");
         let cache = UsageCache::new(dir.join("usage-cache.json"));
-        let provider: CachedProvider<Usage> = CachedProvider::new("test", Duration::from_secs(60), None);
+        let provider: CachedProvider<Usage> =
+            CachedProvider::new("test", Duration::from_secs(60), None);
 
         let good = provider
             .get(&cache, "a@x.com", |_| async {
@@ -654,9 +677,12 @@ mod tests {
 
         // failed fetch (auth rejected) after a restart: last good value comes from disk
         let cache2 = UsageCache::new(dir.join("usage-cache.json"));
-        let provider2: CachedProvider<Usage> = CachedProvider::new("test", Duration::from_secs(60), None);
+        let provider2: CachedProvider<Usage> =
+            CachedProvider::new("test", Duration::from_secs(60), None);
         let failed = provider2
-            .get(&cache2, "a@x.com", |_| async { Err(ProviderError::AuthRejected.into()) })
+            .get(&cache2, "a@x.com", |_| async {
+                Err(ProviderError::AuthRejected.into())
+            })
             .await;
         assert_eq!(failed.usage, Some(Usage { percent_used: 42.0 }));
         assert!(failed.stale && failed.auth_expired);
@@ -666,7 +692,7 @@ mod tests {
             .get(&cache2, "b@x.com", |_| async {
                 Err(FetchError {
                     error: ProviderError::Network,
-                    fallback: Some(Usage { percent_used: 0.0 }),
+                    fallback: Some(Box::new(Usage { percent_used: 0.0 })),
                 })
             })
             .await;
@@ -675,7 +701,10 @@ mod tests {
         assert!(cache2.read::<Usage>("test", "b@x.com").await.is_none());
 
         let disk = read_json(&dir.join("usage-cache.json")).unwrap();
-        assert_eq!(disk["test"]["a@x.com"]["data"], json!({ "percentUsed": 42.0 }));
+        assert_eq!(
+            disk["test"]["a@x.com"]["data"],
+            json!({ "percentUsed": 42.0 })
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -699,11 +728,26 @@ mod tests {
         assert_eq!(list.last().unwrap().id, "user59@x.com");
 
         // a label fills in; an empty label never erases it
-        seen.remember("cursor", &[SeenAccount { id: "user59@x.com".into(), label: Some(" Name ".into()) }])
-            .await;
-        seen.remember("cursor", &[SeenAccount { id: "user59@x.com".into(), label: Some("  ".into()) }])
-            .await;
-        assert_eq!(seen.remembered("cursor").last().unwrap().label.as_deref(), Some("Name"));
+        seen.remember(
+            "cursor",
+            &[SeenAccount {
+                id: "user59@x.com".into(),
+                label: Some(" Name ".into()),
+            }],
+        )
+        .await;
+        seen.remember(
+            "cursor",
+            &[SeenAccount {
+                id: "user59@x.com".into(),
+                label: Some("  ".into()),
+            }],
+        )
+        .await;
+        assert_eq!(
+            seen.remembered("cursor").last().unwrap().label.as_deref(),
+            Some("Name")
+        );
         assert!(seen.remembered("grok").is_empty());
         let _ = std::fs::remove_dir_all(dir);
     }

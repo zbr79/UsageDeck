@@ -98,10 +98,15 @@ struct AccountState {
     subscription: Option<bool>,
 }
 
-static STATE: LazyLock<Mutex<HashMap<String, AccountState>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static STATE: LazyLock<Mutex<HashMap<String, AccountState>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 static CACHE: LazyLock<CachedProvider<OpenCodeUsage>> = LazyLock::new(|| {
-    CachedProvider::new(SECTION, Duration::from_secs(10), Some(Duration::from_secs(15)))
+    CachedProvider::new(
+        SECTION,
+        Duration::from_secs(10),
+        Some(Duration::from_secs(15)),
+    )
 });
 
 fn with_state<R>(email: &str, f: impl FnOnce(&mut AccountState) -> R) -> R {
@@ -116,7 +121,9 @@ fn handle_reply(email: &str, status: u16, bytes: &[u8]) -> Result<OpenCodeUsage,
     if !(200..300).contains(&status) {
         let body: Value = serde_json::from_slice(bytes).unwrap_or(Value::Null);
         let entitlement = body["error"]["type"] == "EntitlementError";
-        with_state(email, |s| s.subscription = if entitlement { Some(false) } else { None });
+        with_state(email, |s| {
+            s.subscription = if entitlement { Some(false) } else { None }
+        });
         return Err(match status {
             _ if entitlement => ProviderError::Http(status),
             401 | 403 => ProviderError::AuthRejected,
@@ -146,7 +153,11 @@ fn handle_reply(email: &str, status: u16, bytes: &[u8]) -> Result<OpenCodeUsage,
     Ok(data)
 }
 
-async fn fetch_usage(http: &reqwest::Client, email: &str, key: &str) -> Result<OpenCodeUsage, ProviderError> {
+async fn fetch_usage(
+    http: &reqwest::Client,
+    email: &str,
+    key: &str,
+) -> Result<OpenCodeUsage, ProviderError> {
     let resp = http
         .get(USAGE_URL)
         .bearer_auth(key)
@@ -170,8 +181,13 @@ fn key_hash(key: &str) -> u64 {
 
 /// One `OpenCodeAccountUsage` row (lib/types.ts), plus `authExpired` for a rejected key.
 fn row(email: &str, enabled: bool, result: super::ProviderResult<OpenCodeUsage>) -> Value {
-    let (prev, subscription, change) =
-        with_state(email, |s| (s.prev_snapshot.clone(), s.subscription, s.last_change.clone()));
+    let (prev, subscription, change) = with_state(email, |s| {
+        (
+            s.prev_snapshot.clone(),
+            s.subscription,
+            s.last_change.clone(),
+        )
+    });
     serde_json::json!({
         "email": email,
         "usage": result.usage,
@@ -206,7 +222,9 @@ pub async fn accounts(core: &Core) -> Vec<Value> {
         }
         let result = CACHE
             .get(&core.cache, &email, |email| async move {
-                fetch_usage(&core.http, &email, &acc.key).await.map_err(FetchError::from)
+                fetch_usage(&core.http, &email, &acc.key)
+                    .await
+                    .map_err(FetchError::from)
             })
             .await;
         let enabled = !disabled.contains(&email.to_lowercase());
@@ -220,9 +238,14 @@ mod tests {
     use super::*;
     use crate::providers::UsageCache;
 
-    const OK: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/opencode/ok.json"));
-    const INVALID: &[u8] =
-        include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/opencode/invalid.json"));
+    const OK: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/opencode/ok.json"
+    ));
+    const INVALID: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/opencode/invalid.json"
+    ));
 
     #[test]
     fn opencode_ok_fixture_parses() {
@@ -237,15 +260,27 @@ mod tests {
 
     #[tokio::test]
     async fn opencode_invalid_fixture_is_schema_changed_and_keeps_last_good() {
-        assert_eq!(parse_opencode_usage(INVALID), Err(ProviderError::SchemaChanged));
+        assert_eq!(
+            parse_opencode_usage(INVALID),
+            Err(ProviderError::SchemaChanged)
+        );
         let dir = std::env::temp_dir().join(format!("usagedeck-opencode-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let cache = UsageCache::new(dir.join("usage-cache.json"));
-        let p: CachedProvider<OpenCodeUsage> = CachedProvider::new(SECTION, Duration::from_secs(60), None);
+        let p: CachedProvider<OpenCodeUsage> =
+            CachedProvider::new(SECTION, Duration::from_secs(60), None);
         let email = "invalid@example.com";
-        let good = p.get(&cache, email, |e| async move { handle_reply(&e, 200, OK).map_err(FetchError::from) }).await;
+        let good = p
+            .get(&cache, email, |e| async move {
+                handle_reply(&e, 200, OK).map_err(FetchError::from)
+            })
+            .await;
         p.invalidate(None);
-        let bad = p.get(&cache, email, |e| async move { handle_reply(&e, 200, INVALID).map_err(FetchError::from) }).await;
+        let bad = p
+            .get(&cache, email, |e| async move {
+                handle_reply(&e, 200, INVALID).map_err(FetchError::from)
+            })
+            .await;
         assert_eq!(bad.usage, good.usage);
         assert!(bad.stale);
         assert_eq!(bad.error, Some(ProviderError::SchemaChanged));
@@ -258,8 +293,14 @@ mod tests {
     #[test]
     fn opencode_rejected_key_marks_auth_expired() {
         let email = "rejected@example.com";
-        assert_eq!(handle_reply(email, 401, b"{}"), Err(ProviderError::AuthRejected));
-        assert_eq!(handle_reply(email, 403, b"<html>"), Err(ProviderError::AuthRejected));
+        assert_eq!(
+            handle_reply(email, 401, b"{}"),
+            Err(ProviderError::AuthRejected)
+        );
+        assert_eq!(
+            handle_reply(email, 403, b"<html>"),
+            Err(ProviderError::AuthRejected)
+        );
         let result = super::super::ProviderResult {
             usage: None,
             stale: false,
@@ -272,7 +313,10 @@ mod tests {
         assert_eq!(r["error"], "failed");
         // no subscription: a working key, so not a rejected one
         let body = br#"{"error":{"type":"EntitlementError"}}"#;
-        assert_eq!(handle_reply(email, 403, body), Err(ProviderError::Http(403)));
+        assert_eq!(
+            handle_reply(email, 403, body),
+            Err(ProviderError::Http(403))
+        );
         assert_eq!(with_state(email, |s| s.subscription), Some(false));
     }
 
@@ -280,10 +324,14 @@ mod tests {
     fn opencode_prev_and_last_change() {
         let email = "change@example.com";
         handle_reply(email, 200, OK).unwrap();
-        assert!(with_state(email, |s| s.prev_snapshot.is_none() && s.last_change.is_none()));
-        let next = String::from_utf8(OK.to_vec()).unwrap().replace("12.5", "20");
+        assert!(with_state(email, |s| s.prev_snapshot.is_none()
+            && s.last_change.is_none()));
+        let next = String::from_utf8(OK.to_vec())
+            .unwrap()
+            .replace("12.5", "20");
         handle_reply(email, 200, next.as_bytes()).unwrap();
-        let (prev, change) = with_state(email, |s| (s.prev_snapshot.clone(), s.last_change.clone()));
+        let (prev, change) =
+            with_state(email, |s| (s.prev_snapshot.clone(), s.last_change.clone()));
         assert_eq!(prev.unwrap().rolling.percent, 12.5);
         assert_eq!(change.unwrap().1, "rolling 12.5% → 20%");
         assert_eq!(with_state(email, |s| s.subscription), Some(true));
@@ -294,7 +342,8 @@ mod tests {
     #[ignore]
     async fn opencode_live() {
         // the installed app's data folder (read only here)
-        let dir = std::path::PathBuf::from(std::env::var_os("APPDATA").unwrap()).join("com.usagedeck.app");
+        let dir = std::path::PathBuf::from(std::env::var_os("APPDATA").unwrap())
+            .join("com.usagedeck.app");
         let store = crate::store::Store::new(dir, Box::new(crate::store::CredentialVault));
         let accounts = store.get_accounts().await;
         if accounts.is_empty() {

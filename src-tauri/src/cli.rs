@@ -21,7 +21,13 @@ use std::path::{Path, PathBuf};
 /// The Tauri identifier; `app_data_dir()` is `%APPDATA%\<identifier>` on Windows.
 const IDENTIFIER: &str = "com.usagedeck.app";
 const ENC_PREFIX: &str = "enc:v1:";
-const DUMP_ROUTES: [&str; 5] = ["/api/usage", "/api/cursor", "/api/grok", "/api/codex", "/api/claude"];
+const DUMP_ROUTES: [&str; 5] = [
+    "/api/usage",
+    "/api/cursor",
+    "/api/grok",
+    "/api/codex",
+    "/api/claude",
+];
 
 /// Handle a headless mode if the arguments ask for one. Returns the exit code, or None to start
 /// the normal app.
@@ -56,6 +62,16 @@ pub fn try_run() -> Option<i32> {
     })
 }
 
+/// True when the command line (the process's own, or the argv a second launch hands to the
+/// running instance) asks for the settings window: `usagedeck.exe --settings`.
+pub fn wants_settings<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    args.into_iter().any(|a| a.as_ref() == "--settings")
+}
+
 fn app_data_dir() -> Option<PathBuf> {
     let base = std::env::var_os("APPDATA")?;
     Some(PathBuf::from(base).join(IDENTIFIER))
@@ -69,7 +85,8 @@ fn attach_console() {
         use windows::Win32::System::Console::{
             AttachConsole, GetStdHandle, ATTACH_PARENT_PROCESS, STD_OUTPUT_HANDLE,
         };
-        let has_stdout = GetStdHandle(STD_OUTPUT_HANDLE).is_ok_and(|h| !h.is_invalid() && !h.0.is_null());
+        let has_stdout =
+            GetStdHandle(STD_OUTPUT_HANDLE).is_ok_and(|h| !h.is_invalid() && !h.0.is_null());
         if !has_stdout {
             let _ = AttachConsole(ATTACH_PARENT_PROCESS);
         }
@@ -123,7 +140,8 @@ fn seen_compatible(v: &Value) -> bool {
     v.as_object().is_some_and(|m| {
         m.values().all(|rows| {
             rows.as_array().is_some_and(|rows| {
-                rows.iter().all(|r| r.get("id").is_some_and(Value::is_string))
+                rows.iter()
+                    .all(|r| r.get("id").is_some_and(Value::is_string))
             })
         })
     })
@@ -147,10 +165,16 @@ async fn import_old_data(store: &Store, src: &Path) -> i32 {
         eprintln!("not a folder: {}", src.display());
         return 2;
     }
-    println!("Importing old UsageDeck data into {}", store.dir().display());
+    println!(
+        "Importing old UsageDeck data into {}",
+        store.dir().display()
+    );
 
     match read_old(src, "settings.json") {
-        Some(old) => match store.update_settings(|cur| apply_settings_patch(&cur, &old)).await {
+        Some(old) => match store
+            .update_settings(|cur| apply_settings_patch(&cur, &old))
+            .await
+        {
             Ok(_) => println!("settings.json: imported"),
             Err(e) => println!("settings.json: FAILED ({e})"),
         },
@@ -175,7 +199,10 @@ async fn import_old_data(store: &Store, src: &Path) -> i32 {
         Some(Value::Array(rows)) => rows
             .iter()
             .filter_map(|r| {
-                Some((r.get("email")?.as_str()?.to_string(), r.get("key")?.as_str()?.to_string()))
+                Some((
+                    r.get("email")?.as_str()?.to_string(),
+                    r.get("key")?.as_str()?.to_string(),
+                ))
             })
             .collect(),
         _ => Vec::new(),
@@ -204,7 +231,10 @@ async fn import_old_data(store: &Store, src: &Path) -> i32 {
             .update_accounts(move |mut accounts| {
                 for a in imported {
                     let lower = a.email.to_lowercase();
-                    match accounts.iter_mut().find(|x| x.email.to_lowercase() == lower) {
+                    match accounts
+                        .iter_mut()
+                        .find(|x| x.email.to_lowercase() == lower)
+                    {
                         Some(existing) => existing.key = a.key,
                         None => accounts.push(a),
                     }
@@ -263,7 +293,11 @@ pub fn windows_of(usage: &Value, path: &str, out: &mut Map<String, Value>) {
         return;
     }
     for (k, v) in obj {
-        let name = if path.is_empty() { k.clone() } else { format!("{path}.{k}") };
+        let name = if path.is_empty() {
+            k.clone()
+        } else {
+            format!("{path}.{k}")
+        };
         if v.is_object() {
             windows_of(v, &name, out);
         } else if k.to_lowercase().contains("percent") && (v.is_number() || v.is_null()) {
@@ -315,7 +349,10 @@ async fn dump(core: Core) -> i32 {
             json!({ "status": response.status, "accounts": accounts }),
         );
     }
-    println!("{}", serde_json::to_string_pretty(&Value::Object(out)).unwrap_or_default());
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&Value::Object(out)).unwrap_or_default()
+    );
     0
 }
 
@@ -324,6 +361,24 @@ mod tests {
     use super::*;
     use aes_gcm::aead::OsRng;
     use aes_gcm::AeadCore;
+
+    #[test]
+    fn settings_flag_is_found_anywhere_in_argv() {
+        let exe = r"C:\Users\me\AppData\Local\UsageDeck\usagedeck.exe";
+        assert!(wants_settings([exe, "--settings"]));
+        assert!(wants_settings(vec![
+            exe.to_string(),
+            "--foo".into(),
+            "--settings".into()
+        ]));
+        assert!(!wants_settings([exe]));
+        assert!(!wants_settings([
+            exe,
+            "--setting",
+            "settings",
+            "--settings=1"
+        ]));
+    }
 
     /// encryptKey of lib/key-crypto.ts, for the test only.
     fn encrypt(plain: &str, secret: &str) -> String {
@@ -343,7 +398,10 @@ mod tests {
     fn enc_v1_round_trip() {
         let stored = encrypt("sk-test-0123456789", "s3cret");
         assert!(stored.starts_with(ENC_PREFIX));
-        assert_eq!(decrypt_key(&stored, "s3cret").unwrap(), "sk-test-0123456789");
+        assert_eq!(
+            decrypt_key(&stored, "s3cret").unwrap(),
+            "sk-test-0123456789"
+        );
         assert!(decrypt_key(&stored, "wrong").is_err());
         assert!(decrypt_key("enc:v1:abc", "s3cret").is_err());
         assert_eq!(decrypt_key("sk-plain", "s3cret").unwrap(), "sk-plain");
