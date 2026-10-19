@@ -72,7 +72,7 @@ let usage: OpenCodeAccountUsage[] = [
 ];
 
 const summaries = (): OpenCodeAccountSummary[] =>
-  usage.map((u) => ({ email: u.email, keyHint: "sk-…ab12" }) as OpenCodeAccountSummary);
+  usage.map((u) => ({ email: u.email, keyHint: "oc_sk_…ab12" }) as OpenCodeAccountSummary);
 
 function tracked<T>(
   id: string,

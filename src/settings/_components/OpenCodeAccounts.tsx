@@ -4,6 +4,11 @@ import Dialog from "@/ui/Dialog";
 import { CloseIcon, GearIcon, PencilIcon, PlusIcon, TrashIcon } from "@/ui/Icons";
 import { toastSuccess } from "@/components/toast/toast";
 import { copyKey } from "@/lib/copy-key";
+import {
+  OPENCODE_KEY_PATTERN,
+  OPENCODE_KEY_PLACEHOLDER,
+  OPENCODE_KEY_TITLE,
+} from "@/lib/opencode-key";
 import type { PeakInfo } from "@/lib/peak";
 import type { OpenCodeAccountSummary, OpenCodeAccountUsage, Settings } from "@/lib/types";
 import { OpenCodeCard } from "@/widget/_components/cards";
@@ -93,10 +98,10 @@ function AddAccountDialog({ onClose, onAdded }: { onClose: () => void; onAdded: 
             autoComplete="off"
             value={key}
             onChange={(e) => setKey(e.target.value)}
-            placeholder="sk-…"
+            placeholder={OPENCODE_KEY_PLACEHOLDER}
             required
-            pattern="sk-\S+"
-            title="An OpenCode key starting with sk-"
+            pattern={OPENCODE_KEY_PATTERN}
+            title={OPENCODE_KEY_TITLE}
             className={`${inputClass} font-mono`}
           />
         </div>
@@ -155,9 +160,10 @@ function KeyDialog({
           data-autofocus
           value={key}
           onChange={(e) => setKey(e.target.value)}
-          placeholder="sk-…"
+          placeholder={OPENCODE_KEY_PLACEHOLDER}
           required
-          pattern="sk-\S+"
+          pattern={OPENCODE_KEY_PATTERN}
+          title={OPENCODE_KEY_TITLE}
           className={`w-full font-mono ${inputClass}`}
         />
         <div className="flex gap-2 justify-end mt-4">

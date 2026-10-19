@@ -75,6 +75,16 @@ fn field(body: &Value, name: &str) -> String {
 }
 
 /// Split "/api/x?email=a%40b.com" into the path and its query pairs.
+/// An OpenCode API key: the current `oc_sk_…` format or the older `sk-…` one (mirrors
+/// `src/lib/opencode-key.ts`). The key is stored and sent exactly as entered.
+fn valid_api_key(key: &str) -> bool {
+    crate::store::OPENCODE_KEY_PREFIXES
+        .iter()
+        .any(|p| key.starts_with(p))
+        && key.encode_utf16().count() <= MAX_KEY_LENGTH
+        && !key.chars().any(char::is_whitespace)
+}
+
 fn split_path(path: &str) -> (String, Vec<(String, String)>) {
     match reqwest::Url::parse(&format!("http://app{path}")) {
         Ok(url) => (
@@ -146,11 +156,11 @@ pub async fn dispatch(core: &Core, method: &str, path: &str, body: Option<Value>
             if email.is_empty() || email.encode_utf16().count() > MAX_EMAIL_LENGTH {
                 return error(400, "an email or label is required");
             }
-            if !key.starts_with("sk-")
-                || key.encode_utf16().count() > MAX_KEY_LENGTH
-                || key.chars().any(char::is_whitespace)
-            {
-                return error(400, "a valid sk- key is required");
+            if !valid_api_key(&key) {
+                return error(
+                    400,
+                    "a valid OpenCode API key is required (oc_sk_… or sk-…)",
+                );
             }
             let result = core
                 .store
@@ -234,6 +244,66 @@ mod tests {
         Core::new(Store::new(dir, Box::new(MemoryVault::default())))
     }
 
+    // made-up keys in both OpenCode formats: never real ones
+    const NEW_KEY: &str = "oc_sk_000000000000_AAAAAAAAAAAAAAAAAAAAAAAAAAAA1234";
+    const OLD_KEY: &str = "sk-0000000000005678";
+
+    #[test]
+    fn api_key_formats() {
+        assert!(valid_api_key(NEW_KEY));
+        assert!(valid_api_key(OLD_KEY));
+        assert!(valid_api_key(&format!("oc_sk_{}", "A".repeat(506))));
+        assert!(!valid_api_key(&format!("oc_sk_{}", "A".repeat(507))));
+        for bad in [
+            "",
+            "oc_sk_000000000000_AAAA AAAA",
+            "oc_sk_000000000000_AAAA\tAAAA",
+            "sk-abc\n",
+            " oc_sk_000000000000_AAAA",
+            "pk-0000000000005678",
+            "oc-sk-000000000000_AAAA",
+            "OC_SK_000000000000_AAAA",
+            "sk_0000000000005678",
+            "xoc_sk_000000000000_AAAA",
+        ] {
+            assert!(!valid_api_key(bad), "{bad:?} must be rejected");
+        }
+    }
+
+    #[tokio::test]
+    async fn accounts_accept_new_and_old_keys() {
+        let core = core("keyformats");
+        for (email, key) in [("new@b.com", NEW_KEY), ("old@b.com", OLD_KEY)] {
+            let body = json!({ "email": email, "key": key });
+            let r = dispatch(&core, "POST", "/api/accounts", Some(body)).await;
+            assert_eq!((r.status, r.body.clone()), (200, json!({ "ok": true })));
+        }
+        for key in ["oc_sk_000000000000 _AAAA", "pk-0000000000005678"] {
+            let body = json!({ "email": "bad@b.com", "key": key });
+            let r = dispatch(&core, "POST", "/api/accounts", Some(body)).await;
+            assert_eq!(
+                (r.status, r.body["error"].clone()),
+                (
+                    400,
+                    json!("a valid OpenCode API key is required (oc_sk_… or sk-…)")
+                )
+            );
+        }
+        let r = dispatch(&core, "GET", "/api/accounts", None).await;
+        assert_eq!(
+            r.body,
+            json!({ "accounts": [
+                { "email": "new@b.com", "keyHint": "oc_sk_…1234" },
+                { "email": "old@b.com", "keyHint": "sk-…5678" },
+            ] })
+        );
+        // the key is stored and handed back exactly as entered
+        assert_eq!(
+            account_key(&core, "new@b.com").await,
+            Some(NEW_KEY.to_string())
+        );
+    }
+
     #[tokio::test]
     async fn settings_and_accounts_routes() {
         let core = core("routes");
@@ -272,7 +342,10 @@ mod tests {
         .await;
         assert_eq!(
             (bad.status, bad.body["error"].clone()),
-            (400, json!("a valid sk- key is required"))
+            (
+                400,
+                json!("a valid OpenCode API key is required (oc_sk_… or sk-…)")
+            )
         );
         let bad = dispatch(
             &core,
