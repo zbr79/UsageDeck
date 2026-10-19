@@ -95,6 +95,8 @@ function tracked<T>(
   };
 }
 
+// The cached cards carry transient errors (network, schema-changed, http, locked); they render
+// exactly like fresh ones, with no hint. Only Claude's rejected sign-in shows "re-auth".
 const providers: Record<string, unknown> = {
   cursor: tracked<CursorUsage>(
     "dev@example.com",
@@ -160,9 +162,7 @@ const providers: Record<string, unknown> = {
   ),
 };
 
-// A remembered Claude account that is not signed in: its cached usage, with the 5h
-// window already past its reset (shows "--") and the weekly one still running.
-// A remembered Codex account whose sign-in file is gone.
+// A remembered Codex account whose sign-in file is gone (not the signed-in one: no hint).
 (providers.codex as { accounts: TrackedAccount<CodexUsage>[] }).accounts.push(
   tracked<CodexUsage | null>("old@example.com", null, {
     active: false,
@@ -170,6 +170,8 @@ const providers: Record<string, unknown> = {
   }).accounts[0] as TrackedAccount<CodexUsage>,
 );
 
+// A remembered Claude account that is not signed in: its cached usage, shown like fresh usage,
+// with the 5h window already past its reset (shows "--") and the weekly one still running.
 (providers.claude as { accounts: TrackedAccount<ClaudeUsage>[] }).accounts.push(
   tracked<ClaudeUsage>(
     "work@example.com",

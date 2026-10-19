@@ -8,7 +8,7 @@ import type { PeakInfo } from "@/lib/peak";
 import type { OpenCodeAccountSummary, OpenCodeAccountUsage, Settings } from "@/lib/types";
 import { OpenCodeCard } from "@/widget/_components/cards";
 import { removeAccount, saveAccount } from "../_lib/hooks";
-import { CardFooter, CardGrid, updatedNote, useNow } from "./CardGrid";
+import { CardFooter, CardGrid, useNow } from "./CardGrid";
 import { inputClass, NicknameField, primaryButton, secondaryButton } from "./fields";
 
 type Update = (patch: Partial<Settings>, success?: string) => Promise<boolean>;
@@ -314,14 +314,12 @@ export default function OpenCodeAccounts({
             const row = usage[a.email] ?? emptyRow(a.email);
             const off = disabled(a.email);
             const lapsed = row.subscriptionActive === false;
-            const updated = row.stale ? updatedNote(row.cachedAt, now) : null;
+            // Cached usage looks like fresh usage; the note names only what needs action.
             const note = lapsed
               ? "Subscription inactive"
-              : updated
-                ? `Cached · ${updated}`
-                : off
-                  ? null // the "hidden" badge says it
-                  : "On widget";
+              : off
+                ? null // the "hidden" badge says it
+                : "On widget";
             const footer = (
               <CardFooter
                 note={note}

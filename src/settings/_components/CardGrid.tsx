@@ -1,6 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Badge } from "@/ui/controls";
-import { formatAgo } from "@/lib/format";
 
 /** Wall clock for reset countdowns, ticking once a minute like the widget. */
 export function useNow(intervalMs = 60_000): number {
@@ -19,19 +18,15 @@ export function CardGrid({ children }: { children: ReactNode }) {
   );
 }
 
-/** "updated 3h ago" from a cache time, or null when nothing was cached. */
-export function updatedNote(cachedAt: number | null, now: number): string | null {
-  return cachedAt ? `updated ${formatAgo(cachedAt, now)}` : null;
-}
-
-/** Note and controls under a card's meters. */
+/** Controls under a card's meters, plus a note only when the user must act. */
 export function CardFooter({
   note,
   hidden,
   lead,
   children,
 }: {
-  note: string | null;
+  /** only for something the user must act on, e.g. "Subscription inactive" */
+  note?: string | null;
   /** hidden from the widget */
   hidden: boolean;
   /** shown before the note, e.g. a switch */
