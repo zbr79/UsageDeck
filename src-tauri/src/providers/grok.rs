@@ -208,6 +208,7 @@ pub async fn fetch_reply(
             log::warn!("grok usage request failed: {}", e.without_url());
             ProviderError::Network
         })?;
+    super::note_retry_after(&resp);
     match resp.status().as_u16() {
         401 | 403 => return Err(ProviderError::AuthRejected),
         429 => return Err(ProviderError::RateLimited),
