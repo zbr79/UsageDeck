@@ -54,7 +54,16 @@ pub fn write_file_atomic(file: &Path, data: &[u8]) -> io::Result<()> {
         std::process::id(),
         COUNTER.fetch_add(1, Ordering::Relaxed)
     ));
-    std::fs::write(&tmp, data)?;
+    {
+        use std::io::Write;
+        let mut out = std::fs::File::create(&tmp)?;
+        let written = out.write_all(data).and_then(|()| out.sync_all());
+        if let Err(err) = written {
+            drop(out);
+            let _ = std::fs::remove_file(&tmp);
+            return Err(err);
+        }
+    }
     let mut attempt: u64 = 0;
     loop {
         match std::fs::rename(&tmp, file) {
@@ -81,10 +90,44 @@ pub fn write_json_atomic<T: Serialize + ?Sized>(file: &Path, value: &T) -> Resul
     Ok(())
 }
 
-/// Parsed JSON, or None when the file is missing or corrupt.
+/// Parsed JSON of one of this app's own files, or None when it is missing or corrupt. A corrupt
+/// file is first moved aside to `<name>.corrupt-<unix-seconds>`, so the defaults written next
+/// never overwrite the damaged original.
 pub fn read_json(file: &Path) -> Option<Value> {
-    let text = std::fs::read_to_string(file).ok()?;
+    let bytes = std::fs::read(file).ok()?;
+    match parse_json_bytes(&bytes) {
+        Some(v) => Some(v),
+        None => {
+            set_aside_corrupt(file);
+            None
+        }
+    }
+}
+
+/// Parsed JSON, or None when missing or corrupt; never touches the file (for other apps' files).
+pub fn read_json_untouched(file: &Path) -> Option<Value> {
+    parse_json_bytes(&std::fs::read(file).ok()?)
+}
+
+fn parse_json_bytes(bytes: &[u8]) -> Option<Value> {
+    let text = std::str::from_utf8(bytes).ok()?;
     serde_json::from_str(text.trim_start_matches('\u{feff}')).ok()
+}
+
+fn set_aside_corrupt(file: &Path) {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let name = file
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let aside = file.with_file_name(format!("{name}.corrupt-{secs}"));
+    match std::fs::rename(file, &aside) {
+        Ok(()) => log::warn!("{name} was not valid JSON; moved it to {name}.corrupt-{secs}"),
+        Err(e) => log::warn!("{name} was not valid JSON and could not be moved aside: {e}"),
+    }
 }
 
 // ---- key vault ------------------------------------------------------------------------------
@@ -228,13 +271,21 @@ impl Store {
         }
     }
 
-    /// Accounts whose key is in the vault; a row without a key is omitted, never sent as a key.
+    /// Every listed account. When its key cannot be read from the vault the account is still
+    /// kept, with an empty `key` (its row then reports `missing-credentials`), so a passing
+    /// Credential Manager failure never drops the email from `accounts.json`.
     fn load_accounts(&self) -> Vec<Account> {
         self.stored_emails()
             .into_iter()
-            .filter_map(|email| {
-                let key = self.vault.get(&email.to_lowercase())?;
-                Some(Account { email, key })
+            .map(|email| {
+                let key = self.vault.get(&email.to_lowercase()).unwrap_or_else(|| {
+                    log::info!(
+                        "opencode [{}]: no key in Credential Manager",
+                        crate::providers::log_id(&email)
+                    );
+                    String::new()
+                });
+                Account { email, key }
             })
             .collect()
     }
@@ -251,7 +302,8 @@ impl Store {
         let _guard = self.lock(ACCOUNTS_FILE).await;
         let before = self.load_accounts();
         let next = change(before.clone());
-        for account in &next {
+        // an empty key is one that could not be read: leave the vault entry as it is
+        for account in next.iter().filter(|a| !a.key.is_empty()) {
             self.vault
                 .set(&account.email.to_lowercase(), &account.key)?;
         }
@@ -636,6 +688,79 @@ mod tests {
             Settings::default()
         );
         assert_eq!(normalize_settings(None), Settings::default());
+    }
+
+    #[test]
+    fn corrupt_json_file_is_set_aside_not_overwritten() {
+        let dir = temp_dir("corrupt");
+        let file = dir.join(SETTINGS_FILE);
+        std::fs::write(&file, b"{\"theme\": \"dark\", trunc").unwrap();
+        assert_eq!(read_json(&file), None);
+        assert!(!file.exists());
+        let aside: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("settings.json.corrupt-"))
+            .collect();
+        assert_eq!(aside.len(), 1);
+        let secs = aside[0].trim_start_matches("settings.json.corrupt-");
+        assert!(secs.parse::<u64>().unwrap() > 1_700_000_000);
+        assert_eq!(
+            std::fs::read(dir.join(&aside[0])).unwrap(),
+            b"{\"theme\": \"dark\", trunc"
+        );
+        // defaults written afterwards do not touch the damaged copy
+        let store = Store::new(dir.clone(), Box::new(MemoryVault::default()));
+        assert_eq!(store.get_settings(), Settings::default());
+        store.write_json(SETTINGS_FILE, &json!({})).unwrap();
+        assert!(dir.join(&aside[0]).exists());
+        // a valid file and someone else's file are never moved
+        assert!(read_json(&file).is_some());
+        let theirs = dir.join("theirs.json");
+        std::fs::write(&theirs, b"not json").unwrap();
+        assert_eq!(read_json_untouched(&theirs), None);
+        assert!(theirs.exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn unreadable_key_keeps_the_account() {
+        let dir = temp_dir("vault");
+        let vault = MemoryVault::default();
+        vault.set("a@x.com", "sk-a").unwrap();
+        // b@x.com is listed but its Credential Manager read fails (no entry)
+        let store = Store::new(dir.clone(), Box::new(vault));
+        store
+            .write_json(
+                ACCOUNTS_FILE,
+                &json!([{ "email": "a@x.com" }, { "email": "B@x.com" }]),
+            )
+            .unwrap();
+        let accounts = store.get_accounts().await;
+        assert_eq!(accounts.len(), 2);
+        assert_eq!(accounts[1].email, "B@x.com");
+        assert!(accounts[1].key.is_empty());
+
+        // an unrelated update keeps the email on disk and writes no empty key
+        store
+            .update_accounts(|mut list| {
+                list.push(Account {
+                    email: "c@x.com".into(),
+                    key: "sk-c".into(),
+                });
+                list
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            store.read_json(ACCOUNTS_FILE).unwrap(),
+            json!([{ "email": "a@x.com" }, { "email": "B@x.com" }, { "email": "c@x.com" }])
+        );
+        let after = store.get_accounts().await;
+        assert!(after[1].key.is_empty());
+        assert_eq!(after[2].key, "sk-c");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
