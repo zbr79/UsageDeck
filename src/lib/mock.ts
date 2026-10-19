@@ -28,7 +28,7 @@ let settings: Settings = {
   themeMode: "dark",
   panelTheme: "dark",
   displayNames: { "main@example.com": "Main", "spare@example.com": "Spare" },
-  disabledAccounts: ["hidden@example.com"],
+  disabledAccounts: ["hidden@example.com", "claude:hidden@example.com"],
   providerOrder: ["opencode", "cursor", "grok", "codex", "claude"],
   startAtLogin: true,
 };
@@ -194,6 +194,37 @@ const providers: Record<string, unknown> = {
     } as ClaudeUsage,
     { active: false, stale: true, cachedAt: NOW - 3 * H, error: "locked" },
   ).accounts[0],
+);
+
+// Two more remembered Claude accounts: one used up on its weekly window, one hidden from the widget.
+const claudeUsage = (email: string, five: number, weekly: number): ClaudeUsage =>
+  ({
+    email,
+    displayName: null,
+    signedIn: true,
+    subscribed: true,
+    subscriptionType: "pro",
+    planName: "Pro",
+    fiveHour: { percent: five, resetsAt: iso(2 * H) },
+    weekly: { percent: weekly, resetsAt: iso(30 * H) },
+    weeklyOpus: null,
+    weeklySonnet: null,
+    resetCredits: null,
+    billingType: null,
+    rateLimitTier: null,
+    orgUuid: null,
+  }) as ClaudeUsage;
+(providers.claude as { accounts: TrackedAccount<ClaudeUsage>[] }).accounts.push(
+  tracked("full@example.com", claudeUsage("full@example.com", 40, 100), {
+    active: false,
+    stale: true,
+    cachedAt: NOW - H,
+  }).accounts[0],
+  tracked("hidden@example.com", claudeUsage("hidden@example.com", 12, 20), {
+    active: false,
+    stale: true,
+    cachedAt: NOW - 5 * H,
+  }).accounts[0],
 );
 
 // `?panel=light` shows the settings panel in its light theme (browser preview only).

@@ -90,9 +90,16 @@ VS Code) and the owner's decisions. Where they differ, the owner's decision wins
     with inline errors. The primary button is disabled until the input is valid.
   - **Copy key:** shows a short "Key copied" toast.
 - **Signed-in account:** keeps the green highlight.
-- **Hidden accounts:** keep the dashed border.
-- **Actionable problems** ("re-auth", "key rejected", "Subscription inactive") show in the card's
-  hint area only.
+- **Show / hide:** the "⋯" menu's first item, "Hide from widget" / "Show on widget". No switch on
+  the card.
+- **Hidden accounts:** a gray card (dim palette tokens) with an eye-slash icon after the name,
+  tooltip "Hidden from widget". No dashed or dotted borders anywhere.
+- **Lapsed OpenCode subscription:** a gray card with no badge, note or hint.
+- **Used up:** the widget's solid red ring.
+- **Order:** the widget's order first, then the rest (`src/settings/_lib/order.ts`). OpenCode: the
+  shown accounts in `rankAccounts` order, then hidden, lapsed and no-data accounts. Other providers:
+  shown before hidden; the signed-in account first, used-up last, then the most recent cached use.
+- **Actionable problems** ("re-auth", "key rejected") show in the card's hint area only.
 - **Empty state:** "No accounts yet". OpenCode adds an "Add account" button; the other providers
   get a one-line note that they read the app's own sign-in.
 

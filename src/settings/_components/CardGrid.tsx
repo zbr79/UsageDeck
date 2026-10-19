@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { Hint, type CardHeader } from "@/widget/_components/Card";
+import type { CardHeader } from "@/widget/_components/Card";
 import { Menu, type MenuItem } from "@/ui/Menu";
 import { isContextMenuKey } from "@/ui/menu-focus";
-import { Toggle } from "@/ui/Toggle";
 
 /** Wall clock for reset countdowns, ticking once a minute like the widget. */
 export function useNow(intervalMs = 60_000): number {
@@ -28,15 +27,15 @@ export function CardGrid({ children }: { children: ReactNode }) {
 }
 
 /**
- * One account card with its header controls: the "Show on widget" switch, then the "⋯" button.
- * The menu also opens on right-click, Shift+F10 and the Menu key; focus returns to "⋯".
+ * One account card with its "⋯" button. The menu starts with "Hide from widget" / "Show on
+ * widget", then the page's own items. It also opens on right-click, Shift+F10 and the Menu key;
+ * focus returns to "⋯".
  */
 export function AccountCell({
   name,
   shown,
   onShownChange,
   menuItems,
-  note,
   card,
 }: {
   /** the card's title (nickname, or else the email) */
@@ -44,8 +43,6 @@ export function AccountCell({
   shown: boolean;
   onShownChange: (next: boolean) => void;
   menuItems: MenuItem[];
-  /** an actionable problem the card itself does not show, e.g. "Subscription inactive" */
-  note?: string | null;
   card: (header: CardHeader) => ReactNode;
 }) {
   const more = useRef<HTMLButtonElement>(null);
@@ -55,26 +52,31 @@ export function AccountCell({
     const r = more.current?.getBoundingClientRect();
     if (r) setMenuAt({ x: r.left, y: r.bottom + 4 });
   };
+  const items: MenuItem[] = [
+    {
+      id: "shown",
+      label: shown ? "Hide from widget" : "Show on widget",
+      onSelect: () => onShownChange(!shown),
+    },
+    ...menuItems,
+  ];
   const actions = (
-    <>
-      <Toggle label={`Show ${name} on the widget`} checked={shown} onChange={onShownChange} />
-      <button
-        ref={more}
-        type="button"
-        aria-label={`More options for ${name}`}
-        title={`More options for ${name}`}
-        aria-haspopup="menu"
-        aria-expanded={menuAt !== null}
-        onClick={() => (menuAt ? close() : openFromButton())}
-        className="flex size-6 shrink-0 items-center justify-center rounded text-(--w-text) hover:bg-(--w-hover)"
-      >
-        <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-          <circle cx="3" cy="8" r="1.4" />
-          <circle cx="8" cy="8" r="1.4" />
-          <circle cx="13" cy="8" r="1.4" />
-        </svg>
-      </button>
-    </>
+    <button
+      ref={more}
+      type="button"
+      aria-label={`More options for ${name}`}
+      title={`More options for ${name}`}
+      aria-haspopup="menu"
+      aria-expanded={menuAt !== null}
+      onClick={() => (menuAt ? close() : openFromButton())}
+      className="flex size-6 shrink-0 items-center justify-center rounded text-(--w-text) hover:bg-(--w-hover)"
+    >
+      <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+        <circle cx="3" cy="8" r="1.4" />
+        <circle cx="8" cy="8" r="1.4" />
+        <circle cx="13" cy="8" r="1.4" />
+      </svg>
+    </button>
   );
   return (
     <li
@@ -89,11 +91,11 @@ export function AccountCell({
         openFromButton();
       }}
     >
-      {card({ headerActions: actions, headerNote: note && <Hint color="warn">{note}</Hint> })}
+      {card({ headerActions: actions })}
       {menuAt && (
         <Menu
           label={`Options for ${name}`}
-          items={menuItems}
+          items={items}
           at={menuAt}
           onClose={close}
           returnFocus={more.current}
