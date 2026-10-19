@@ -197,6 +197,9 @@ export default function WidgetPage() {
   };
 
   const slotOf = slotFromAccount;
+  // Spend and pace cover Claude Code on this PC, not one account: one card shows them,
+  // the account Claude is signed into right now.
+  const paceAccountId = data.claude.accounts.find((a) => a.active)?.id ?? null;
 
   const renderProvider = (id: WidgetProvider) => {
     switch (id) {
@@ -300,6 +303,7 @@ export default function WidgetPage() {
               accountId={account.id}
               accountLabel={account.label ?? account.usage?.email}
               multiple={multiple}
+              pace={account.id === paceAccountId ? data.pace : null}
             />
           ),
           <ClaudeCard

@@ -3,6 +3,7 @@ import { getJson, onSettingsChanged } from "@/lib/api";
 import { onRefresh } from "@/lib/bridge";
 import { increasedWindows } from "@/lib/ranking";
 import type {
+  ClaudePace,
   ClaudeUsage,
   CodexUsage,
   CursorUsage,
@@ -56,6 +57,8 @@ export interface WidgetData {
   grok: AccountList<GrokUsage>;
   codex: AccountList<CodexUsage>;
   claude: AccountList<ClaudeUsage>;
+  /** Claude spend and pace; null until loaded or when the last call failed (the card shows nothing) */
+  pace: ClaudePace | null;
   /** last time at least one request succeeded */
   updatedAt: number | null;
   /** every request of the most recent refresh failed */
@@ -103,6 +106,7 @@ export function useWidgetData() {
     grok: emptyList(),
     codex: emptyList(),
     claude: emptyList(),
+    pace: null,
     updatedAt: null,
     offline: false,
     ready: false,
@@ -111,13 +115,14 @@ export function useWidgetData() {
   const increaseAt = useRef(new Map<string, number>());
 
   const loadOnce = useCallback(async () => {
-    const [settings, usage, cursor, grok, codex, claude] = await Promise.allSettled([
+    const [settings, usage, cursor, grok, codex, claude, pace] = await Promise.allSettled([
       getJson<{ settings: Settings }>("/api/settings"),
       getJson<{ accounts: OpenCodeAccountUsage[] }>("/api/usage"),
       getJson<{ accounts: TrackedAccount<CursorUsage>[] }>("/api/cursor"),
       getJson<{ accounts: TrackedAccount<GrokUsage>[] }>("/api/grok"),
       getJson<{ accounts: TrackedAccount<CodexUsage>[] }>("/api/codex"),
       getJson<{ accounts: TrackedAccount<ClaudeUsage>[] }>("/api/claude"),
+      getJson<ClaudePace>("/api/claude/pace"),
     ]);
     const now = Date.now();
 
@@ -154,6 +159,8 @@ export function useWidgetData() {
       grok: list(prev.grok, grok),
       codex: list(prev.codex, codex),
       claude: list(prev.claude, claude),
+      // Its own slot: a failed pace call never counts toward "offline" or touches the Claude card.
+      pace: pace.status === "fulfilled" ? pace.value : null,
       updatedAt: anyOk ? now : prev.updatedAt,
       offline: !anyOk,
       ready: true,
