@@ -1,4 +1,4 @@
-// Card wording for a failed fetch. Pure, so it is unit-tested (tests/widget-logic.test.ts).
+// Card wording for a failed fetch. Pure, so it is unit-tested (tests/provider-errors.test.ts).
 import type { ProviderErrorKind } from "./types";
 
 export interface ErrorHint {
@@ -10,44 +10,33 @@ export interface ErrorHint {
 
 /**
  * The header hint for an error kind. `how` says how to sign in again, e.g. "open Cursor".
- * Returns null for no error and for `auth-rejected`, which keeps its own re-auth / key-rejected
- * hint; a missing field from an older backend counts as no error.
+ * A card only names an error the user must act on: the transient kinds (rate-limited, network,
+ * http, locked, schema-changed) show nothing, and the card keeps its last known usage exactly
+ * like fresh data. Returns null for those, for no error, and for `auth-rejected`, which keeps
+ * its own re-auth / key-rejected hint; a missing field from an older backend counts as no error.
  */
 export function errorHint(
   kind: ProviderErrorKind | null | undefined,
   how = "sign in again",
 ): ErrorHint | null {
   switch (kind) {
-    case "rate-limited":
-      return {
-        short: "rate limited · retrying",
-        long: "The service is rate limiting requests · showing the last known usage and retrying automatically",
-      };
-    case "schema-changed":
-      return {
-        short: "reply format changed",
-        long: "The service changed its reply format, so usage could not be read · an app update is needed",
-      };
-    case "network":
-      return {
-        short: "offline",
-        long: "Could not reach the service · check the network connection; retrying automatically",
-      };
-    case "http":
-      return {
-        short: "service error",
-        long: "The service answered with an error · retrying on the next refresh",
-      };
-    case "locked":
-      return {
-        short: "busy",
-        long: "The sign-in data is in use by another program · retrying shortly",
-      };
     case "missing-credentials":
       return { short: "not signed in", long: `No sign-in found · ${how} to sign in` };
     default:
       return null;
   }
+}
+
+/**
+ * The error kind a card should name for an account. A missing sign-in is only actionable for the
+ * account the app reads (the signed-in one); a remembered account that is not signed in is
+ * normal and shows its cached usage without a hint.
+ */
+export function cardErrorKind(
+  kind: ProviderErrorKind | null | undefined,
+  active: boolean,
+): ProviderErrorKind | null {
+  return kind === "missing-credentials" && !active ? null : (kind ?? null);
 }
 
 /** True when the account's sign-in or key was rejected (old `authExpired` flag or the new kind). */

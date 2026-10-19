@@ -1,24 +1,32 @@
 import { describe, expect, it } from "vitest";
-import { errorHint, isAuthRejected } from "@/lib/errors";
-import { staleAge } from "@/lib/format";
+import { cardErrorKind, errorHint, isAuthRejected } from "@/lib/errors";
 import type { ProviderErrorKind, TrackedAccount } from "@/lib/types";
 import { slotFromAccount } from "@/widget/_lib/useWidgetData";
 
-const H = 3_600_000;
-
 describe("errorHint", () => {
-  it.each([
-    ["rate-limited", "rate limited · retrying"],
-    ["schema-changed", "reply format changed"],
-    ["network", "offline"],
-    ["http", "service error"],
-    ["locked", "busy"],
-    ["missing-credentials", "not signed in"],
-  ] as [ProviderErrorKind, string][])("%s → %s", (kind, short) => {
-    const hint = errorHint(kind, "open Cursor");
-    expect(hint?.short).toBe(short);
+  it.each(["rate-limited", "network", "http", "locked", "schema-changed"] as ProviderErrorKind[])(
+    "shows nothing for the transient kind %s",
+    (kind) => {
+      expect(errorHint(kind, "open Cursor")).toBeNull();
+    },
+  );
+
+  it("shows a hint for the actionable missing-credentials kind", () => {
+    const hint = errorHint("missing-credentials", "open Cursor");
+    expect(hint?.short).toBe("not signed in");
     // the tooltip explains more than the header text
-    expect(hint!.long.length).toBeGreaterThan(short.length);
+    expect(hint!.long.length).toBeGreaterThan(hint!.short.length);
+  });
+
+  it("keeps auth-rejected actionable through the re-auth flag", () => {
+    expect(isAuthRejected(undefined, "auth-rejected")).toBe(true);
+  });
+
+  it("names a missing sign-in only for the account the app reads", () => {
+    expect(cardErrorKind("missing-credentials", true)).toBe("missing-credentials");
+    expect(cardErrorKind("missing-credentials", false)).toBeNull();
+    expect(cardErrorKind("auth-rejected", false)).toBe("auth-rejected");
+    expect(cardErrorKind(undefined, true)).toBeNull();
   });
 
   it("names how to sign in for missing credentials", () => {
@@ -56,14 +64,5 @@ describe("slotFromAccount error", () => {
   it("treats a missing field (older backend) as null", () => {
     expect(slotFromAccount(base).error).toBeNull();
     expect(slotFromAccount(null).error).toBeNull();
-  });
-});
-
-describe("staleAge", () => {
-  it("shows the age only for stale cached data", () => {
-    const now = 10 * H;
-    expect(staleAge(true, now - 2 * H, now)).toBe("updated 2h ago");
-    expect(staleAge(false, now - 2 * H, now)).toBeNull();
-    expect(staleAge(true, null, now)).toBeNull();
   });
 });
