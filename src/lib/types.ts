@@ -170,3 +170,42 @@ export interface ClaudeUsage {
   rateLimitTier: string | null;
   orgUuid: string | null;
 }
+
+// ---- Claude spend and pace (GET /api/claude/pace) --------------------------
+
+export type PaceState = "measuring" | "lasts" | "limit";
+
+/** Speed and forecast of one Claude usage window. */
+export interface PaceWindow {
+  pct: number;
+  pctPerHour: number | null;
+  evenPacePct: number | null;
+  /** ms epoch */
+  etaToLimit: number | null;
+  /** ISO */
+  resetsAt: string | null;
+  state: PaceState;
+}
+
+/** API-equivalent spend of Claude Code on this PC, in USD. */
+export interface PaceSpend {
+  lastHour: number;
+  last5h: number;
+  today: number;
+  last7d: number;
+  rate60m: number;
+  rate15m: number;
+  byModel: { model: string; usd24h: number }[];
+  /** 24 entries, index 0 = current partial hour, USD per hour */
+  hourly: number[];
+  unpricedReplies: number;
+  scannedAt: number | null;
+  backfilling: boolean;
+}
+
+export interface ClaudePace {
+  spend: PaceSpend;
+  windows: { fiveHour: PaceWindow | null; weekly: PaceWindow | null };
+  calibration: { usdPerWeeklyPct: number | null };
+  coverage: "claude-code-this-pc";
+}
