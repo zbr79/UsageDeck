@@ -14,7 +14,16 @@ import type {
   Settings,
 } from "@/lib/types";
 import type { ProviderSlot } from "../_lib/useWidgetData";
-import { Card, Hint, Meter, Note, ProviderIcon, ResetLine, type CardState } from "./Card";
+import {
+  Card,
+  Hint,
+  Meter,
+  Note,
+  ProviderIcon,
+  ResetLine,
+  type CardExtras,
+  type CardState,
+} from "./Card";
 
 type NameSettings = Pick<Settings, "displayNames" | "showProviderNames">;
 
@@ -78,6 +87,7 @@ export function OpenCodeCard({
   now,
   increased,
   onCopyKey,
+  extras,
 }: {
   row: OpenCodeAccountUsage;
   active: boolean;
@@ -88,6 +98,8 @@ export function OpenCodeCard({
   now: number;
   increased: (window: string) => boolean;
   onCopyKey: () => void;
+  /** settings-only additions; the widget passes none */
+  extras?: CardExtras;
 }) {
   const title = nameFor(settings, row.email, "OpenCode", row.email.slice(0, 4));
   const u = row.usage;
@@ -114,6 +126,7 @@ export function OpenCodeCard({
 
   return (
     <Card
+      extras={extras}
       label={`OpenCode account ${title}`}
       state={state}
       icon={
@@ -200,6 +213,7 @@ export function CursorCard({
   accountId = null,
   accountLabel = null,
   multiple = false,
+  extras,
 }: {
   slot: ProviderSlot<CursorUsage>;
   settings: Settings;
@@ -207,6 +221,8 @@ export function CursorCard({
   accountId?: string | null;
   accountLabel?: string | null;
   multiple?: boolean;
+  /** settings-only additions; the widget passes none */
+  extras?: CardExtras;
 }) {
   const c = slot.data;
   const title = accountTitle(
@@ -221,6 +237,7 @@ export function CursorCard({
   const exhausted = !!c && !cyclePassed && (c.totalPercentUsed ?? 0) >= 100;
   return (
     <Card
+      extras={extras}
       label={`Cursor ${title}`}
       icon={<ProviderIcon src="/cursor.ico" alt="" />}
       title={title}
@@ -270,6 +287,7 @@ export function GrokCard({
   accountId = null,
   accountLabel = null,
   multiple = false,
+  extras,
 }: {
   slot: ProviderSlot<GrokUsage>;
   settings: Settings;
@@ -277,6 +295,8 @@ export function GrokCard({
   accountId?: string | null;
   accountLabel?: string | null;
   multiple?: boolean;
+  /** settings-only additions; the widget passes none */
+  extras?: CardExtras;
 }) {
   const g = slot.data;
   const title = accountTitle(
@@ -295,6 +315,7 @@ export function GrokCard({
     : undefined;
   return (
     <Card
+      extras={extras}
       label={`Grok Bot ${title}`}
       icon={<ProviderIcon src="/grokbot.ico" alt="" />}
       title={title}
@@ -337,6 +358,7 @@ export function CodexCard({
   accountId = null,
   accountLabel = null,
   multiple = false,
+  extras,
 }: {
   slot: ProviderSlot<CodexUsage>;
   settings: Settings;
@@ -345,6 +367,8 @@ export function CodexCard({
   accountId?: string | null;
   accountLabel?: string | null;
   multiple?: boolean;
+  /** settings-only additions; the widget passes none */
+  extras?: CardExtras;
 }) {
   const x = slot.data;
   const title = accountTitle(
@@ -364,6 +388,7 @@ export function CodexCard({
       (hasWeekly && !weeklyPassed && (x.weeklyUsedPercent ?? 0) >= 100));
   return (
     <Card
+      extras={extras}
       label={`Codex ${title}`}
       icon={<ProviderIcon src="/openai.png" alt="" invert={light} />}
       title={title}
@@ -433,6 +458,7 @@ export function ClaudeCard({
   accountId = null,
   accountLabel = null,
   multiple = false,
+  extras,
 }: {
   slot: ProviderSlot<ClaudeUsage>;
   settings: Settings;
@@ -440,6 +466,8 @@ export function ClaudeCard({
   accountId?: string | null;
   accountLabel?: string | null;
   multiple?: boolean;
+  /** settings-only additions; the widget passes none */
+  extras?: CardExtras;
 }) {
   const c = slot.data;
   const title = accountTitle(
@@ -462,6 +490,7 @@ export function ClaudeCard({
     !!c && [c.fiveHour, c.weekly].some((w) => !windowUnknown(w) && (w.percent ?? 0) >= 100);
   return (
     <Card
+      extras={extras}
       label={`Claude ${title}`}
       icon={<ProviderIcon src="/claude.ico" alt="" />}
       title={title}

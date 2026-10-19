@@ -3,6 +3,18 @@ import { formatPercent } from "@/lib/format";
 
 export type CardState = "normal" | "active" | "exhausted";
 
+/** Settings-only additions to a card. The widget passes none, so it renders exactly as before. */
+export interface CardExtras {
+  /** highlight as the signed-in account (an exhausted card keeps its red ring) */
+  active?: boolean;
+  /** cached usage of an account that isn't signed in: dim the meters */
+  dimmed?: boolean;
+  /** hidden from the widget: dashed border */
+  dashed?: boolean;
+  /** a row under the meters for notes and controls */
+  footer?: ReactNode;
+}
+
 /** Shared shell for every provider card on the widget. */
 export function Card({
   label,
@@ -12,6 +24,7 @@ export function Card({
   hints,
   badges,
   state = "normal",
+  extras,
   children,
 }: {
   /** accessible name for the card region */
@@ -22,18 +35,20 @@ export function Card({
   hints?: ReactNode;
   badges?: ReactNode;
   state?: CardState;
+  extras?: CardExtras;
   children: ReactNode;
 }) {
+  const shown: CardState = state === "normal" && extras?.active ? "active" : state;
   const ring =
-    state === "exhausted"
+    shown === "exhausted"
       ? "border-(--w-ringDanger) shadow-[0_0_14px_rgba(239,68,68,0.45)]"
-      : state === "active"
+      : shown === "active"
         ? "border-(--w-ringOk) shadow-[0_0_14px_rgba(16,185,129,0.45)]"
         : "border-(--w-cardBorder)";
   return (
     <section
       aria-label={label}
-      className={`relative rounded-lg p-2 border bg-(--w-card) transition-colors duration-700 ${ring}`}
+      className={`relative rounded-lg p-2 border bg-(--w-card) transition-colors duration-700 ${ring}${extras?.dashed ? " border-dashed" : ""}`}
     >
       <div className="flex items-center gap-1.5 mb-1.5 min-w-0">
         {icon}
@@ -46,7 +61,8 @@ export function Card({
         {hints}
         <span className="ml-auto flex items-center gap-1 shrink-0">{badges}</span>
       </div>
-      {children}
+      {extras?.dimmed ? <div className="opacity-60">{children}</div> : children}
+      {extras?.footer}
     </section>
   );
 }
