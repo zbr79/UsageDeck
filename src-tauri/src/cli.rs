@@ -5,6 +5,8 @@
 //! - `--pace [<data dir>]`: scan the Claude Code transcripts once and print the
 //!   `/api/claude/pace` JSON (scan timings on stderr). The optional folder replaces the app data
 //!   folder, so a diagnostic run need not touch the real index files.
+//! - `--fullscreen-probe`: print one full-screen reading (notification state, foreground window
+//!   class, whether it covers its monitor, verdict). Never prints a window title.
 //!
 //! Neither mode ever prints an API key or a full account label.
 
@@ -37,10 +39,17 @@ const DUMP_ROUTES: [&str; 5] = [
 pub fn try_run() -> Option<i32> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mode = args.first()?.as_str();
-    if mode != "--import-old-data" && mode != "--dump" && mode != "--pace" {
+    if mode != "--import-old-data"
+        && mode != "--dump"
+        && mode != "--pace"
+        && mode != "--fullscreen-probe"
+    {
         return None;
     }
     attach_console();
+    if mode == "--fullscreen-probe" {
+        return Some(fullscreen_probe());
+    }
     let custom_dir = (mode == "--pace")
         .then(|| args.get(1).map(PathBuf::from))
         .flatten();
@@ -67,6 +76,40 @@ pub fn try_run() -> Option<i32> {
         "--pace" => runtime.block_on(pace(Core::new(store))),
         _ => runtime.block_on(dump(Core::new(store))),
     })
+}
+
+// ---- --fullscreen-probe -----------------------------------------------------------------------
+
+/// Print one full-screen reading for the current foreground window and exit. There is no widget
+/// in this mode, so the foreground window is compared with its own monitor. Never prints a
+/// window title.
+fn fullscreen_probe() -> i32 {
+    use crate::win::fullscreen::{quns_name, read};
+    // Same DPI mode as the app, so window and monitor rects are both in physical pixels.
+    // SAFETY: called once, before any window exists in this process.
+    unsafe {
+        use windows::Win32::UI::HiDpi::{
+            SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+        };
+        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    }
+    let r = read(None);
+    match r.quns {
+        Some(q) => println!("quns: {} ({q})", quns_name(q)),
+        None => println!("quns: unavailable"),
+    }
+    println!("foreground class: {:?}", r.class);
+    println!("ignored: {}", r.ignored);
+    println!("covers its monitor: {}", r.covers);
+    println!(
+        "verdict: {}",
+        if r.full_screen {
+            "full screen"
+        } else {
+            "not full screen"
+        }
+    );
+    0
 }
 
 // ---- --pace -----------------------------------------------------------------------------------

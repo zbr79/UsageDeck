@@ -24,6 +24,7 @@ let settings: Settings = {
   codexEnabled: true,
   claudeEnabled: true,
   deepseekPeakHourWarning: true,
+  hideInFullscreen: true,
   showProviderNames: false,
   themeMode: "dark",
   panelTheme: "dark",

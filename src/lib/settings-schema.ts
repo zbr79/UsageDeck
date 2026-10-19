@@ -49,6 +49,7 @@ const BOOLEAN_KEYS = [
   "codexEnabled",
   "claudeEnabled",
   "deepseekPeakHourWarning",
+  "hideInFullscreen",
   "showProviderNames",
   "startAtLogin",
 ] as const;
@@ -64,6 +65,7 @@ export const DEFAULT_SETTINGS: Settings = {
   codexEnabled: true,
   claudeEnabled: true,
   deepseekPeakHourWarning: true,
+  hideInFullscreen: true,
   showProviderNames: false,
   themeMode: "auto",
   panelTheme: "dark",

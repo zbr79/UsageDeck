@@ -359,6 +359,7 @@ pub fn run() {
             }
             build_tray(app)?;
             win::screen::start_sampler(app.handle().clone());
+            win::fullscreen::start_watcher(app.handle().clone());
             if cli::wants_settings(std::env::args()) {
                 show_settings(app.handle());
             }
