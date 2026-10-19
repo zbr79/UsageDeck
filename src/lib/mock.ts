@@ -31,6 +31,7 @@ let settings: Settings = {
   disabledAccounts: ["hidden@example.com", "claude:hidden@example.com"],
   providerOrder: ["opencode", "cursor", "grok", "codex", "claude"],
   startAtLogin: true,
+  claudeHourlyTarget: null,
 };
 
 const win = (percent: number, resetsIn: number) => ({
@@ -232,6 +233,9 @@ if (typeof location !== "undefined") {
   const panel = new URLSearchParams(location.search).get("panel");
   if (panel === "light" || panel === "dark" || panel === "system")
     settings = { ...settings, panelTheme: panel };
+  // `?target=100` sets the Claude hourly spend target (browser preview only).
+  const target = Number(new URLSearchParams(location.search).get("target"));
+  if (target > 0) settings = { ...settings, claudeHourlyTarget: Math.round(target) };
 }
 
 /** Browser stand-in for the Rust `copy_key` command: fails for an unknown account, like Rust. */

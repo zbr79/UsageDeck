@@ -13,12 +13,19 @@ import {
   modelShares,
   paceTone,
   paceVsEven,
+  SPEND_BAND_TONE,
+  spendBand,
+  targetBandText,
   windowForecast,
   WINDOW_LABELS,
   type PaceTone,
 } from "@/lib/pace";
-import type { ClaudePace, PaceWindow } from "@/lib/types";
-import { Section } from "./fields";
+import { sanitizeHourlyTarget } from "@/lib/settings-schema";
+import type { ClaudePace, PaceWindow, Settings } from "@/lib/types";
+import { PANEL_SPEND_TONE } from "@/ui/palette";
+import { inputClass, Section, secondaryButton, SettingRow } from "./fields";
+
+type Update = (patch: Partial<Settings>, success?: string) => Promise<boolean>;
 
 const PACE_MS = 60_000;
 
@@ -150,25 +157,121 @@ function Row({ title, detail, children }: { title: string; detail: string; child
   );
 }
 
+const BAND_WORDS = { below: "below target", on: "on target", above: "above target" } as const;
+
+/** The 60-min rate, coloured like the widget header when a target is set (plus the band in words). */
+function RateFigure({ rate, target }: { rate: number; target: number | null }) {
+  const band = spendBand(rate, target);
+  const tone = SPEND_BAND_TONE[band];
+  return (
+    <span data-testid="pace-rate" data-tone={tone}>
+      <span
+        className="font-semibold"
+        style={tone === "muted" ? undefined : { color: `var(--p-${PANEL_SPEND_TONE[tone]})` }}
+      >
+        {formatUsdRate(rate)}
+      </span>
+      {band in BAND_WORDS && ` (${BAND_WORDS[band as keyof typeof BAND_WORDS]})`}
+    </span>
+  );
+}
+
+const draftOf = (target: number | null) => (target == null ? "" : String(target));
+
+/** "Hourly spend target": $ [ 100 ] /h, applied on Enter or blur; empty means off. */
+function TargetRow({ target, update }: { target: number | null; update: Update }) {
+  const [draft, setDraft] = useState(() => draftOf(target));
+  useEffect(() => setDraft(draftOf(target)), [target]);
+  const save = (next: number | null) => {
+    if (next === target) return setDraft(draftOf(target));
+    void update(
+      { claudeHourlyTarget: next },
+      next == null ? "Hourly spend target off" : `Hourly spend target ${formatUsdRate(next)}`,
+    ).then((ok) => ok || setDraft(draftOf(target)));
+  };
+  const apply = () => {
+    const text = draft.trim();
+    if (text === "") return save(null);
+    const next = sanitizeHourlyTarget(Number(text));
+    // Out of range or not a number: put the saved value back.
+    if (next === undefined) return setDraft(draftOf(target));
+    setDraft(String(next));
+    save(next);
+  };
+  return (
+    <div data-testid="target-row">
+      <SettingRow
+        title="Hourly spend target"
+        description="Colours the spend on the widget: yellow below, green near, red above."
+        control={(labelId, descId) => (
+          <>
+            <span className="flex items-center gap-1 text-sm">
+              <span className="text-(--p-muted)" aria-hidden="true">
+                $
+              </span>
+              <input
+                type="number"
+                inputMode="numeric"
+                min={1}
+                max={10000}
+                step={1}
+                placeholder="Off"
+                aria-labelledby={labelId}
+                aria-describedby={descId}
+                className={`${inputClass} w-24! tabular-nums`}
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onBlur={apply}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") apply();
+                }}
+              />
+              <span className="text-(--p-muted)" aria-hidden="true">
+                /h
+              </span>
+            </span>
+            <button
+              type="button"
+              className={`${secondaryButton} min-w-0!`}
+              disabled={target == null && draft === ""}
+              aria-label="Clear hourly spend target"
+              onClick={() => {
+                setDraft("");
+                save(null);
+              }}
+            >
+              Clear
+            </button>
+          </>
+        )}
+      />
+      <p className="mt-1 px-4 text-xs text-(--p-muted)" data-testid="target-band">
+        {target == null ? "Off: the widget shows the spend in grey." : targetBandText(target)}
+      </p>
+    </div>
+  );
+}
+
 /** Settings → Claude: API-equivalent spend of Claude Code on this PC, and each window's pace. */
-export default function PaceSection() {
+export default function PaceSection({ target, update }: { target: number | null; update: Update }) {
   const { pace, failed, now } = usePace();
   return (
     <div className="mt-8" data-testid="pace-section">
       <Section title="Spend & pace">
+        <TargetRow target={target} update={update} />
         {!pace ? (
           <p className="text-sm text-(--p-muted)">
             {failed ? "Spend and pace are not available right now." : "Loading…"}
           </p>
         ) : (
-          <PaceBody pace={pace} now={now} />
+          <PaceBody pace={pace} now={now} target={target} />
         )}
       </Section>
     </div>
   );
 }
 
-function PaceBody({ pace, now }: { pace: ClaudePace; now: number }) {
+function PaceBody({ pace, now, target }: { pace: ClaudePace; now: number; target: number | null }) {
   const s = pace.spend;
   const usd = (v: number) => (s.backfilling ? "$—" : formatUsd(v));
   const models = modelShares(s.byModel);
@@ -183,9 +286,14 @@ function PaceBody({ pace, now }: { pace: ClaudePace; now: number }) {
           <Stat label="Last 7 days" value={usd(s.last7d)} />
         </div>
         <div className="mt-3 text-xs text-(--p-muted)">
-          {s.backfilling
-            ? "Reading Claude Code logs for the first time…"
-            : `Spending ${formatUsdRate(s.rate60m)} over the last 60 min · ${formatUsdRate(s.rate15m)} over the last 15 min`}
+          {s.backfilling ? (
+            "Reading Claude Code logs for the first time…"
+          ) : (
+            <>
+              Spending <RateFigure rate={s.rate60m} target={target} /> over the last 60 min ·{" "}
+              {formatUsdRate(s.rate15m)} over the last 15 min
+            </>
+          )}
         </div>
       </div>
 

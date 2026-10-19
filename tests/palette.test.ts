@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   contrast,
   PANEL_PALETTES,
+  PANEL_SPEND_TONE,
   SETTINGS_CARD_PALETTES,
+  SETTINGS_ROW_CARD,
   WIDGET_PALETTES,
+  WIDGET_SPEND_TONE,
   type Tone,
 } from "@/ui/palette";
 
@@ -29,6 +32,11 @@ describe.each(CARD_PALETTES)("%s card theme", (_name, p) => {
   it.each(["text", "label", "muted", "peakActive", "peakNext", "warn"] as const)(
     "%s text meets AA on the card",
     (key) => expect(contrast(p[key], p.card)).toBeGreaterThanOrEqual(AA_TEXT),
+  );
+
+  // The Claude header's spend vs the hourly target: below / on / above.
+  it.each(Object.values(WIDGET_SPEND_TONE))("spend %s text meets AA on the card", (key) =>
+    expect(contrast(p[key], p.card)).toBeGreaterThanOrEqual(AA_TEXT),
   );
 
   it.each(tones)("%s badge text meets AA", (tone) => {
@@ -74,6 +82,15 @@ describe.each(Object.entries(PANEL_PALETTES))("settings %s panel", (_name, p) =>
       expect(contrast(p[key], p.surface)).toBeGreaterThanOrEqual(AA_TEXT);
     },
   );
+
+  // The "Spend & pace" summary sits on the settings rows' own card colour (settings/App.tsx --s-card).
+  it.each(Object.values(PANEL_SPEND_TONE))("spend %s text meets AA on the settings card", (key) => {
+    expect(contrast(p[key], p.bg)).toBeGreaterThanOrEqual(AA_TEXT);
+    expect(contrast(p[key], p.surface)).toBeGreaterThanOrEqual(AA_TEXT);
+    expect(contrast(p[key], SETTINGS_ROW_CARD[_name as "dark" | "light"])).toBeGreaterThanOrEqual(
+      AA_TEXT,
+    );
+  });
 
   it("buttons meet AA", () => {
     expect(contrast(p.primaryFg, p.primaryBg)).toBeGreaterThanOrEqual(AA_TEXT);

@@ -170,7 +170,7 @@ export default function ProviderPanel({
           })}
         </CardGrid>
       )}
-      {id === "claude" && <PaceSection />}
+      {id === "claude" && <PaceSection target={settings.claudeHourlyTarget} update={update} />}
       {renameAccount && (
         <RenameDialog
           name={labelOf(id, renameAccount)}

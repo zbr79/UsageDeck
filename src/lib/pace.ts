@@ -89,6 +89,55 @@ export function headerRate(pace: ClaudePace | null): string | null {
   return !pace || pace.spend.backfilling ? null : formatUsdRate(pace.spend.rate60m);
 }
 
+/** Where the hourly spend falls against the owner's target. */
+export type SpendBand = "none" | "idle" | "below" | "on" | "above";
+/** Text colour token per band; the caller maps it to its own palette (widget or settings). */
+export type SpendTone = "muted" | "warning" | "success" | "danger";
+
+/** "On target" is 80 %-120 % of the target, both ends included. */
+export const TARGET_LOW = 0.8;
+export const TARGET_HIGH = 1.2;
+
+export const SPEND_BAND_TONE: Record<SpendBand, SpendTone> = {
+  none: "muted",
+  idle: "muted",
+  below: "warning",
+  on: "success",
+  above: "danger",
+};
+
+/** No target: none. Zero spend: idle (not a nudge). Else below / on / above the 80-120 % band. */
+export function spendBand(rate: number, target: number | null): SpendBand {
+  if (target == null || !(target > 0)) return "none";
+  if (!(rate > 0)) return "idle";
+  if (rate < target * TARGET_LOW) return "below";
+  if (rate > target * TARGET_HIGH) return "above";
+  return "on";
+}
+
+/** "Green between $80 and $120 per hour". */
+export function targetBandText(target: number): string {
+  return `Green between ${formatUsd(target * TARGET_LOW)} and ${formatUsd(target * TARGET_HIGH)} per hour`;
+}
+
+const BAND_WORDS: Record<SpendBand, string> = {
+  none: "",
+  idle: "idle",
+  below: "below target",
+  on: "on target",
+  above: "above target",
+};
+
+/** The header rate's tooltip and accessible name; with a target it names the band, so colour is not the only cue. */
+export function spendRateTitle(rate: number, target: number | null): string {
+  const base = "Claude Code spend over the last hour (API-equivalent, this PC)";
+  const band = spendBand(rate, target);
+  if (band === "none" || target == null) return base;
+  const green = `green ${formatUsd(target * TARGET_LOW)}–${formatUsd(target * TARGET_HIGH)}/h`;
+  const where = band === "idle" ? BAND_WORDS.idle : `${BAND_WORDS[band]} (${green})`;
+  return `${base} · target ${formatUsdRate(target)} · ${where}`;
+}
+
 const resetTime = (resetsAt: string | null | undefined): number | null => {
   const t = resetsAt ? Date.parse(resetsAt) : NaN;
   return Number.isFinite(t) ? t : null;

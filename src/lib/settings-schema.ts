@@ -71,7 +71,18 @@ export const DEFAULT_SETTINGS: Settings = {
   disabledAccounts: [],
   providerOrder: [...DEFAULT_PROVIDER_ORDER],
   startAtLogin: true,
+  claudeHourlyTarget: null,
 };
+
+export const MIN_HOURLY_TARGET = 1;
+export const MAX_HOURLY_TARGET = 10000;
+
+/** A valid hourly target, rounded to a whole dollar; undefined for anything else (null is handled by the caller). */
+export function sanitizeHourlyTarget(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  if (value < MIN_HOURLY_TARGET || value > MAX_HOURLY_TARGET) return undefined;
+  return Math.round(value);
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -134,6 +145,12 @@ export function applySettingsPatch(current: Settings, patch: unknown): Settings 
   if (disabledAccounts) next.disabledAccounts = disabledAccounts;
   if (Array.isArray(patch.providerOrder)) {
     next.providerOrder = normalizeProviderOrder(patch.providerOrder);
+  }
+  if (patch.claudeHourlyTarget === null) {
+    next.claudeHourlyTarget = null;
+  } else {
+    const target = sanitizeHourlyTarget(patch.claudeHourlyTarget);
+    if (target !== undefined) next.claudeHourlyTarget = target;
   }
   return next;
 }

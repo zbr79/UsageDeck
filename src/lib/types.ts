@@ -23,6 +23,8 @@ export interface Settings {
   providerOrder: WidgetProvider[];
   /** start the app when the user signs in to Windows */
   startAtLogin: boolean;
+  /** Claude Code hourly spend target in whole USD per hour (1-10000); null = off */
+  claudeHourlyTarget: number | null;
 }
 
 export type ProviderId = "cursor" | "grok" | "codex" | "claude";

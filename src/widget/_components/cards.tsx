@@ -1,10 +1,17 @@
 import type { ReactNode } from "react";
 import { Badge, HIT_24 } from "@/ui/controls";
 import { CopyIcon } from "@/ui/Icons";
-import type { Tone } from "@/ui/palette";
+import { WIDGET_SPEND_TONE, type Tone } from "@/ui/palette";
 import { errorHint, isAuthRejected } from "@/lib/errors";
 import { capitalize, formatDuration, formatUntil } from "@/lib/format";
-import { headerRate, meterPaceText, meterSeverity } from "@/lib/pace";
+import {
+  headerRate,
+  meterPaceText,
+  meterSeverity,
+  SPEND_BAND_TONE,
+  spendBand,
+  spendRateTitle,
+} from "@/lib/pace";
 import type { PeakInfo } from "@/lib/peak";
 import { isAccountExhausted, isExhaustedWindow, isPassed, isUnknownWindow } from "@/lib/ranking";
 import type {
@@ -530,6 +537,10 @@ export function ClaudeCard({
   const exhausted =
     !!c && [c.fiveHour, c.weekly].some((w) => !windowUnknown(w) && (w.percent ?? 0) >= 100);
   const rate = headerRate(pace);
+  const target = settings.claudeHourlyTarget;
+  const rate60m = pace?.spend.rate60m ?? 0;
+  const rateTone = SPEND_BAND_TONE[spendBand(rate60m, target)];
+  const rateTitle = spendRateTitle(rate60m, target);
   return (
     <Card
       extras={extras}
@@ -541,10 +552,23 @@ export function ClaudeCard({
         rate && (
           <span
             data-testid="claude-rate"
-            title="Claude Code spend on this PC, last 60 min (API-equivalent, not your bill)"
-            className="shrink-0 text-[12px] leading-4 tabular-nums text-(--w-muted) transition-colors duration-700"
+            data-tone={rateTone}
+            title={rateTitle}
+            className="shrink-0 whitespace-nowrap text-[12px] leading-4 tabular-nums text-(--w-muted) transition-colors duration-700"
           >
-            {rate}
+            <span aria-hidden="true">
+              <span className="text-[11px]">spend </span>
+              <span
+                style={
+                  rateTone === "muted"
+                    ? undefined
+                    : { color: `var(--w-${WIDGET_SPEND_TONE[rateTone]})` }
+                }
+              >
+                {rate}
+              </span>
+            </span>
+            <span className="sr-only">{`${rate}: ${rateTitle}`}</span>
           </span>
         )
       }

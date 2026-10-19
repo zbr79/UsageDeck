@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { closeSettings, inTauri } from "@/lib/bridge";
-import { cssVars, PANEL_PALETTES, SETTINGS_CARD_PALETTES } from "@/ui/palette";
+import { cssVars, PANEL_PALETTES, SETTINGS_CARD_PALETTES, SETTINGS_ROW_CARD } from "@/ui/palette";
 import { useSettings, useSummaries } from "./_lib/hooks";
 import { PanelThemeContext, resolvePanelTheme, useSystemDark } from "./_lib/theme";
 import {
@@ -20,14 +20,14 @@ import { AboutPage, AppearancePage, GeneralPage, WidgetPage } from "./_component
 const SURFACES = {
   dark: {
     "--s-page": "#202020",
-    "--s-card": "#2b2b2b",
+    "--s-card": SETTINGS_ROW_CARD.dark,
     "--s-cardBorder": "#1d1d1d",
     "--s-navHover": "rgba(255,255,255,0.06)",
     "--s-navActive": "rgba(255,255,255,0.09)",
   },
   light: {
     "--s-page": "#f3f3f3",
-    "--s-card": "#fbfbfb",
+    "--s-card": SETTINGS_ROW_CARD.light,
     "--s-cardBorder": "#e5e5e5",
     "--s-navHover": "rgba(0,0,0,0.04)",
     "--s-navActive": "rgba(0,0,0,0.06)",
