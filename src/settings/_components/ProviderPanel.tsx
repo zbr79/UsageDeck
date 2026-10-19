@@ -18,6 +18,7 @@ import { refreshWidget, type Summaries } from "../_lib/hooks";
 import { usePanelTheme } from "../_lib/theme";
 import { AccountCell, CardGrid, EmptyState, ProviderLogo, useNow } from "./CardGrid";
 import { RenameDialog } from "./dialogs";
+import PaceSection from "./PaceSection";
 import { Page } from "./fields";
 
 type Update = (patch: Partial<Settings>, success?: string) => Promise<boolean>;
@@ -173,6 +174,7 @@ export default function ProviderPanel({
           })}
         </CardGrid>
       )}
+      {id === "claude" && <PaceSection />}
       {renameAccount && (
         <RenameDialog
           name={labelOf(id, renameAccount)}
