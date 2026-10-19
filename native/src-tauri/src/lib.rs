@@ -231,8 +231,15 @@ pub fn run() {
         std::process::exit(code);
     }
     tauri::Builder::default()
-        // must be first: a second launch focuses the running widget instead
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_widget(app)))
+        // must be first: a second launch focuses the running widget instead, or opens the
+        // settings window when it was started with `--settings`
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if cli::wants_settings(&args) {
+                show_settings(app);
+            } else {
+                show_widget(app);
+            }
+        }))
         .plugin(
             tauri_plugin_log::Builder::new()
                 .level(log::LevelFilter::Info)
@@ -285,6 +292,9 @@ pub fn run() {
             }
             build_tray(app)?;
             win::screen::start_sampler(app.handle().clone());
+            if cli::wants_settings(std::env::args()) {
+                show_settings(app.handle());
+            }
             Ok(())
         })
         .run(tauri::generate_context!())

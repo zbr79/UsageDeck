@@ -56,6 +56,16 @@ pub fn try_run() -> Option<i32> {
     })
 }
 
+/// True when the command line (the process's own, or the argv a second launch hands to the
+/// running instance) asks for the settings window: `usagedeck.exe --settings`.
+pub fn wants_settings<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    args.into_iter().any(|a| a.as_ref() == "--settings")
+}
+
 fn app_data_dir() -> Option<PathBuf> {
     let base = std::env::var_os("APPDATA")?;
     Some(PathBuf::from(base).join(IDENTIFIER))
@@ -324,6 +334,15 @@ mod tests {
     use super::*;
     use aes_gcm::aead::OsRng;
     use aes_gcm::AeadCore;
+
+    #[test]
+    fn settings_flag_is_found_anywhere_in_argv() {
+        let exe = r"C:\Users\me\AppData\Local\UsageDeck\usagedeck.exe";
+        assert!(wants_settings([exe, "--settings"]));
+        assert!(wants_settings(vec![exe.to_string(), "--foo".into(), "--settings".into()]));
+        assert!(!wants_settings([exe]));
+        assert!(!wants_settings([exe, "--setting", "settings", "--settings=1"]));
+    }
 
     /// encryptKey of lib/key-crypto.ts, for the test only.
     fn encrypt(plain: &str, secret: &str) -> String {
