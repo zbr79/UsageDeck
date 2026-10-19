@@ -21,6 +21,12 @@ export interface WidgetPalette {
   barWarn: string;
   barDanger: string;
   barDim: string;
+  /** text and meter fills of a signed-out or lapsed account (instead of fading with opacity) */
+  dimText: string;
+  dimMuted: string;
+  dimBarOk: string;
+  dimBarWarn: string;
+  dimBarDanger: string;
   ringOk: string;
   ringDanger: string;
   peakActive: string;
@@ -59,6 +65,11 @@ const lightBase: Omit<WidgetPalette, "card" | "track"> = {
   barWarn: "#bb4d00",
   barDanger: "#c10007",
   barDim: "#71717b",
+  dimText: "#5f5f66",
+  dimMuted: "#62626b",
+  dimBarOk: "#2b8e71",
+  dimBarWarn: "#c26727",
+  dimBarDanger: "#cf595e",
   ringOk: "#009966",
   ringDanger: "#e7000b",
   peakActive: "#9f0712",
@@ -80,6 +91,11 @@ export const WIDGET_PALETTES: Record<WidgetTheme, WidgetPalette> = {
     barWarn: "#ffb900",
     barDanger: "#ff6467",
     barDim: "#71717b",
+    dimText: "#a1a1aa",
+    dimMuted: "#83838b",
+    dimBarOk: "#0a8962",
+    dimBarWarn: "#a3790b",
+    dimBarDanger: "#ac494c",
     ringOk: "#00d492",
     ringDanger: "#ff6467",
     peakActive: "#ffa2a2",

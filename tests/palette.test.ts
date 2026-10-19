@@ -27,6 +27,21 @@ describe.each(Object.entries(WIDGET_PALETTES))("widget %s theme", (_name, p) => 
   it.each(["barOk", "barWarn", "barDanger"] as const)("%s meter fill meets 3:1", (key) => {
     expect(contrast(p[key], p.card)).toBeGreaterThanOrEqual(AA_NON_TEXT);
   });
+
+  // Signed-out / lapsed accounts swap in these instead of fading the card with opacity.
+  it.each(["dimText", "dimMuted"] as const)("dimmed %s meets AA on the card", (key) => {
+    expect(contrast(p[key], p.card)).toBeGreaterThanOrEqual(AA_TEXT);
+  });
+
+  it.each(["dimBarOk", "dimBarWarn", "dimBarDanger", "barDim"] as const)(
+    "dimmed %s meter fill meets 3:1",
+    (key) => expect(contrast(p[key], p.card)).toBeGreaterThanOrEqual(AA_NON_TEXT),
+  );
+
+  it("dimmed colours are quieter than the normal ones", () => {
+    expect(contrast(p.dimText, p.card)).toBeLessThan(contrast(p.text, p.card));
+    expect(contrast(p.dimMuted, p.card)).toBeLessThanOrEqual(contrast(p.muted, p.card));
+  });
 });
 
 describe.each(Object.entries(PANEL_PALETTES))("settings %s panel", (_name, p) => {
