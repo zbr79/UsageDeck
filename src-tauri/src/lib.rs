@@ -134,9 +134,13 @@ fn show_settings(app: &AppHandle) {
     let _ = settings.set_focus();
 }
 
+/// Hide the overlay and reload its page while hidden, so the next open starts fresh: the panel
+/// centred (a drag offset is page state), the first tab selected. Electron got this for free by
+/// building a new window per open (desktop/main.js:165-195); here the hidden window is reused.
 fn hide_settings(app: &AppHandle) {
     if let Some(settings) = app.get_webview_window(SETTINGS) {
         let _ = settings.hide();
+        let _ = settings.reload();
     }
     let _ = app.emit_to(WIDGET, EVENT_SETTINGS_CHANGED, ());
 }
