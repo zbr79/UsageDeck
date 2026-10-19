@@ -204,7 +204,7 @@ export function OpenCodeCard({
         <div className="flex gap-2">
           <Meter
             label="R"
-            name="Rolling usage"
+            name="Rolling 5-hour window"
             percent={u.rolling.percent}
             unknown={unknown("rolling")}
             dimmed={
@@ -216,7 +216,7 @@ export function OpenCodeCard({
           />
           <Meter
             label="W"
-            name="Weekly usage"
+            name="Weekly"
             percent={u.weekly.percent}
             unknown={unknown("weekly")}
             dimmed={isExhaustedWindow(u.monthly, row.stale, now)}
@@ -225,7 +225,7 @@ export function OpenCodeCard({
           />
           <Meter
             label="M"
-            name="Monthly usage"
+            name="Monthly"
             percent={u.monthly.percent}
             unknown={unknown("monthly")}
             increased={increased("monthly")}
@@ -364,7 +364,7 @@ export function GrokCard({
       {g ? (
         <>
           <div className="flex gap-2">
-            <Meter label="Weekly" name="Weekly usage" percent={g.percentUsed} unknown={passed} />
+            <Meter label="Weekly" name="Weekly" percent={g.percentUsed} unknown={passed} />
           </div>
           {g.resetAt && !passed && <ResetLine>Resets {formatUntil(g.resetAt, now)}</ResetLine>}
         </>
@@ -408,6 +408,7 @@ export function CodexCard({
   );
   const passed = slot.stale && isPassed(x?.resetAt, now);
   const hasWeekly = x?.weeklyUsedPercent != null;
+  const fiveHour = hasWeekly && x?.limitWindowSeconds === 18000;
   const weeklyPassed = slot.stale && isPassed(x?.weeklyResetAt, now);
   const exhausted =
     !!x &&
@@ -428,7 +429,7 @@ export function CodexCard({
             <Badge
               scope="w"
               tone={x.resetCredits > 0 ? "violet" : "gray"}
-              title={`${x.resetCredits} rate-limit reset${x.resetCredits === 1 ? "" : "s"} available`}
+              label={`Reset credits available: ${x.resetCredits}`}
             >
               ↺ {x.resetCredits}
             </Badge>
@@ -445,8 +446,8 @@ export function CodexCard({
         <>
           <div className="flex gap-2">
             <Meter
-              label={hasWeekly && x.limitWindowSeconds === 18000 ? "5h" : "Usage"}
-              name="Codex usage"
+              label={fiveHour ? "5h" : "Usage"}
+              name={fiveHour ? "Rolling 5-hour window" : "Codex usage"}
               percent={x.usedPercent}
               unknown={passed}
               reset={hasWeekly && x.resetAt && !passed ? formatUntil(x.resetAt, now) : undefined}
@@ -454,7 +455,7 @@ export function CodexCard({
             {hasWeekly && (
               <Meter
                 label="Weekly"
-                name="Codex weekly usage"
+                name="Weekly"
                 percent={x.weeklyUsedPercent}
                 unknown={weeklyPassed}
                 reset={x.weeklyResetAt && !weeklyPassed ? formatUntil(x.weeklyResetAt, now) : null}
@@ -526,7 +527,7 @@ export function ClaudeCard({
             <Badge
               scope="w"
               tone={c.resetCredits > 0 ? "violet" : "gray"}
-              title={`${c.resetCredits} reset${c.resetCredits === 1 ? "" : "s"} available`}
+              label={`Reset credits available: ${c.resetCredits}`}
             >
               ↺ {c.resetCredits}
             </Badge>
@@ -547,8 +548,8 @@ export function ClaudeCard({
         <div className="flex gap-2">
           {(
             [
-              ["5h", "Five-hour usage", c.fiveHour],
-              ["Weekly", "Weekly usage", c.weekly],
+              ["5h", "Rolling 5-hour window", c.fiveHour],
+              ["Weekly", "Weekly", c.weekly],
             ] as const
           ).map(([label, name, w]) => (
             <Meter

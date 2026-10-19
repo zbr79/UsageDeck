@@ -108,24 +108,34 @@ export function Badge({
   tone,
   children,
   title,
+  label,
   scope = "p",
 }: {
   tone: Tone;
   children: ReactNode;
   title?: string;
+  /** full name for a compact pill: spoken instead of the visible text, and the tooltip */
+  label?: string;
   scope?: "w" | "p";
 }) {
   return (
     <span
-      title={title}
-      className="text-[10px] leading-3 font-semibold px-1.5 py-0.5 rounded-full border shrink-0 whitespace-nowrap"
+      title={title ?? label}
+      className="text-[11px] leading-3 font-semibold px-1.5 py-0.5 rounded-full border shrink-0 whitespace-nowrap"
       style={{
         background: `var(--${scope}-badge-${tone}-bg)`,
         color: `var(--${scope}-badge-${tone}-fg)`,
         borderColor: `var(--${scope}-badge-${tone}-border)`,
       }}
     >
-      {children}
+      {label ? (
+        <>
+          <span aria-hidden="true">{children}</span>
+          <span className="sr-only">{label}</span>
+        </>
+      ) : (
+        children
+      )}
     </span>
   );
 }
