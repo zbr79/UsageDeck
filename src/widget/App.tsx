@@ -9,9 +9,8 @@ import {
 } from "react";
 import { CollapseIcon, ExpandIcon, GearIcon, PowerIcon, RefreshIcon } from "@/ui/Icons";
 import { cssVars, WIDGET_PALETTES } from "@/ui/palette";
-import { toastError, toastSuccess } from "@/components/toast/toast";
 import { isAccountHidden } from "@/lib/account-key";
-import { getJson } from "@/lib/api";
+import { copyKey } from "@/lib/copy-key";
 import {
   menuAction as bridgeMenuAction,
   onBg,
@@ -35,16 +34,6 @@ const COMPACT_MENU_HEIGHT = 100;
 /** Reset text is minute-resolution, so the whole panel does not re-render every second. */
 const CLOCK_MS = 60_000;
 type MenuAction = "expand" | "collapse" | "refresh" | "settings" | "quit";
-
-async function copyKey(email: string) {
-  try {
-    const { key } = await getJson<{ key: string }>(`/api/key?email=${encodeURIComponent(email)}`);
-    await navigator.clipboard.writeText(key);
-    toastSuccess("Key copied");
-  } catch {
-    toastError("Copy failed");
-  }
-}
 
 function startDrag(e: MouseEvent) {
   if (e.button !== 0) return;

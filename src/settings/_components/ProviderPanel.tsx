@@ -102,7 +102,9 @@ function providerCard(
     }
     case "grok": {
       const a = account as TrackedAccount<GrokUsage>;
-      return <GrokCard slot={slotFromAccount(a)} accountLabel={label ?? a.usage?.email} {...common} />;
+      return (
+        <GrokCard slot={slotFromAccount(a)} accountLabel={label ?? a.usage?.email} {...common} />
+      );
     }
     case "codex": {
       const a = account as TrackedAccount<CodexUsage>;
