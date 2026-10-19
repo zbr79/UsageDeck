@@ -31,8 +31,8 @@ import { slotFromAccount, useWidgetData, type AccountList } from "./_lib/useWidg
 
 const WIDTH = 238;
 const MENU_WIDTH = 120;
-const MENU_HEIGHT = 132;
-const COMPACT_MENU_HEIGHT = 100;
+const MENU_HEIGHT = 136;
+const COMPACT_MENU_HEIGHT = 104;
 /** Reset text is minute-resolution, so the whole panel does not re-render every second. */
 const CLOCK_MS = 60_000;
 type MenuAction = "expand" | "collapse" | "refresh" | "settings" | "quit";

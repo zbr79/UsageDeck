@@ -14,7 +14,7 @@ body {
 }
 
 :focus-visible {
-  outline: 2px solid var(--p-focus, #1447e6);
+  outline: 2px solid var(--p-focus, var(--w-focus, #1447e6));
   outline-offset: 2px;
 }
 
