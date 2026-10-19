@@ -14,7 +14,11 @@ import type {
   Settings,
   TrackedAccount,
 } from "@/lib/types";
+import type { CardExtras } from "@/widget/_components/Card";
+import { ClaudeCard, CodexCard, CursorCard, GrokCard } from "@/widget/_components/cards";
+import { slotFromAccount } from "@/widget/_lib/useWidgetData";
 import type { Summaries } from "../_lib/hooks";
+import { CardFooter, CardGrid, updatedNote, useNow } from "./CardGrid";
 import { NicknameField } from "./fields";
 
 type Update = (patch: Partial<Settings>, success?: string) => Promise<boolean>;
@@ -72,6 +76,54 @@ function planOf(id: ProviderId, account: AnyAccount): { text: string; tone: Tone
           ? "amber"
           : "blue";
   return { text: plan, tone };
+}
+
+/** The widget's own card for one account, fed from its cached or live usage. */
+function providerCard(
+  id: ProviderId,
+  account: AnyAccount,
+  settings: Settings,
+  now: number,
+  extras: CardExtras,
+) {
+  // `multiple` makes every card title the account's own label (or nickname), not the provider.
+  const common = { settings, now, accountId: account.id, multiple: true, extras };
+  const label = account.label;
+  switch (id) {
+    case "cursor": {
+      const a = account as TrackedAccount<CursorUsage>;
+      return (
+        <CursorCard
+          slot={slotFromAccount(a)}
+          accountLabel={label ?? a.usage?.accountName}
+          {...common}
+        />
+      );
+    }
+    case "grok": {
+      const a = account as TrackedAccount<GrokUsage>;
+      return (
+        <GrokCard slot={slotFromAccount(a)} accountLabel={label ?? a.usage?.email} {...common} />
+      );
+    }
+    case "codex": {
+      const a = account as TrackedAccount<CodexUsage>;
+      return (
+        <CodexCard
+          slot={slotFromAccount(a)}
+          accountLabel={label ?? a.usage?.email}
+          light={settings.panelTheme === "light"}
+          {...common}
+        />
+      );
+    }
+    case "claude": {
+      const a = account as TrackedAccount<ClaudeUsage>;
+      return (
+        <ClaudeCard slot={slotFromAccount(a)} accountLabel={label ?? a.usage?.email} {...common} />
+      );
+    }
+  }
 }
 
 function AccountDialog({
@@ -161,6 +213,7 @@ export default function ProviderPanel({
   update: Update;
 }) {
   const showId = useId();
+  const now = useNow();
   const [detail, setDetail] = useState<string | null>(null);
   const { name, enabledKey } = PROVIDERS[id];
   const accounts = summaries[id]?.accounts ?? null;
@@ -198,50 +251,35 @@ export default function ProviderPanel({
           No {name} account yet. Sign in with {name} and it will show up here.
         </p>
       ) : (
-        <ul className="space-y-2">
+        <CardGrid>
           {sorted.map((account) => {
             const label = labelOf(id, account);
-            const plan = planOf(id, account);
-            return (
-              <li
-                key={account.id}
-                className={`border rounded-lg px-3 py-2 ${
-                  account.active
-                    ? "bg-(--p-accountActiveBg) border-(--p-accountActiveBorder)"
-                    : "bg-(--p-accountInactiveBg) border-transparent"
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setDetail(account.id)}
-                    className={`flex-1 min-w-0 text-left text-sm truncate hover:underline ${
-                      account.active ? "text-(--p-text)" : "text-(--p-muted)"
-                    }`}
-                  >
-                    {label}
-                  </button>
-                  {hidden(account.id) && account.active && <Badge tone="gray">hidden</Badge>}
-                  {account.authExpired && (
-                    <Badge tone="amber" title={`Sign-in expired · open ${name} to refresh it`}>
-                      re-auth
-                    </Badge>
-                  )}
-                  {plan && <Badge tone={plan.tone}>{plan.text}</Badge>}
+            const isHidden = hidden(account.id);
+            const updated = updatedNote(account.cachedAt, now);
+            const note = account.active
+              ? account.stale && updated
+                ? `Signed in · ${updated}`
+                : "Signed in"
+              : `Not signed in · ${updated ?? "nothing cached"}`;
+            const extras: CardExtras = {
+              active: account.active,
+              dimmed: !account.active,
+              dashed: isHidden,
+              footer: (
+                <CardFooter note={note} hidden={isHidden}>
                   <IconButton label={`Details for ${label}`} onClick={() => setDetail(account.id)}>
-                    <GearIcon />
+                    <GearIcon size={12} />
                   </IconButton>
-                </div>
-                <div
-                  aria-hidden={!settings.displayNames[accountKey(id, account.id)]}
-                  className="mt-1 h-4 text-xs text-(--p-text) truncate"
-                >
-                  {settings.displayNames[accountKey(id, account.id)] ?? ""}
-                </div>
+                </CardFooter>
+              ),
+            };
+            return (
+              <li key={account.id} className="min-w-0">
+                {providerCard(id, account, settings, now, extras)}
               </li>
             );
           })}
-        </ul>
+        </CardGrid>
       )}
       {detailAccount && (
         <AccountDialog

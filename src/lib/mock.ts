@@ -147,6 +147,37 @@ const providers: Record<string, unknown> = {
   ),
 };
 
+// A remembered Claude account that is not signed in: its cached usage, with the 5h
+// window already past its reset (shows "--") and the weekly one still running.
+(providers.claude as { accounts: TrackedAccount<ClaudeUsage>[] }).accounts.push(
+  tracked<ClaudeUsage>(
+    "work@example.com",
+    {
+      email: "work@example.com",
+      displayName: "Work",
+      signedIn: true,
+      subscribed: true,
+      subscriptionType: "max",
+      planName: "Max 20x",
+      fiveHour: { percent: 92, resetsAt: iso(-H) },
+      weekly: { percent: 47, resetsAt: iso(3 * 24 * H) },
+      weeklyOpus: null,
+      weeklySonnet: null,
+      resetCredits: 2,
+      billingType: null,
+      rateLimitTier: null,
+      orgUuid: null,
+    } as ClaudeUsage,
+    { active: false, stale: true, cachedAt: NOW - 3 * H },
+  ).accounts[0],
+);
+
+// `?panel=light` shows the settings panel in its light theme (browser preview only).
+if (typeof location !== "undefined") {
+  const panel = new URLSearchParams(location.search).get("panel");
+  if (panel === "light" || panel === "dark") settings = { ...settings, panelTheme: panel };
+}
+
 type Reply = { status: number; body: unknown };
 const json = (body: unknown, status = 200): Reply => ({ status, body });
 

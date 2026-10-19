@@ -1,32 +1,47 @@
-import { useEffect, useId, useState, type FormEvent } from "react";
+import { useId, useState, type FormEvent } from "react";
 import { Badge, IconButton, Switch } from "@/ui/controls";
 import Dialog from "@/ui/Dialog";
 import { CloseIcon, GearIcon, PencilIcon, PlusIcon, TrashIcon } from "@/ui/Icons";
 import { toastSuccess } from "@/components/toast/toast";
+import { copyKey } from "@/lib/copy-key";
+import type { PeakInfo } from "@/lib/peak";
 import type { OpenCodeAccountSummary, OpenCodeAccountUsage, Settings } from "@/lib/types";
+import { OpenCodeCard } from "@/widget/_components/cards";
 import { removeAccount, saveAccount } from "../_lib/hooks";
+import { CardFooter, CardGrid, updatedNote, useNow } from "./CardGrid";
 import { inputClass, NicknameField, primaryButton, secondaryButton } from "./fields";
 
 type Update = (patch: Partial<Settings>, success?: string) => Promise<boolean>;
 
-function ResetBadges({
-  usage,
-  inactive,
-  now,
-}: {
-  usage: OpenCodeAccountUsage | undefined;
-  inactive: boolean;
-  now: number;
-}) {
-  if (!usage || !inactive) return null;
-  const resetsAt = usage.usage?.monthly?.resetsAt;
-  const ms = resetsAt ? new Date(resetsAt).getTime() - now : 0;
-  if (!Number.isFinite(ms) || ms <= 0) return null;
-  const days = Math.ceil(ms / (24 * 60 * 60 * 1000));
-  return (
-    <Badge tone="red" title={`Resets in ${days} day${days === 1 ? "" : "s"}`}>
-      Resets in {days} day{days === 1 ? "" : "s"}
-    </Badge>
+/** Settings cards show no peak-hour hint: that is a live widget cue. */
+const NO_PEAK: PeakInfo = { active: false, endAt: null, nextStartAt: null };
+
+/** A row for an account whose usage hasn't arrived yet (the card says "Unavailable"). */
+function emptyRow(email: string): OpenCodeAccountUsage {
+  return {
+    email,
+    usage: null,
+    prev: null,
+    enabled: true,
+    error: null,
+    stale: false,
+    cachedAt: null,
+    subscriptionActive: null,
+    lastChangeAt: null,
+    lastChangeDetail: null,
+  };
+}
+
+/** Show or hide one OpenCode account on the widget. */
+function toggleAccount(update: Update, settings: Settings, email: string, next: boolean) {
+  const lower = email.toLowerCase();
+  void update(
+    {
+      disabledAccounts: next
+        ? settings.disabledAccounts.filter((e) => e !== lower)
+        : [...settings.disabledAccounts, lower],
+    },
+    next ? "Account shown on widget" : "Account hidden from widget",
   );
 }
 
@@ -174,17 +189,8 @@ function AccountDialog({
   const titleId = useId();
   const switchId = useId();
   const [editingKey, setEditingKey] = useState(false);
-  const lower = account.email.toLowerCase();
-  const enabled = !settings.disabledAccounts.includes(lower);
-  const toggle = (next: boolean) =>
-    void update(
-      {
-        disabledAccounts: next
-          ? settings.disabledAccounts.filter((e) => e !== lower)
-          : [...settings.disabledAccounts, lower],
-      },
-      next ? "Account shown on widget" : "Account hidden from widget",
-    );
+  const enabled = !settings.disabledAccounts.includes(account.email.toLowerCase());
+  const toggle = (next: boolean) => toggleAccount(update, settings, account.email, next);
   return (
     <Dialog labelledBy={titleId} onClose={onClose}>
       <div className="bg-(--p-bg) rounded-xl shadow-2xl w-[420px] border border-(--p-border) p-5">
@@ -252,11 +258,7 @@ export default function OpenCodeAccounts({
   const [adding, setAdding] = useState(false);
   const [detail, setDetail] = useState<string | null>(null);
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 60_000);
-    return () => clearInterval(id);
-  }, []);
+  const now = useNow();
   const disabled = (email: string) => settings.disabledAccounts.includes(email.toLowerCase());
   const sorted = accounts
     ? [...accounts].sort((a, b) => Number(disabled(a.email)) - Number(disabled(b.email)))
@@ -307,85 +309,89 @@ export default function OpenCodeAccounts({
           No accounts yet. Use Add to connect an OpenCode Go key.
         </p>
       ) : (
-        <ul className="space-y-2">
+        <CardGrid>
           {sorted.map((a) => {
-            const inactive = disabled(a.email) || usage[a.email]?.subscriptionActive === false;
-            return (
-              <li
-                key={a.email}
-                className={`border rounded-lg px-3 py-2 ${
-                  inactive
-                    ? "bg-(--p-accountInactiveBg) border-transparent"
-                    : "bg-(--p-accountActiveBg) border-(--p-accountActiveBorder)"
-                }`}
+            const row = usage[a.email] ?? emptyRow(a.email);
+            const off = disabled(a.email);
+            const lapsed = row.subscriptionActive === false;
+            const updated = row.stale ? updatedNote(row.cachedAt, now) : null;
+            const note = lapsed
+              ? "Subscription inactive"
+              : updated
+                ? `Cached · ${updated}`
+                : off
+                  ? null // the "hidden" badge says it
+                  : "On widget";
+            const footer = (
+              <CardFooter
+                note={note}
+                hidden={off}
+                lead={
+                  <Switch
+                    label={`Show ${a.email} on the widget`}
+                    checked={!off}
+                    onChange={(next) => toggleAccount(update, settings, a.email, next)}
+                  />
+                }
               >
-                <div className="flex items-center gap-2">
-                  <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                {confirmRemove === a.email ? (
+                  <span className="flex items-center gap-1 shrink-0">
                     <button
                       type="button"
-                      onClick={() => setDetail(a.email)}
-                      className="min-w-0 flex-1 text-left text-sm text-(--p-text) truncate hover:underline"
+                      onClick={async () => {
+                        setConfirmRemove(null);
+                        if (await removeAccount(a.email)) {
+                          toastSuccess("Account removed");
+                          void reload();
+                        }
+                      }}
+                      className="text-[11px] px-1.5 py-0.5 rounded bg-(--p-dangerBg) text-(--p-dangerFg) hover:opacity-90"
                     >
-                      {a.email}
+                      Remove
                     </button>
-                    {inactive ? (
-                      <ResetBadges usage={usage[a.email]} inactive now={now} />
-                    ) : (
-                      <Badge tone="blue">Go</Badge>
-                    )}
-                  </div>
-                  {confirmRemove === a.email ? (
-                    <span className="flex items-center gap-1 shrink-0">
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          setConfirmRemove(null);
-                          if (await removeAccount(a.email)) {
-                            toastSuccess("Account removed");
-                            void reload();
-                          }
-                        }}
-                        className="text-[11px] px-2 py-1 rounded bg-(--p-dangerBg) text-(--p-dangerFg) hover:opacity-90"
-                      >
-                        Remove
-                      </button>
-                      <button
-                        type="button"
-                        autoFocus
-                        onClick={() => setConfirmRemove(null)}
-                        className="text-[11px] px-2 py-1 rounded text-(--p-textSecondary) hover:bg-(--p-surfaceHover)"
-                      >
-                        Cancel
-                      </button>
-                    </span>
-                  ) : (
-                    <span className="flex items-center gap-0.5 shrink-0">
-                      <IconButton
-                        label={`Details for ${a.email}`}
-                        onClick={() => setDetail(a.email)}
-                      >
-                        <GearIcon />
-                      </IconButton>
-                      <IconButton
-                        label={`Remove ${a.email}`}
-                        danger
-                        onClick={() => setConfirmRemove(a.email)}
-                      >
-                        <TrashIcon />
-                      </IconButton>
-                    </span>
-                  )}
-                </div>
-                <div
-                  aria-hidden={!settings.displayNames[a.email]}
-                  className="mt-1 h-4 text-xs text-(--p-text) truncate"
-                >
-                  {settings.displayNames[a.email] ?? ""}
-                </div>
+                    <button
+                      type="button"
+                      autoFocus
+                      onClick={() => setConfirmRemove(null)}
+                      className="text-[11px] px-1.5 py-0.5 rounded text-(--p-textSecondary) hover:bg-(--p-surfaceHover)"
+                    >
+                      Cancel
+                    </button>
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-0.5 shrink-0">
+                    <IconButton label={`Details for ${a.email}`} onClick={() => setDetail(a.email)}>
+                      <GearIcon size={12} />
+                    </IconButton>
+                    <IconButton
+                      label={`Remove ${a.email}`}
+                      danger
+                      onClick={() => setConfirmRemove(a.email)}
+                    >
+                      <TrashIcon size={12} />
+                    </IconButton>
+                  </span>
+                )}
+              </CardFooter>
+            );
+            return (
+              <li key={a.email} className="min-w-0">
+                <OpenCodeCard
+                  row={row}
+                  active={!off && !lapsed}
+                  primary
+                  settings={settings}
+                  peak={NO_PEAK}
+                  now={now}
+                  increased={() => false}
+                  onCopyKey={() => void copyKey(a.email)}
+                  extras={{ dimmed: lapsed, dashed: off, footer }}
+                  fullEmail
+                />
               </li>
             );
           })}
-        </ul>
+        </CardGrid>
       )}
       {detailAccount && (
         <AccountDialog

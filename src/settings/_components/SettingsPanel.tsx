@@ -1,8 +1,8 @@
-import { useRef, useState, type MouseEvent } from "react";
+import { useMemo, useRef, useState, type MouseEvent } from "react";
 import { IconButton } from "@/ui/controls";
 import Dialog from "@/ui/Dialog";
 import { CloseIcon } from "@/ui/Icons";
-import { cssVars, PANEL_PALETTES } from "@/ui/palette";
+import { cssVars, PANEL_PALETTES, WIDGET_PALETTES } from "@/ui/palette";
 import { TabList, TabPanel } from "@/ui/Tabs";
 import type { WidgetProvider } from "@/lib/types";
 import { useSettings, useSummaries } from "../_lib/hooks";
@@ -11,6 +11,16 @@ import OpenCodeAccounts from "./OpenCodeAccounts";
 import ProviderPanel, { PROVIDERS } from "./ProviderPanel";
 
 type MainTab = "general" | "accounts";
+
+const ACCOUNT_TABS: readonly WidgetProvider[] = ["opencode", "cursor", "grok", "codex", "claude"];
+
+/** `settings.html?tab=<general|opencode|claude|…>` opens on that tab (for screenshots). */
+function initialTabs(): { main: MainTab; account: WidgetProvider } {
+  const tab = new URLSearchParams(window.location.search).get("tab");
+  if (tab === "general") return { main: "general", account: "opencode" };
+  const account = ACCOUNT_TABS.find((id) => id === tab) ?? "opencode";
+  return { main: "accounts", account };
+}
 
 function providerTabs(order: readonly WidgetProvider[]) {
   return order.map((id) => {
@@ -44,13 +54,19 @@ function useDrag() {
 export default function SettingsPanel({ onClose }: { onClose: () => void }) {
   const { settings, update } = useSettings();
   const summaries = useSummaries();
-  const [mainTab, setMainTab] = useState<MainTab>("accounts");
-  const [accountTab, setAccountTab] = useState<WidgetProvider>("opencode");
+  const [initial] = useState(initialTabs);
+  const [mainTab, setMainTab] = useState<MainTab>(initial.main);
+  const [accountTab, setAccountTab] = useState<WidgetProvider>(initial.account);
   const drag = useDrag();
   const theme = settings?.panelTheme ?? "dark";
+  // The account cards are the widget's own, so they also need its colours, in the panel's theme.
+  const vars = useMemo(
+    () => ({ ...cssVars("p", PANEL_PALETTES[theme]), ...cssVars("w", WIDGET_PALETTES[theme]) }),
+    [theme],
+  );
 
   return (
-    <div style={{ ...cssVars("p", PANEL_PALETTES[theme]), colorScheme: theme }}>
+    <div style={{ ...vars, colorScheme: theme }}>
       <Dialog
         labelledBy="settings-title"
         onClose={onClose}

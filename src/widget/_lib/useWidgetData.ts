@@ -24,6 +24,20 @@ export interface ProviderSlot<T> {
   loaded: boolean;
 }
 
+/** The card slot for one tracked account; `null` gives the empty "not signed in" slot. */
+export function slotFromAccount<T>(
+  account: TrackedAccount<T> | null,
+  loaded = true,
+): ProviderSlot<T> {
+  return {
+    data: account?.usage ?? null,
+    stale: account?.stale ?? false,
+    cachedAt: account?.cachedAt ?? null,
+    authExpired: account?.authExpired ?? false,
+    loaded,
+  };
+}
+
 export interface AccountList<T> {
   accounts: TrackedAccount<T>[];
   loaded: boolean;
