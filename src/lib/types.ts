@@ -98,7 +98,7 @@ export interface OpenCodeAccountUsage {
 
 export interface OpenCodeAccountSummary {
   email: string;
-  /** masked, e.g. "sk-…a1b2" */
+  /** masked, e.g. "oc_sk_…a1b2" (or "sk-…a1b2" for an older key) */
   keyHint: string;
 }
 

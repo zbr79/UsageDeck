@@ -329,12 +329,22 @@ pub struct Account {
     pub key: String,
 }
 
-/// "sk-…a1b2": enough to recognise a key, useless to anyone who sees it.
+/// OpenCode API key prefixes: the current `oc_sk_` format and the older `sk-` one.
+pub const OPENCODE_KEY_PREFIXES: [&str; 2] = ["oc_sk_", "sk-"];
+
+/// "oc_sk_…a1b2" / "sk-…a1b2": the key's real prefix plus its last 4 characters, enough to
+/// recognise a key, useless to anyone who sees it. A key too short to hide at least 2 characters
+/// shows "•••"; a key of unknown shape shows no head ("…a1b2").
 pub fn key_hint(key: &str) -> String {
-    if key.encode_utf16().count() > 8 {
-        let chars: Vec<char> = key.chars().collect();
-        let head: String = chars.iter().take(3).collect();
-        let tail: String = chars[chars.len().saturating_sub(4)..].iter().collect();
+    let head = OPENCODE_KEY_PREFIXES
+        .iter()
+        .find(|p| key.starts_with(*p))
+        .copied()
+        .unwrap_or("");
+    let chars: Vec<char> = key.chars().collect();
+    // at least 2 hidden characters; for "sk-" this is the old "more than 8" rule
+    if chars.len() > head.chars().count().max(3) + 5 {
+        let tail: String = chars[chars.len() - 4..].iter().collect();
         format!("{head}…{tail}")
     } else {
         "•••".to_string()
@@ -790,5 +800,16 @@ mod tests {
     fn key_hint_masks() {
         assert_eq!(key_hint("sk-abcdefghij1234"), "sk-…1234");
         assert_eq!(key_hint("sk-short"), "•••");
+        // new OpenCode format (made-up key): the real prefix, never "oc_…"
+        assert_eq!(
+            key_hint("oc_sk_000000000000_AAAAAAAAAAAAAAAAAAAAAAAAAAAA9f3e"),
+            "oc_sk_…9f3e"
+        );
+        assert_eq!(key_hint("oc_sk_ab1234"), "oc_sk_…1234");
+        assert_eq!(key_hint("oc_sk_1234"), "•••");
+        assert_eq!(key_hint("oc_sk_x1234"), "•••");
+        assert_eq!(key_hint(""), "•••");
+        // anything else (e.g. an imported key of unknown shape) shows no head at all
+        assert_eq!(key_hint("zzzzzzzzzz5678"), "…5678");
     }
 }
