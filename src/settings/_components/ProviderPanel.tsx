@@ -1,10 +1,5 @@
-import { useId, useState } from "react";
+import { useState, type ReactNode } from "react";
 import { accountKey } from "@/lib/account-key";
-import { Badge, IconButton, Switch } from "@/ui/controls";
-import Dialog from "@/ui/Dialog";
-import { CloseIcon, GearIcon } from "@/ui/Icons";
-import type { Tone } from "@/ui/palette";
-import { capitalize } from "@/lib/format";
 import type {
   ClaudeUsage,
   CodexUsage,
@@ -14,27 +9,19 @@ import type {
   Settings,
   TrackedAccount,
 } from "@/lib/types";
-import type { CardExtras } from "@/widget/_components/Card";
 import { ClaudeCard, CodexCard, CursorCard, GrokCard } from "@/widget/_components/cards";
 import { slotFromAccount as widgetSlot } from "@/widget/_lib/useWidgetData";
 import { cardErrorKind } from "@/lib/errors";
-import type { Summaries } from "../_lib/hooks";
-import { CardFooter, CardGrid, useNow } from "./CardGrid";
-import { NicknameField } from "./fields";
+import { PAGE_TITLES, PROVIDER_ICONS } from "../_lib/pages";
+import { refreshWidget, type Summaries } from "../_lib/hooks";
+import { AccountCell, CardGrid, EmptyState, ProviderLogo, useNow } from "./CardGrid";
+import { RenameDialog } from "./dialogs";
+import { Page } from "./fields";
 
 type Update = (patch: Partial<Settings>, success?: string) => Promise<boolean>;
 type AnyAccount = TrackedAccount<CursorUsage | GrokUsage | CodexUsage | ClaudeUsage>;
 
-export const PROVIDERS: Record<
-  ProviderId,
-  { name: string; icon: string; enabledKey: keyof Settings & `${string}Enabled` }
-> = {
-  cursor: { name: "Cursor", icon: "/cursor.ico", enabledKey: "cursorEnabled" },
-  grok: { name: "Grok Bot", icon: "/grokbot.ico", enabledKey: "grokEnabled" },
-  codex: { name: "Codex", icon: "/openai.png", enabledKey: "codexEnabled" },
-  claude: { name: "Claude", icon: "/claude.ico", enabledKey: "claudeEnabled" },
-};
-
+/** The account's own name: the label Rust gives it, else the provider's account name / email. */
 function labelOf(id: ProviderId, account: AnyAccount): string {
   if (account.label) return account.label;
   const usage = account.usage;
@@ -43,40 +30,6 @@ function labelOf(id: ProviderId, account: AnyAccount): string {
   if (id === "grok") return (usage as GrokUsage).email ?? "Signed-in account";
   if (id === "codex") return (usage as CodexUsage).email ?? "Signed-in account";
   return (usage as ClaudeUsage).email ?? (usage as ClaudeUsage).displayName ?? "Signed-in account";
-}
-
-function planOf(id: ProviderId, account: AnyAccount): { text: string; tone: Tone } | null {
-  if (id === "cursor") {
-    const plan = (account.usage as CursorUsage | null)?.planName;
-    return plan ? { text: plan, tone: "blue" } : null;
-  }
-  if (id === "grok") {
-    const g = account.usage as GrokUsage | null;
-    const plan = g?.planLabel ?? g?.cursorPlanName;
-    return plan ? { text: plan, tone: "blue" } : null;
-  }
-  if (id === "codex") {
-    const plan = (account.usage as CodexUsage | null)?.planType;
-    if (!plan) return null;
-    return { text: capitalize(plan), tone: plan.toLowerCase() === "free" ? "green" : "blue" };
-  }
-  const c = account.usage as ClaudeUsage | null;
-  if (!account.usage) return null;
-  const plan = !c
-    ? null
-    : !c.signedIn
-      ? "not signed in"
-      : (c.planName ?? (c.subscribed ? (c.subscriptionType ?? "subscribed") : "Free"));
-  if (!plan) return null;
-  const tone: Tone =
-    plan === "Free"
-      ? "green"
-      : plan === "not signed in"
-        ? "gray"
-        : plan.toLowerCase() === "max 20x"
-          ? "amber"
-          : "blue";
-  return { text: plan, tone };
 }
 
 /** The widget's slot for an account; a missing sign-in is named only on the signed-in account. */
@@ -90,8 +43,11 @@ function providerCard(
   account: AnyAccount,
   settings: Settings,
   now: number,
-  extras: CardExtras,
+  headerActions: ReactNode,
+  hidden: boolean,
 ) {
+  // Cached usage looks like fresh usage: no status note and no dimming.
+  const extras = { active: account.active, dashed: hidden, headerActions };
   // `multiple` makes every card title the account's own label (or nickname), not the provider.
   const common = { settings, now, accountId: account.id, multiple: true, extras };
   const label = account.label;
@@ -132,81 +88,13 @@ function providerCard(
   }
 }
 
-function AccountDialog({
-  providerId,
-  account,
-  settings,
-  update,
-  onClose,
-}: {
-  providerId: ProviderId;
-  account: AnyAccount;
-  settings: Settings;
-  update: Update;
-  onClose: () => void;
-}) {
-  const titleId = useId();
-  const switchId = useId();
-  const { name } = PROVIDERS[providerId];
-  const key = accountKey(providerId, account.id);
-  const label = labelOf(providerId, account);
-  const plan = planOf(providerId, account);
-  const shown = !settings.disabledAccounts.includes(key);
-  const toggle = (next: boolean) =>
-    void update(
-      {
-        disabledAccounts: next
-          ? settings.disabledAccounts.filter((e) => e !== key)
-          : [...settings.disabledAccounts, key],
-      },
-      next ? "Account shown on widget" : "Account hidden from widget",
-    );
-  return (
-    <Dialog labelledBy={titleId} onClose={onClose}>
-      <div className="bg-(--p-bg) rounded-xl shadow-2xl w-[420px] border border-(--p-border) p-5">
-        <div className="flex items-start justify-between mb-4 gap-2">
-          <div className="min-w-0">
-            <div className="flex items-center gap-1.5">
-              <h3 id={titleId} className="text-base font-bold">
-                {name}
-              </h3>
-              {plan && <Badge tone={plan.tone}>{plan.text}</Badge>}
-            </div>
-            <div className="text-xs text-(--p-muted) truncate">{label}</div>
-          </div>
-          <IconButton label="Close" onClick={onClose}>
-            <CloseIcon size={16} />
-          </IconButton>
-        </div>
-        <div className="space-y-3">
-          <div className="flex items-center gap-2">
-            <Switch labelledBy={switchId} checked={shown} onChange={toggle} />
-            <span id={switchId} className="text-sm text-(--p-textSecondary)">
-              Show this account
-            </span>
-          </div>
-          <NicknameField
-            value={settings.displayNames[key] ?? ""}
-            onSave={(nick) => update({ displayNames: { [key]: nick } }, "Nickname saved")}
-          />
-          {account.authExpired && (
-            <p className="text-xs text-(--p-muted)">
-              The sign-in this app reads has expired. Open {name} to refresh it — this monitor never
-              refreshes or writes another app&apos;s credentials.
-            </p>
-          )}
-          {!account.active && (
-            <p className="text-xs text-(--p-muted)">
-              {name} is signed into a different account, so this one stays off the widget until you
-              switch to it.
-            </p>
-          )}
-        </div>
-      </div>
-    </Dialog>
-  );
+/** "1 account" / "3 accounts". */
+export function accountCount(n: number | null): string | null {
+  if (n === null) return null;
+  return `${n} ${n === 1 ? "account" : "accounts"}`;
 }
 
+/** Account page for a provider whose sign-in UsageDeck reads (Claude, Codex, Cursor, Grok Bot). */
 export default function ProviderPanel({
   id,
   summaries,
@@ -214,14 +102,13 @@ export default function ProviderPanel({
   update,
 }: {
   id: ProviderId;
-  summaries: Summaries;
+  summaries: Summaries & { reloadAll: () => void };
   settings: Settings;
   update: Update;
 }) {
-  const showId = useId();
   const now = useNow();
-  const [detail, setDetail] = useState<string | null>(null);
-  const { name, enabledKey } = PROVIDERS[id];
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const name = PAGE_TITLES[id];
   const accounts = summaries[id]?.accounts ?? null;
   const hidden = (accountId: string) =>
     settings.disabledAccounts.includes(accountKey(id, accountId));
@@ -231,65 +118,75 @@ export default function ProviderPanel({
           Number(hidden(a.id)) - Number(hidden(b.id)) || Number(b.active) - Number(a.active),
       )
     : null;
-  const detailAccount = accounts?.find((a) => a.id === detail) ?? null;
+  const nickname = (accountId: string) => settings.displayNames[accountKey(id, accountId)] ?? "";
+  const renameAccount = accounts?.find((a) => a.id === renaming) ?? null;
 
   return (
-    <div>
-      <div className="flex items-center gap-2 mb-3">
-        <Switch
-          labelledBy={showId}
-          checked={settings[enabledKey]}
-          onChange={(next) =>
-            void update(
-              { [enabledKey]: next },
-              `${name} ${next ? "shown on" : "hidden from"} widget`,
-            )
-          }
+    <Page
+      title={name}
+      lead={
+        <ProviderLogo
+          src={PROVIDER_ICONS[id]}
+          invert={id === "codex" && settings.panelTheme === "light"}
         />
-        <span id={showId} className="text-sm text-(--p-textSecondary)">
-          Active
-        </span>
-      </div>
+      }
+      aside={accountCount(sorted?.length ?? null)}
+    >
       {sorted === null ? (
         <p className="text-sm text-(--p-muted)">Loading…</p>
       ) : sorted.length === 0 ? (
-        <p className="text-sm text-(--p-muted)">
-          No {name} account yet. Sign in with {name} and it will show up here.
-        </p>
+        <EmptyState>
+          UsageDeck reads {name}&apos;s own sign-in. Sign in with {name} and the account shows up
+          here.
+        </EmptyState>
       ) : (
         <CardGrid>
           {sorted.map((account) => {
-            const label = labelOf(id, account);
+            const key = accountKey(id, account.id);
             const isHidden = hidden(account.id);
-            // Cached usage looks like fresh usage: no status note and no dimming.
-            const extras: CardExtras = {
-              active: account.active,
-              dashed: isHidden,
-              footer: (
-                <CardFooter hidden={isHidden}>
-                  <IconButton label={`Details for ${label}`} onClick={() => setDetail(account.id)}>
-                    <GearIcon size={12} />
-                  </IconButton>
-                </CardFooter>
-              ),
-            };
+            const shownName = nickname(account.id) || labelOf(id, account);
             return (
-              <li key={account.id} className="min-w-0">
-                {providerCard(id, account, settings, now, extras)}
-              </li>
+              <AccountCell
+                key={account.id}
+                name={shownName}
+                shown={!isHidden}
+                onShownChange={(next) =>
+                  void update(
+                    {
+                      disabledAccounts: next
+                        ? settings.disabledAccounts.filter((e) => e !== key)
+                        : [...settings.disabledAccounts, key],
+                    },
+                    next ? "Account shown on widget" : "Account hidden from widget",
+                  )
+                }
+                menuItems={[
+                  { id: "rename", label: "Rename…", onSelect: () => setRenaming(account.id) },
+                  {
+                    id: "refresh",
+                    label: "Refresh now",
+                    onSelect: () => refreshWidget(summaries.reloadAll),
+                  },
+                ]}
+                card={(actions) => providerCard(id, account, settings, now, actions, isHidden)}
+              />
             );
           })}
         </CardGrid>
       )}
-      {detailAccount && (
-        <AccountDialog
-          providerId={id}
-          account={detailAccount}
-          settings={settings}
-          update={update}
-          onClose={() => setDetail(null)}
+      {renameAccount && (
+        <RenameDialog
+          name={labelOf(id, renameAccount)}
+          nickname={nickname(renameAccount.id)}
+          onSave={(next) =>
+            update(
+              { displayNames: { [accountKey(id, renameAccount.id)]: next } },
+              next ? "Account renamed" : "Name reset",
+            )
+          }
+          onClose={() => setRenaming(null)}
         />
       )}
-    </div>
+    </Page>
   );
 }

@@ -11,8 +11,8 @@ export interface CardExtras {
   dimmed?: boolean;
   /** hidden from the widget: dashed border */
   dashed?: boolean;
-  /** a row under the meters for notes and controls */
-  footer?: ReactNode;
+  /** controls at the right end of the header row (settings: show switch, "more" button) */
+  headerActions?: ReactNode;
 }
 
 /**
@@ -74,9 +74,11 @@ export function Card({
         </span>
         {hints}
         <span className="ml-auto flex items-center gap-1 shrink-0">{badges}</span>
+        {extras?.headerActions && (
+          <span className="flex items-center gap-1 shrink-0">{extras.headerActions}</span>
+        )}
       </div>
       {extras?.dimmed ? <div style={DIM_VARS}>{children}</div> : children}
-      {extras?.footer}
     </section>
   );
 }

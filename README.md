@@ -48,6 +48,7 @@ Rust core (src-tauri/)                           React frontend (src/)
 Everything UsageDeck stores lives in `%APPDATA%\com.usagedeck.app`:
 
 - `settings.json` — toggles, themes, nicknames, hidden accounts, provider order.
+- `settings-window.json` — the settings window's last position and size.
 - `accounts.json` — OpenCode account labels (emails only, no keys).
 - `seen-accounts.json` — emails of Cursor, Grok Bot, Codex and Claude accounts already seen, so
   switching accounts in those apps does not drop the earlier one. Tokens are not stored.
@@ -90,15 +91,22 @@ tray menu's **Open log folder** opens it in Explorer.
 
 ### Settings (right-click widget → Settings)
 
-- General: panel theme, widget theme, show provider names, DeepSeek peak-hour warning, start with
-  Windows
-- Accounts: one tab per provider. Drag a provider tab to change its order on the widget
-- Every provider can be hidden as a whole. Each account has its own nickname and can be hidden on
-  its own. OpenCode accounts are added with an API key and can all appear on the widget. Cursor,
-  Grok Bot, Codex and Claude only show the account that app is signed into; other sign-ins stay in
-  Settings so you can nickname or hide them before switching
-- Fully keyboard accessible: real dialogs (focus trapped, Escape closes the topmost), arrow-key
-  tabs, switches and radio groups announced to screen readers
+- A normal window with a title bar and a taskbar button (960x680, resizable). It reopens where you
+  left it, kept on a visible monitor, and closes only when asked: the X, Alt+F4, Ctrl+W or Esc
+- General: start with Windows, DeepSeek peak-hour warning
+- Appearance: settings theme, widget theme, show provider names
+- Widget: provider order (drag the grip, or Move up / Move down) and a "Show on widget" switch per
+  provider
+- Accounts: one page per provider with the widget's own cards, 2 per row. Each card header has a
+  "Show on widget" switch and a "⋯" menu (also right-click, Shift+F10 or the Menu key): Rename,
+  Refresh now and, for OpenCode, Copy API key, Replace API key and Remove account. OpenCode
+  accounts are added with an API key; Cursor, Grok Bot, Codex and Claude read that app's own
+  sign-in and only the signed-in account shows on the widget
+- About: version, log folder and the repository
+- Fully keyboard accessible: modal dialogs trap focus and Esc closes the topmost one first; menus
+  use the arrow keys, Home and End; forced-colors (high contrast) is supported
+- `settings.html?page=<general|appearance|widget|claude|codex|cursor|grok|opencode|about>` opens a
+  page directly (browser preview: add `&panel=light` or `&panel=dark`)
 
 ### Ranking rules
 

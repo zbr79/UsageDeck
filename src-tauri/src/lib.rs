@@ -4,19 +4,20 @@
 pub mod api;
 pub mod cli;
 pub mod providers;
+pub mod settings_window;
 pub mod store;
 pub mod win;
 
 use providers::{SeenAccounts, UsageCache};
 use serde_json::Value;
+use settings_window::{hide_settings, show_settings};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use store::{CredentialVault, Store, SEEN_ACCOUNTS_FILE, USAGE_CACHE_FILE, WINDOW_POS_FILE};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{
-    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder, WindowEvent,
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, WebviewWindow, WindowEvent,
 };
 
 pub const WIDGET: &str = "widget";
@@ -118,7 +119,7 @@ fn open_settings(app: AppHandle) {
     show_settings(&app);
 }
 
-/// `reason` names the page's close path (close button, Escape, backdrop) and the event behind
+/// `reason` names the page's close path (Escape, Ctrl+W) and the event behind
 /// it; it is logged so an unexpected close can be traced (src/ui/close-reason.ts).
 #[tauri::command]
 fn close_settings(app: AppHandle, reason: String) {
@@ -139,76 +140,6 @@ fn show_widget(app: &AppHandle) {
         let _ = w.show();
         let _ = w.set_focus();
     }
-}
-
-/// Build the settings overlay on demand, cover the work area of the widget's monitor
-/// (desktop/main.js:162-195), then show and focus it. If it is already open, focus it.
-/// Each open builds a fresh window, like Electron did, so the page always starts clean.
-fn show_settings(app: &AppHandle) {
-    if let Some(settings) = app.get_webview_window(SETTINGS) {
-        let _ = settings.unminimize();
-        let _ = settings.show();
-        let _ = settings.set_focus();
-        return;
-    }
-    // Building a window waits on the event loop: never do it on the main thread (tray, menu and
-    // single-instance callbacks and sync commands run there), or it deadlocks on Windows.
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move { build_settings(&app) });
-}
-
-fn build_settings(app: &AppHandle) {
-    if let Some(settings) = app.get_webview_window(SETTINGS) {
-        let _ = settings.set_focus();
-        return;
-    }
-    let built = WebviewWindowBuilder::new(app, SETTINGS, WebviewUrl::App("settings.html".into()))
-        .title("UsageDeck Settings")
-        .transparent(true)
-        .decorations(false)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .shadow(false)
-        .visible(false)
-        .build();
-    let settings = match built {
-        Ok(w) => w,
-        Err(e) => {
-            log::warn!("could not open settings: {e}");
-            return;
-        }
-    };
-    // Alt+F4 closes the overlay like the close button: the window is destroyed.
-    let handle = app.clone();
-    settings.on_window_event(move |event| match event {
-        WindowEvent::CloseRequested { .. } => {
-            log::info!("settings close requested by the window (Alt+F4 or system close)");
-            let _ = handle.emit_to(WIDGET, EVENT_SETTINGS_CHANGED, ());
-        }
-        WindowEvent::Destroyed => log::info!("settings window destroyed"),
-        _ => {}
-    });
-    let monitor = app
-        .get_webview_window(WIDGET)
-        .and_then(|w| w.current_monitor().ok().flatten())
-        .or_else(|| app.primary_monitor().ok().flatten());
-    if let Some(m) = monitor {
-        let area = m.work_area();
-        let _ = settings.set_position(area.position);
-        let _ = settings.set_size(area.size);
-    }
-    let _ = settings.show();
-    let _ = settings.set_focus();
-}
-
-/// Destroy the overlay (it is rebuilt on the next open) and tell the widget to reload settings.
-fn hide_settings(app: &AppHandle) {
-    if let Some(settings) = app.get_webview_window(SETTINGS) {
-        if let Err(e) = settings.destroy() {
-            log::warn!("could not close settings: {e}");
-        }
-    }
-    let _ = app.emit_to(WIDGET, EVENT_SETTINGS_CHANGED, ());
 }
 
 /// Register or remove the Run key entry. Release builds only, and never from a cargo target
@@ -388,6 +319,7 @@ pub fn run() {
             widget_resize,
             open_settings,
             close_settings,
+            settings_window::open_about_link,
             quit_app
         ])
         .setup(|app| {

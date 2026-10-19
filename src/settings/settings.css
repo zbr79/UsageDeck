@@ -1,0 +1,47 @@
+/* Settings window only: focus, card scale, scrollbars and forced-colors (high contrast). */
+
+.settings-root :focus-visible {
+  outline: 2px solid var(--p-focus);
+  outline-offset: 2px;
+}
+
+/* The widget's 10 px card text reads at 12 px, the settings minimum (CardGrid). */
+.settings-root .ud-cards {
+  zoom: 1.2;
+}
+
+.settings-root main,
+.settings-root nav {
+  scrollbar-width: thin;
+}
+
+@media (forced-colors: active) {
+  .settings-root .ud-row,
+  .settings-root .ud-menu,
+  .settings-root dialog > * {
+    border: 1px solid CanvasText;
+  }
+  .settings-root .ud-toggle {
+    border-color: ButtonText;
+    background: ButtonFace;
+  }
+  .settings-root .ud-toggle[aria-checked="true"] {
+    border-color: Highlight;
+    background: Highlight;
+  }
+  .settings-root .ud-toggle-thumb {
+    background: ButtonText;
+  }
+  .settings-root .ud-toggle[aria-checked="true"] .ud-toggle-thumb {
+    background: HighlightText;
+  }
+  .settings-root .ud-nav-item[aria-current="page"] {
+    outline: 1px solid Highlight;
+  }
+  .settings-root .ud-nav-pill {
+    background: Highlight;
+  }
+  .settings-root :focus-visible {
+    outline-color: Highlight;
+  }
+}
