@@ -9,7 +9,7 @@ export type PaceWindowKey = "fiveHour" | "weekly";
 export const RED_WITHIN_MS = 30 * 60_000;
 
 /** The line drops its window label above this many characters, to fit a 238 px card. */
-export const LINE_MAX_CHARS = 30;
+export const LINE_MAX_CHARS = 36;
 
 export const WINDOW_LABELS: Record<PaceWindowKey, { short: string; long: string }> = {
   fiveHour: { short: "5h", long: "5-hour" },
@@ -176,6 +176,11 @@ export function modelShares(
   return [...byModel]
     .sort((a, b) => b.usd24h - a.usd24h)
     .map((m) => ({ model: m.model, usd: m.usd24h, share: total > 0 ? m.usd24h / total : 0 }));
+}
+
+/** A model's share of the total: "96%", "<1%". */
+export function formatShare(share: number): string {
+  return share > 0 && share < 0.005 ? "<1%" : `${Math.round(share * 100)}%`;
 }
 
 /** "1% of your weekly limit ≈ $185 of usage", or null before it can be measured. */

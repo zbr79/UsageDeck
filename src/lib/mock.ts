@@ -224,7 +224,7 @@ const PACE_SCENARIOS: PaceScenario[] = [
   "unpriced",
 ];
 
-// The 2026-10-18 probe (newest first, $/h), padded to 24 hours.
+// Windows match the active mock Claude account (31% / 60%). The 2026-10-18 probe (newest first, $/h), padded to 24 hours.
 const PROBE_HOURLY = [
   33, 69, 81, 86, 84, 88, 119, 61, 26, 5, 6, 64, 72, 58, 40, 12, 0, 0, 0, 3, 18, 44, 57, 66,
 ];
@@ -256,19 +256,19 @@ export function paceScenario(scenario: PaceScenario, now = NOW): ClaudePace {
     },
     windows: {
       fiveHour: {
-        pct: 41,
+        pct: 31,
         pctPerHour: 9.2,
-        evenPacePct: 52,
+        evenPacePct: 20,
         etaToLimit: null,
-        resetsAt: at(2.4 * H),
+        resetsAt: at(4 * H),
         state: "lasts",
       },
       weekly: {
-        pct: 47,
+        pct: 60,
         pctPerHour: 0.4,
-        evenPacePct: 55,
+        evenPacePct: 69,
         etaToLimit: null,
-        resetsAt: at(3 * 24 * H),
+        resetsAt: at(52 * H),
         state: "lasts",
       },
     },
@@ -280,11 +280,11 @@ export function paceScenario(scenario: PaceScenario, now = NOW): ClaudePace {
   switch (scenario) {
     case "limit":
       Object.assign(pace.spend, { rate60m: 128.4, rate15m: 151.2, lastHour: 128.4 });
-      Object.assign(fiveHour, { pct: 88, pctPerHour: 28.8, evenPacePct: 60 });
+      Object.assign(fiveHour, { pct: 88, pctPerHour: 28.8, evenPacePct: 20 });
       Object.assign(fiveHour, { etaToLimit: now + 25 * 60_000, state: "limit" });
       break;
     case "weekly":
-      Object.assign(weekly, { pct: 81, pctPerHour: 0.9, evenPacePct: 57 });
+      Object.assign(weekly, { pct: 60, pctPerHour: 1.9, evenPacePct: 69 });
       Object.assign(weekly, { etaToLimit: now + 21 * H, state: "limit" });
       break;
     case "measuring":

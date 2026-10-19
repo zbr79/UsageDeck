@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   calibrationText,
+  formatShare,
   formatClock,
   formatPctPerHour,
   formatUsd,
@@ -121,7 +122,8 @@ describe("paceLine", () => {
   it("shows the limit time and drops the window label when too long", () => {
     const w = { fiveHour: win({ state: "limit", etaToLimit: NOW + 100 * MIN }), weekly: win() };
     expect(paceLine(pace({}, w), NOW, 99).text).toBe("$71/h · 5h +9%/h · limit 3:40 PM");
-    expect(paceLine(pace({}, w), NOW).text).toBe("$71/h · +9%/h · limit 3:40 PM");
+    expect(paceLine(pace({}, w), NOW, 30).text).toBe("$71/h · +9%/h · limit 3:40 PM");
+    expect(paceLine(pace({}, w), NOW).text).toBe("$71/h · 5h +9%/h · limit 3:40 PM");
     expect(paceLine(pace({}, w), NOW).tone).toBe("amber");
   });
   it("says measuring when the speed is not known yet", () => {
@@ -161,6 +163,10 @@ describe("settings helpers", () => {
       { model: "claude-opus-5-5", usd24h: 75 },
     ]);
     expect(rows[0]).toEqual({ model: "claude-opus-5-5", usd: 75, share: 0.75 });
+  });
+  it("shows a tiny share as <1%", () => {
+    expect(formatShare(0.003)).toBe("<1%");
+    expect(formatShare(0.96)).toBe("96%");
   });
   it("words the calibration", () => {
     expect(calibrationText(185.2)).toBe("1% of your weekly limit ≈ $185 of usage");

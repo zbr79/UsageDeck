@@ -5,6 +5,7 @@ import {
   formatClock,
   formatPct,
   formatPctPerHour,
+  formatShare,
   formatUsd,
   formatUsdRate,
   hourlyOldestFirst,
@@ -197,7 +198,7 @@ function PaceBody({ pace, now }: { pace: ClaudePace; now: number }) {
               <li key={m.model} className="flex justify-between gap-4">
                 <span className="truncate">{m.model}</span>
                 <span className="shrink-0 tabular-nums text-(--p-textSecondary)">
-                  {formatUsd(m.usd)} · {Math.round(m.share * 100)}%
+                  {formatUsd(m.usd)} · {formatShare(m.share)}
                 </span>
               </li>
             ))}
