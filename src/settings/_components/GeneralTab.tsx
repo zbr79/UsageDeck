@@ -15,6 +15,22 @@ export default function GeneralTab({
   return (
     <div className="space-y-2">
       <SettingRow
+        title="Start with Windows"
+        description="Open the widget when you sign in to Windows"
+        control={(labelId) => (
+          <Switch
+            labelledBy={labelId}
+            checked={settings.startAtLogin}
+            onChange={(startAtLogin) =>
+              void update(
+                { startAtLogin },
+                startAtLogin ? "Starts with Windows" : "No longer starts with Windows",
+              )
+            }
+          />
+        )}
+      />
+      <SettingRow
         title="Panel theme"
         description="Appearance of this settings panel"
         control={() => (

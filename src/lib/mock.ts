@@ -29,6 +29,7 @@ let settings: Settings = {
   displayNames: { "main@example.com": "Main", "spare@example.com": "Spare" },
   disabledAccounts: ["hidden@example.com"],
   providerOrder: ["opencode", "cursor", "grok", "codex", "claude"],
+  startAtLogin: true,
 };
 
 const win = (percent: number, resetsIn: number) => ({
@@ -178,6 +179,12 @@ if (typeof location !== "undefined") {
   if (panel === "light" || panel === "dark") settings = { ...settings, panelTheme: panel };
 }
 
+/** Browser stand-in for the Rust `copy_key` command: fails for an unknown account, like Rust. */
+export async function mockCopyKey(email: string): Promise<void> {
+  if (!usage.some((u) => u.email === email.toLowerCase())) throw new Error("unknown account");
+  await navigator.clipboard?.writeText("sk-test-key-123");
+}
+
 type Reply = { status: number; body: unknown };
 const json = (body: unknown, status = 200): Reply => ({ status, body });
 
@@ -213,8 +220,6 @@ export async function mockApi(method: string, path: string, body: unknown): Prom
       return json({ accounts: usage });
     case "accounts":
       return json({ accounts: summaries() });
-    case "key":
-      return json({ key: "sk-test-key-123" });
     default:
       if (name in providers) return json(providers[name]);
       return json({ error: "not found" }, 404);

@@ -50,6 +50,7 @@ const BOOLEAN_KEYS = [
   "claudeEnabled",
   "deepseekPeakHourWarning",
   "showProviderNames",
+  "startAtLogin",
 ] as const;
 
 export const MAX_NICKNAME_LENGTH = 64;
@@ -69,6 +70,7 @@ export const DEFAULT_SETTINGS: Settings = {
   displayNames: {},
   disabledAccounts: [],
   providerOrder: [...DEFAULT_PROVIDER_ORDER],
+  startAtLogin: true,
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
