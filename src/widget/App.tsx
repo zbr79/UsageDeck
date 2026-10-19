@@ -26,11 +26,12 @@ import { DEFAULT_SETTINGS } from "@/lib/settings-schema";
 import type { ProviderId, TrackedAccount, WidgetProvider } from "@/lib/types";
 import { ClaudeCard, CodexCard, CursorCard, GrokCard, OpenCodeCard } from "./_components/cards";
 import { nextBrightness, resolveWidgetTheme } from "./_lib/theme";
-import { menuNavIndex } from "./_lib/menu-nav";
+import { isOpenSettingsKey, menuNavIndex } from "./_lib/menu-nav";
 import { slotFromAccount, useWidgetData, type AccountList } from "./_lib/useWidgetData";
 
 const WIDTH = 238;
-const MENU_WIDTH = 120;
+/** Wide enough for the Settings item's Ctrl+, hint. */
+const MENU_WIDTH = 144;
 const MENU_HEIGHT = 136;
 const COMPACT_MENU_HEIGHT = 104;
 /** Reset text is minute-resolution, so the whole panel does not re-render every second. */
@@ -88,6 +89,10 @@ export default function WidgetPage() {
         setMenuOpen(true);
       } else if (e.key === "Escape") {
         setMenuOpen(false);
+      } else if (isOpenSettingsKey(e)) {
+        e.preventDefault();
+        setMenuOpen(false);
+        if (!e.repeat) bridgeMenuAction("settings");
       }
     };
     document.addEventListener("contextmenu", onContextMenu);
@@ -383,10 +388,14 @@ export default function WidgetPage() {
             role="menuitem"
             tabIndex={-1}
             onClick={() => menuAction("settings")}
+            aria-keyshortcuts="Control+Comma"
             className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] hover:bg-(--w-hover) focus-visible:bg-(--w-hover)"
           >
             <GearIcon size={14} />
             Settings
+            <span aria-hidden="true" className="ml-auto text-(--w-muted)">
+              Ctrl+,
+            </span>
           </button>
           <div role="separator" className="my-1 border-t border-(--w-cardBorder)" />
           <button
