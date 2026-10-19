@@ -1,5 +1,6 @@
 import type { CSSProperties, ReactNode } from "react";
 import { formatPercent } from "@/lib/format";
+import { usageSeverity, type MeterSeverity } from "@/lib/pace";
 
 export type CardState = "normal" | "active" | "exhausted";
 
@@ -40,6 +41,7 @@ export function Card({
   icon,
   title,
   titleHint,
+  titleAfter,
   hints,
   badges,
   state = "normal",
@@ -51,6 +53,8 @@ export function Card({
   icon: ReactNode;
   title: string;
   titleHint?: string;
+  /** muted text right after the title, same size (Claude: the spend rate, "$28/h") */
+  titleAfter?: ReactNode;
   hints?: ReactNode;
   badges?: ReactNode;
   state?: CardState;
@@ -81,6 +85,7 @@ export function Card({
         >
           {title}
         </span>
+        {titleAfter}
         {extras?.hidden && <HiddenIcon />}
         {!hintsBelow && hints}
         <span className="ml-auto flex items-center gap-1 shrink-0">{!extras?.plain && badges}</span>
@@ -158,7 +163,13 @@ export function Hint({
   );
 }
 
-/** Usage meter: label, percent, bar, optional reset countdown. */
+const SEVERITY_FILL: Record<MeterSeverity, string> = {
+  ok: "var(--w-barOk)",
+  warn: "var(--w-barWarn)",
+  danger: "var(--w-barDanger)",
+};
+
+/** Usage meter: label, percent, bar, optional even-pace tick, optional reset countdown. */
 export function Meter({
   label,
   name,
@@ -167,6 +178,9 @@ export function Meter({
   dimmed = false,
   increased = false,
   reset,
+  pacePct = null,
+  severity,
+  detail = null,
 }: {
   label: string;
   /** full name, spoken and shown as the tooltip, e.g. "Rolling 5-hour window" */
@@ -176,22 +190,23 @@ export function Meter({
   dimmed?: boolean;
   increased?: boolean;
   reset?: string | null;
+  /** even pace: a thin tick at this percent across the bar; null draws none */
+  pacePct?: number | null;
+  /** fill colour; defaults to the usage colours (warn from 80%, danger from 100%) */
+  severity?: MeterSeverity;
+  /** pace details, added to the tooltip and the spoken value */
+  detail?: string | null;
 }) {
   const known = !unknown && percent != null;
   const value = known ? Math.max(0, percent) : 0;
   const fill =
-    !known || dimmed
-      ? "var(--w-barDim)"
-      : value >= 100
-        ? "var(--w-barDanger)"
-        : value >= 80
-          ? "var(--w-barWarn)"
-          : "var(--w-barOk)";
+    !known || dimmed ? "var(--w-barDim)" : SEVERITY_FILL[severity ?? usageSeverity(value)];
   const valueText = known
-    ? `${formatPercent(value)}%${reset ? `, resets in ${reset}` : ""}`
+    ? `${formatPercent(value)}%${reset ? `, resets in ${reset}` : ""}${detail ? `. ${detail}` : ""}`
     : "unknown";
+  const tick = known && !dimmed && pacePct != null ? Math.min(100, Math.max(0, pacePct)) : null;
   return (
-    <div className="flex-1 min-w-0" title={name}>
+    <div className="flex-1 min-w-0" title={known && detail ? `${name}: ${detail}` : name}>
       {/* the meter below speaks the full name, value and reset, so the compact text is hidden */}
       <div
         aria-hidden="true"
@@ -217,19 +232,30 @@ export function Meter({
           )}
         </span>
       </div>
-      <div
-        role="meter"
-        aria-label={name}
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={known ? Math.min(value, 100) : undefined}
-        aria-valuetext={valueText}
-        className="h-1 rounded-full overflow-hidden bg-(--w-track) transition-colors duration-700"
-      >
+      <div className="relative">
         <div
-          className="h-full rounded-full"
-          style={{ width: `${known ? Math.min(value, 100) : 0}%`, background: fill }}
-        />
+          role="meter"
+          aria-label={name}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={known ? Math.min(value, 100) : undefined}
+          aria-valuetext={valueText}
+          className="h-1 rounded-full overflow-hidden bg-(--w-track) transition-colors duration-700"
+        >
+          <div
+            className="h-full rounded-full transition-colors duration-700"
+            style={{ width: `${known ? Math.min(value, 100) : 0}%`, background: fill }}
+          />
+        </div>
+        {tick != null && (
+          // 2 px wide, 8 px tall over the 4 px bar; kept inside the bar's ends
+          <div
+            aria-hidden="true"
+            data-testid="pace-tick"
+            className="absolute -top-0.5 h-2 w-0.5 rounded-full bg-(--w-paceTick) transition-colors duration-700"
+            style={{ left: `clamp(0px, calc(${tick}% - 1px), calc(100% - 2px))` }}
+          />
+        )}
       </div>
       {reset && known && (
         <div
