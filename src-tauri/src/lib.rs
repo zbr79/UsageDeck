@@ -3,6 +3,7 @@
 
 pub mod api;
 pub mod cli;
+pub mod crash;
 pub mod providers;
 pub mod settings_window;
 pub mod store;
@@ -286,6 +287,8 @@ fn running_from_cargo_target() -> bool {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // first: a panic anywhere after this leaves a crash file in the log folder
+    crash::install(crash::default_log_dir());
     // `--import-old-data <dir>` and `--dump` run headless and exit before any window exists.
     if let Some(code) = cli::try_run() {
         std::process::exit(code);
@@ -323,6 +326,9 @@ pub fn run() {
             quit_app
         ])
         .setup(|app| {
+            if let Ok(dir) = app.path().app_log_dir() {
+                crash::set_log_dir(dir);
+            }
             let dir = app.path().app_data_dir()?;
             app.manage(Core::new(Store::new(dir, Box::new(CredentialVault))));
             app.manage(PosSaver(AtomicU64::new(0)));
