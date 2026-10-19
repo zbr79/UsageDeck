@@ -52,7 +52,7 @@ Everything UsageDeck stores lives in `%APPDATA%\com.usagedeck.app`:
 - `seen-accounts.json` — emails of Cursor, Grok Bot, Codex and Claude accounts already seen, so
   switching accounts in those apps does not drop the earlier one. Tokens are not stored.
 - `usage-cache.json` — last known usage per provider and account, so the widget has something to
-  show after a restart or outage (marked `cached`).
+  show after a restart or outage (shown like fresh usage: it is the latest the app has seen).
 - `window-pos.json` — where the widget was last placed.
 
 OpenCode API keys live in **Windows Credential Manager** (service `UsageDeck`), never in a file.
@@ -76,10 +76,13 @@ tray menu's **Open log folder** opens it in Explorer.
   with hysteresis; `light` and `dark` are fixed (no sampling)
 - **Change detection** — when an account's usage rises, a ▲ shows for 20 s and the most recently
   used account floats to the top
-- **Reset countdowns** (`5d 7h 45m`) and **reset memory** — cached cards are marked `cached`; a
-  window whose stored reset time has passed shows `--` until fresh data arrives
-- **States, consistently on every card** — loading, unavailable, `cached`, `re-auth`, `key
-  rejected` (OpenCode 401 / 403), exhausted (red)
+- **Reset countdowns** (`5d 7h 45m`) and **reset memory** — cached usage looks exactly like fresh
+  usage, with no "cached" or "updated … ago" note; a window whose stored reset time has passed
+  shows `--` until fresh data arrives
+- **States, consistently on every card** — a card shows text only when you must act: loading,
+  unavailable, `re-auth`, `key rejected` (OpenCode 401 / 403), `not signed in`, exhausted (red).
+  Passing failures (rate limit, network, service error, busy, changed reply format) show nothing
+  on the card; they stay in the log and `--dump`
 - **Unavailable banner** — "Usage unavailable · updated 3m ago" with Retry
 - **Copy key** — hover the OpenCode icon on a card (a copy glyph appears) and click; the key is
   copied by the Rust side and never passes through the page
