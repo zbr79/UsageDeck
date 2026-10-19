@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { emitTo } from "@tauri-apps/api/event";
 import { toastError, toastSuccess } from "@/components/toast/toast";
 import { announceSettingsChanged, getJson, sendJson } from "@/lib/api";
+import { inTauri } from "@/lib/bridge";
 import { applySettingsPatch } from "@/lib/settings-schema";
 import type {
   ClaudeUsage,
@@ -97,25 +99,46 @@ export function useSummaries() {
     claude: null,
   });
 
-  const reloadAccounts = useCallback(() => fetchAccounts().then((apply) => setState(apply)), []);
+  const live = useRef(true);
+  const reloadAccounts = useCallback(
+    () => fetchAccounts().then((apply) => live.current && setState(apply)),
+    [],
+  );
 
-  useEffect(() => {
-    let live = true;
-    void fetchAccounts().then((apply) => live && setState(apply));
+  /** Reload every provider's accounts (after "Refresh now"). */
+  const reloadAll = useCallback(() => {
+    void reloadAccounts();
     const load = <K extends "cursor" | "grok" | "codex" | "claude">(key: K) =>
       getJson<Summaries[K]>(`/api/${key}`)
-        .then((value) => live && setState((s) => ({ ...s, [key]: value })))
+        .then((value) => live.current && setState((s) => ({ ...s, [key]: value })))
         .catch(() => {});
     void load("cursor");
     void load("grok");
     void load("codex");
     void load("claude");
-    return () => {
-      live = false;
-    };
-  }, []);
+  }, [reloadAccounts]);
 
-  return { ...state, reloadAccounts };
+  useEffect(() => {
+    live.current = true;
+    reloadAll();
+    return () => {
+      live.current = false;
+    };
+  }, [reloadAll]);
+
+  return { ...state, reloadAccounts, reloadAll };
+}
+
+/**
+ * "Refresh now": ask the widget to refetch every provider (the tray's Refresh event), then
+ * reload this window's copy a few seconds later. A no-op in a plain browser.
+ */
+export function refreshWidget(reload: () => void): void {
+  toastSuccess("Refreshing usage…");
+  if (inTauri()) {
+    emitTo("widget", "widget-refresh").catch((err) => console.error("refresh failed", err));
+  }
+  setTimeout(reload, 5000);
 }
 
 export async function saveAccount(email: string, key: string): Promise<boolean> {
