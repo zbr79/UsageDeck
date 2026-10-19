@@ -1,4 +1,4 @@
-import { Badge } from "@/ui/controls";
+import { Badge, HIT_24 } from "@/ui/controls";
 import { CopyIcon } from "@/ui/Icons";
 import type { Tone } from "@/ui/palette";
 import { capitalize, formatDuration, formatUntil } from "@/lib/format";
@@ -143,7 +143,7 @@ export function OpenCodeCard({
           onClick={onCopyKey}
           aria-label={`Copy API key for ${title}`}
           title="Copy API key"
-          className="group/copy relative shrink-0 rounded-[3px] p-0.5 -m-0.5 hover:bg-(--w-hover)"
+          className={`group/copy ${HIT_24} shrink-0 rounded-[3px] p-0.5 -m-0.5 hover:bg-(--w-hover)`}
         >
           <ProviderIcon src="/opencode.ico" alt="" />
           <span className="absolute inset-0 flex items-center justify-center rounded-[3px] bg-(--w-card) text-(--w-text) opacity-0 group-hover/copy:opacity-100 group-focus-visible/copy:opacity-100 transition-opacity">
