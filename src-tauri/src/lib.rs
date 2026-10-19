@@ -2,8 +2,11 @@
 //! Window behaviour is ported from desktop/main.js.
 
 pub mod api;
+pub mod claude_logs;
 pub mod cli;
 pub mod crash;
+pub mod history;
+pub mod pricing;
 pub mod providers;
 pub mod settings_window;
 pub mod store;
@@ -36,6 +39,8 @@ pub struct Core {
     pub cache: UsageCache,
     pub seen: SeenAccounts,
     pub http: reqwest::Client,
+    /// Claude Code spend from the local transcripts (`/api/claude/pace`).
+    pub spend: std::sync::Arc<claude_logs::SpendEngine>,
 }
 
 impl Core {
@@ -46,11 +51,16 @@ impl Core {
             .timeout(Duration::from_secs(20))
             .build()
             .unwrap_or_default();
+        let spend = std::sync::Arc::new(claude_logs::SpendEngine::new(
+            store.dir().to_path_buf(),
+            claude_logs::default_root(),
+        ));
         Self {
             store,
             cache,
             seen,
             http,
+            spend,
         }
     }
 }
@@ -331,6 +341,7 @@ pub fn run() {
             }
             let dir = app.path().app_data_dir()?;
             app.manage(Core::new(Store::new(dir, Box::new(CredentialVault))));
+            claude_logs::start_scanner(app.state::<Core>().spend.clone());
             app.manage(PosSaver(AtomicU64::new(0)));
 
             // Start at login follows the setting (default on).
