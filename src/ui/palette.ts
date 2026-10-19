@@ -111,6 +111,23 @@ export const WIDGET_PALETTES: Record<WidgetTheme, WidgetPalette> = {
   light: { ...lightBase, card: "#e4e4e7", track: "rgba(113,113,123,0.25)" },
 };
 
+/**
+ * The widget's cards as drawn inside the settings window. Dark is the widget's own; light sits on
+ * the settings rows' surface (`--s-card` #fbfbfb, `--s-cardBorder` #e5e5e5 in settings/App.tsx)
+ * instead of the widget's grey #e4e4e7, so cards and rows read as one family. Muted text is the
+ * panel's own muted colour.
+ */
+export const SETTINGS_CARD_PALETTES: Record<WidgetTheme, WidgetPalette> = {
+  dark: WIDGET_PALETTES.dark,
+  light: {
+    ...WIDGET_PALETTES.light,
+    card: "#fbfbfb",
+    cardBorder: "#e5e5e5",
+    muted: "#52525c",
+    track: "rgba(113,113,123,0.2)",
+  },
+};
+
 export interface PanelPalette {
   bg: string;
   surface: string;

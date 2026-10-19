@@ -6,6 +6,7 @@ import type { PanelTheme, Settings, ThemeMode, WidgetProvider } from "@/lib/type
 import { Toggle } from "@/ui/Toggle";
 import appIcon from "../../../src-tauri/icons/128x128.png";
 import { moveItem, PAGE_TITLES, PROVIDER_ICONS } from "../_lib/pages";
+import { usePanelTheme } from "../_lib/theme";
 import { Page, Section, secondaryButton, selectClass, SettingRow } from "./fields";
 
 type Update = (patch: Partial<Settings>, success?: string) => Promise<boolean>;
@@ -63,6 +64,7 @@ export function GeneralPage({ settings, update }: Props) {
 const PANEL_THEMES: { value: PanelTheme; label: string }[] = [
   { value: "light", label: "Light" },
   { value: "dark", label: "Dark" },
+  { value: "system", label: "Use system setting" },
 ];
 const WIDGET_THEMES: { value: ThemeMode; label: string }[] = [
   { value: "auto", label: "Match the screen behind it" },
@@ -137,6 +139,7 @@ export function AppearancePage({ settings, update }: Props) {
 
 /** Provider order (drag the grip, or Move up / Move down) and each provider's widget switch. */
 export function WidgetPage({ settings, update }: Props) {
+  const light = usePanelTheme() === "light";
   const order = settings.providerOrder;
   const rows = useRef<(HTMLLIElement | null)[]>([]);
   const drag = useRef<{ id: WidgetProvider; pointerId: number } | null>(null);
@@ -219,7 +222,7 @@ export function WidgetPage({ settings, update }: Props) {
                   src={PROVIDER_ICONS[id]}
                   alt=""
                   draggable={false}
-                  className={`size-5 rounded ${id === "codex" && settings.panelTheme === "light" ? "invert" : ""}`}
+                  className={`size-5 rounded ${id === "codex" && light ? "invert" : ""}`}
                 />
                 <span className="min-w-0 flex-1 text-sm">{name}</span>
                 <button

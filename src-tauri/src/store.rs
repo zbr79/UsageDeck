@@ -366,6 +366,8 @@ pub enum ThemeMode {
 pub enum PanelTheme {
     Light,
     Dark,
+    /// Follow the Windows app light / dark mode ("Use system setting").
+    System,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -564,6 +566,7 @@ pub fn apply_settings_patch(current: &Settings, patch: &Value) -> Settings {
     match obj.get("panelTheme").and_then(Value::as_str) {
         Some("light") => next.panel_theme = PanelTheme::Light,
         Some("dark") => next.panel_theme = PanelTheme::Dark,
+        Some("system") => next.panel_theme = PanelTheme::System,
         _ => {}
     }
     if let Some(names) = obj
@@ -693,6 +696,21 @@ mod tests {
         assert_eq!(out["themeMode"], json!("light"));
         assert_eq!(out["providerOrder"][0], json!("claude"));
         assert_eq!(out["deepseekPeakHourWarning"], json!(true));
+    }
+
+    #[test]
+    fn settings_patch_panel_theme_system() {
+        let next = apply_settings_patch(&Settings::default(), &json!({ "panelTheme": "system" }));
+        assert_eq!(next.panel_theme, PanelTheme::System);
+        let out = serde_json::to_value(&next).unwrap();
+        assert_eq!(out["panelTheme"], json!("system"));
+        // Old values stay valid; an unknown one keeps the current theme.
+        let light = apply_settings_patch(&next, &json!({ "panelTheme": "light" }));
+        assert_eq!(light.panel_theme, PanelTheme::Light);
+        let kept = apply_settings_patch(&next, &json!({ "panelTheme": "auto" }));
+        assert_eq!(kept.panel_theme, PanelTheme::System);
+        let loaded = normalize_settings(Some(&json!({ "panelTheme": "system" })));
+        assert_eq!(loaded.panel_theme, PanelTheme::System);
     }
 
     #[test]

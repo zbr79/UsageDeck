@@ -13,7 +13,12 @@ export interface CardExtras {
   dashed?: boolean;
   /** controls at the right end of the header row (settings: show switch, "more" button) */
   headerActions?: ReactNode;
+  /** an actionable note (settings: "Subscription inactive"), shown with the hints below the title */
+  headerNote?: ReactNode;
 }
+
+/** What a settings account cell hands its card: the header controls and the note. */
+export type CardHeader = Pick<CardExtras, "headerActions" | "headerNote">;
 
 /**
  * A dimmed card's meters read the palette's dim tokens instead of fading with opacity, so text
@@ -52,6 +57,9 @@ export function Card({
   extras?: CardExtras;
   children: ReactNode;
 }) {
+  // Settings cards also hold a switch and a "more" button, so header hints move to their own
+  // line below the title and the account name keeps its width. The widget keeps them inline.
+  const hintsBelow = extras?.headerActions !== undefined;
   const shown: CardState = state === "normal" && extras?.active ? "active" : state;
   const ring =
     shown === "exhausted"
@@ -72,12 +80,19 @@ export function Card({
         >
           {title}
         </span>
-        {hints}
+        {!hintsBelow && hints}
         <span className="ml-auto flex items-center gap-1 shrink-0">{badges}</span>
         {extras?.headerActions && (
           <span className="flex items-center gap-1 shrink-0">{extras.headerActions}</span>
         )}
       </div>
+      {hintsBelow && (
+        // Hidden while every hint is empty (a hint group with nothing to say).
+        <div className="ud-card-hints hidden has-[*:not(:empty)]:flex flex-wrap items-center gap-x-1.5 -mt-0.5 mb-1.5 min-w-0">
+          {extras?.headerNote}
+          {hints}
+        </div>
+      )}
       {extras?.dimmed ? <div style={DIM_VARS}>{children}</div> : children}
     </section>
   );

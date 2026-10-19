@@ -41,7 +41,7 @@ export function moveItem<T>(list: readonly T[], from: number, to: number): T[] {
 }
 
 const THEME_MODES: readonly ThemeMode[] = ["auto", "light", "dark"];
-const PANEL_THEMES: readonly PanelTheme[] = ["light", "dark"];
+const PANEL_THEMES: readonly PanelTheme[] = ["light", "dark", "system"];
 const BOOLEAN_KEYS = [
   "opencodeEnabled",
   "cursorEnabled",

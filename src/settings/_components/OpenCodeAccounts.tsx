@@ -121,7 +121,7 @@ export default function OpenCodeAccounts({
                     onSelect: () => setPending({ kind: "remove", email: a.email }),
                   },
                 ]}
-                card={(headerActions) => (
+                card={(header) => (
                   <OpenCodeCard
                     row={row}
                     active={!off && !lapsed}
@@ -131,7 +131,7 @@ export default function OpenCodeAccounts({
                     now={now}
                     increased={() => false}
                     onCopyKey={() => void copyKey(a.email)}
-                    extras={{ dimmed: lapsed, dashed: off, headerActions }}
+                    extras={{ dimmed: lapsed, dashed: off, ...header }}
                     fullEmail
                   />
                 )}

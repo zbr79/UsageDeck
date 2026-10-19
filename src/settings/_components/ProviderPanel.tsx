@@ -1,4 +1,5 @@
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
+import type { CardHeader } from "@/widget/_components/Card";
 import { accountKey } from "@/lib/account-key";
 import type {
   ClaudeUsage,
@@ -14,6 +15,7 @@ import { slotFromAccount as widgetSlot } from "@/widget/_lib/useWidgetData";
 import { cardErrorKind } from "@/lib/errors";
 import { PAGE_TITLES, PROVIDER_ICONS } from "../_lib/pages";
 import { refreshWidget, type Summaries } from "../_lib/hooks";
+import { usePanelTheme } from "../_lib/theme";
 import { AccountCell, CardGrid, EmptyState, ProviderLogo, useNow } from "./CardGrid";
 import { RenameDialog } from "./dialogs";
 import { Page } from "./fields";
@@ -43,11 +45,12 @@ function providerCard(
   account: AnyAccount,
   settings: Settings,
   now: number,
-  headerActions: ReactNode,
+  header: CardHeader,
   hidden: boolean,
+  light: boolean,
 ) {
   // Cached usage looks like fresh usage: no status note and no dimming.
-  const extras = { active: account.active, dashed: hidden, headerActions };
+  const extras = { active: account.active, dashed: hidden, ...header };
   // `multiple` makes every card title the account's own label (or nickname), not the provider.
   const common = { settings, now, accountId: account.id, multiple: true, extras };
   const label = account.label;
@@ -74,7 +77,7 @@ function providerCard(
         <CodexCard
           slot={slotFromAccount(a)}
           accountLabel={label ?? a.usage?.email}
-          light={settings.panelTheme === "light"}
+          light={light}
           {...common}
         />
       );
@@ -107,6 +110,7 @@ export default function ProviderPanel({
   update: Update;
 }) {
   const now = useNow();
+  const light = usePanelTheme() === "light";
   const [renaming, setRenaming] = useState<string | null>(null);
   const name = PAGE_TITLES[id];
   const accounts = summaries[id]?.accounts ?? null;
@@ -124,12 +128,7 @@ export default function ProviderPanel({
   return (
     <Page
       title={name}
-      lead={
-        <ProviderLogo
-          src={PROVIDER_ICONS[id]}
-          invert={id === "codex" && settings.panelTheme === "light"}
-        />
-      }
+      lead={<ProviderLogo src={PROVIDER_ICONS[id]} invert={id === "codex" && light} />}
       aside={accountCount(sorted?.length ?? null)}
     >
       {sorted === null ? (
@@ -168,7 +167,7 @@ export default function ProviderPanel({
                     onSelect: () => refreshWidget(summaries.reloadAll),
                   },
                 ]}
-                card={(actions) => providerCard(id, account, settings, now, actions, isHidden)}
+                card={(header) => providerCard(id, account, settings, now, header, isHidden, light)}
               />
             );
           })}

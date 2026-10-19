@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { contrast, PANEL_PALETTES, WIDGET_PALETTES, type Tone } from "@/ui/palette";
+import {
+  contrast,
+  PANEL_PALETTES,
+  SETTINGS_CARD_PALETTES,
+  WIDGET_PALETTES,
+  type Tone,
+} from "@/ui/palette";
 
 const AA_TEXT = 4.5;
 const AA_NON_TEXT = 3; // WCAG 1.4.11: meaningful graphics such as meter fills
@@ -13,7 +19,13 @@ describe("contrast()", () => {
   });
 });
 
-describe.each(Object.entries(WIDGET_PALETTES))("widget %s theme", (_name, p) => {
+// The settings window draws the same cards on its own surfaces: every pair is checked there too.
+const CARD_PALETTES = [
+  ...Object.entries(WIDGET_PALETTES).map(([name, p]) => [`widget ${name}`, p] as const),
+  ...Object.entries(SETTINGS_CARD_PALETTES).map(([name, p]) => [`settings ${name}`, p] as const),
+];
+
+describe.each(CARD_PALETTES)("%s card theme", (_name, p) => {
   it.each(["text", "label", "muted", "peakActive", "peakNext", "warn"] as const)(
     "%s text meets AA on the card",
     (key) => expect(contrast(p[key], p.card)).toBeGreaterThanOrEqual(AA_TEXT),

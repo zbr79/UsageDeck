@@ -7,6 +7,7 @@ import {
   normalizeProviderOrder,
   normalizeSettings,
 } from "@/lib/settings-schema";
+import { resolvePanelTheme } from "@/settings/_lib/theme";
 
 describe("applySettingsPatch", () => {
   it("applies only valid, known fields", () => {
@@ -29,6 +30,24 @@ describe("applySettingsPatch", () => {
     const current = { ...DEFAULT_SETTINGS, displayNames: { a: "Alpha", b: "Beta" } };
     const next = applySettingsPatch(current, { displayNames: { b: "  ", c: "  Gamma  " } });
     expect(next.displayNames).toEqual({ a: "Alpha", c: "Gamma" });
+  });
+
+  it("accepts the system settings theme and keeps the old values valid", () => {
+    const system = applySettingsPatch(DEFAULT_SETTINGS, { panelTheme: "system" });
+    expect(system.panelTheme).toBe("system");
+    expect(applySettingsPatch(system, { panelTheme: "light" }).panelTheme).toBe("light");
+    expect(applySettingsPatch(system, { panelTheme: "dark" }).panelTheme).toBe("dark");
+    expect(applySettingsPatch(system, { panelTheme: "auto" }).panelTheme).toBe("system");
+    expect(normalizeSettings({ panelTheme: "system" }).panelTheme).toBe("system");
+    expect(normalizeSettings({}).panelTheme).toBe("dark");
+  });
+
+  it("resolves the system settings theme from the Windows mode", () => {
+    expect(resolvePanelTheme("system", true)).toBe("dark");
+    expect(resolvePanelTheme("system", false)).toBe("light");
+    expect(resolvePanelTheme("light", true)).toBe("light");
+    expect(resolvePanelTheme("dark", false)).toBe("dark");
+    expect(resolvePanelTheme(undefined, false)).toBe("dark");
   });
 
   it("migrates the removed white widget theme to light", () => {

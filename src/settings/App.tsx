@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { closeSettings, inTauri } from "@/lib/bridge";
-import { cssVars, PANEL_PALETTES, WIDGET_PALETTES } from "@/ui/palette";
+import { cssVars, PANEL_PALETTES, SETTINGS_CARD_PALETTES } from "@/ui/palette";
 import { useSettings, useSummaries } from "./_lib/hooks";
+import { PanelThemeContext, resolvePanelTheme, useSystemDark } from "./_lib/theme";
 import {
   isProviderPage,
   pageFromSearch,
@@ -43,13 +44,15 @@ export default function SettingsPage() {
   const summaries = useSummaries();
   const [page, setPage] = useState<PageId>(() => pageFromSearch(window.location.search));
   const main = useRef<HTMLElement>(null);
-  const theme = settings?.panelTheme ?? "dark";
+  const systemDark = useSystemDark();
+  const followSystem = settings?.panelTheme === "system";
+  const theme = resolvePanelTheme(settings?.panelTheme, systemDark);
   // The account cards are the widget's own, so they also need its colours, in the panel's theme.
   const vars = useMemo(
     () =>
       ({
         ...cssVars("p", PANEL_PALETTES[theme]),
-        ...cssVars("w", WIDGET_PALETTES[theme]),
+        ...cssVars("w", SETTINGS_CARD_PALETTES[theme]),
         ...SURFACES[theme],
         colorScheme: theme,
         fontFamily: '"Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif',
@@ -57,13 +60,15 @@ export default function SettingsPage() {
     [theme],
   );
 
-  // The native caption follows the theme.
+  // The native caption follows the theme; "Use system setting" un-forces it, so the caption and
+  // `prefers-color-scheme` both track Windows live.
+  const loaded = settings !== null;
   useEffect(() => {
-    if (!inTauri() || !settings) return;
+    if (!inTauri() || !loaded) return;
     getCurrentWindow()
-      .setTheme(theme)
+      .setTheme(followSystem ? null : theme)
       .catch((err) => console.error("setTheme failed", err));
-  }, [theme, settings]);
+  }, [theme, followSystem, loaded]);
 
   // Esc (when no menu or dialog is open) and Ctrl+W close the window, like Alt+F4 and the X.
   useEffect(() => {
@@ -116,24 +121,28 @@ export default function SettingsPage() {
   }
 
   return (
-    <div
-      style={vars}
-      data-menu-root
-      className="settings-root fixed inset-0 flex bg-(--s-page) text-(--p-text) antialiased"
-    >
-      <Nav
-        current={page}
-        onSelect={select}
-        providerOrder={settings?.providerOrder ?? ["claude", "codex", "cursor", "grok", "opencode"]}
-        light={theme === "light"}
-      />
-      <main
-        ref={main}
-        aria-labelledby="page-title"
-        className="min-w-0 flex-1 overflow-y-auto bg-(--s-page)"
+    <PanelThemeContext.Provider value={theme}>
+      <div
+        style={vars}
+        data-menu-root
+        className="settings-root fixed inset-0 flex bg-(--s-page) text-(--p-text) antialiased"
       >
-        {content}
-      </main>
-    </div>
+        <Nav
+          current={page}
+          onSelect={select}
+          providerOrder={
+            settings?.providerOrder ?? ["claude", "codex", "cursor", "grok", "opencode"]
+          }
+          light={theme === "light"}
+        />
+        <main
+          ref={main}
+          aria-labelledby="page-title"
+          className="min-w-0 flex-1 overflow-y-auto bg-(--s-page)"
+        >
+          {content}
+        </main>
+      </div>
+    </PanelThemeContext.Provider>
   );
 }

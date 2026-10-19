@@ -5,9 +5,10 @@
   outline-offset: 2px;
 }
 
-/* The widget's 10 px card text reads at 12 px, the settings minimum (CardGrid). */
+/* The widget's smallest card text is 11 px: 1.1x draws it at 12.1 px, the settings minimum
+   (CardGrid). */
 .settings-root .ud-cards {
-  zoom: 1.2;
+  zoom: 1.1;
 }
 
 .settings-root main,

@@ -231,10 +231,21 @@ fn place(app: &AppHandle, window: &WebviewWindow) {
 }
 
 fn create(app: &AppHandle) -> tauri::Result<WebviewWindow> {
-    let dark = matches!(
-        app.state::<Core>().store.get_settings().panel_theme,
-        PanelTheme::Dark
-    );
+    let panel_theme = app.state::<Core>().store.get_settings().panel_theme;
+    // "Use system setting": no forced theme, so the caption follows Windows live. The first
+    // background colour comes from the widget window, which never forces a theme.
+    let forced = match panel_theme {
+        PanelTheme::Light => Some(Theme::Light),
+        PanelTheme::Dark => Some(Theme::Dark),
+        PanelTheme::System => None,
+    };
+    let dark = match forced {
+        Some(theme) => theme == Theme::Dark,
+        None => app
+            .get_webview_window(WIDGET)
+            .and_then(|w| w.theme().ok())
+            .is_none_or(|theme| theme == Theme::Dark),
+    };
     // The page paints the same colour; this avoids a white flash before it loads.
     let background = if dark {
         Color(0x18, 0x18, 0x1b, 0xff)
@@ -252,7 +263,7 @@ fn create(app: &AppHandle) -> tauri::Result<WebviewWindow> {
             .always_on_top(false)
             .skip_taskbar(false)
             .transparent(false)
-            .theme(Some(if dark { Theme::Dark } else { Theme::Light }))
+            .theme(forced)
             .background_color(background)
             .visible(false);
     if let Some(icon) = app.default_window_icon() {
