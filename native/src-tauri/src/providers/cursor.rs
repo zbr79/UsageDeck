@@ -4,7 +4,7 @@
 //! `ProviderError::Locked`: the last good sign-in (or, after a restart, the newest remembered
 //! account and its cached usage) is served instead, so the card never disappears.
 
-use super::codex::{number_or_null, string_or_null, to_iso};
+use super::util::{number_or_null, string_or_null, to_iso};
 use super::{
     collect_accounts, parse_reply, CachedProvider, FetchError, LiveAccount, ProviderError,
 };
@@ -85,8 +85,8 @@ pub fn parse_cursor_usage(
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CursorState {
-    token: Option<String>,
-    account_name: Option<String>,
+    pub(crate) token: Option<String>,
+    pub(crate) account_name: Option<String>,
 }
 
 #[derive(Clone)]
@@ -96,7 +96,7 @@ struct CursorAccount {
     token: String,
 }
 
-fn state_db() -> PathBuf {
+pub(crate) fn state_db() -> PathBuf {
     if !super::codex::real_sign_ins() {
         return PathBuf::from("no-real-sign-in-in-tests");
     }
@@ -150,8 +150,11 @@ pub fn read_state(db: &Path, busy: Duration) -> Result<Option<CursorState>, Prov
     }
 }
 
+/// When a DB path was last read, and what it held.
+type StateCache = HashMap<PathBuf, (Instant, Option<CursorState>)>;
+
 /// Last good read per DB path. A locked read never replaces it.
-static STATE: LazyLock<Mutex<HashMap<PathBuf, (Instant, Option<CursorState>)>>> =
+static STATE: LazyLock<Mutex<StateCache>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn current_state(db: &Path, busy: Duration) -> Result<Option<CursorState>, ProviderError> {

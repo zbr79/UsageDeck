@@ -13,6 +13,7 @@ pub mod codex;
 pub mod cursor;
 pub mod grok;
 pub mod opencode;
+pub mod util;
 
 use crate::store::{read_json, write_json_atomic};
 use serde::de::DeserializeOwned;
@@ -55,10 +56,11 @@ impl ProviderError {
 }
 
 /// A failed fetch. `fallback` is shown only when there is no cached value either (never persisted).
+/// Boxed so the `Err` side of a fetch stays small.
 #[derive(Clone, Debug)]
 pub struct FetchError<T> {
     pub error: ProviderError,
-    pub fallback: Option<T>,
+    pub fallback: Option<Box<T>>,
 }
 
 impl<T> From<ProviderError> for FetchError<T> {
@@ -300,7 +302,7 @@ where
                         error: Some(error),
                     },
                     None => ProviderResult {
-                        usage: fallback,
+                        usage: fallback.map(|b| *b),
                         stale: false,
                         cached_at: None,
                         auth_expired,
@@ -471,7 +473,7 @@ pub fn account_key(provider: &str, id: &str) -> String {
 
 pub fn is_account_hidden(disabled: &[String], provider: &str, id: &str) -> bool {
     let key = account_key(provider, id);
-    disabled.iter().any(|d| *d == key)
+    disabled.contains(&key)
 }
 
 // ---- tracked accounts (lib/tracked-accounts.ts) ---------------------------------------------
@@ -666,7 +668,7 @@ mod tests {
             .get(&cache2, "b@x.com", |_| async {
                 Err(FetchError {
                     error: ProviderError::Network,
-                    fallback: Some(Usage { percent_used: 0.0 }),
+                    fallback: Some(Box::new(Usage { percent_used: 0.0 })),
                 })
             })
             .await;

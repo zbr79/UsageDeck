@@ -167,7 +167,7 @@ fn tick(app: &AppHandle) -> Duration {
         Ok(Some(avg)) => {
             let n = EMITTED.fetch_add(1, Ordering::Relaxed);
             // first value, then about once a minute, so the log shows the sampler is alive
-            if n % 20 == 0 {
+            if n.is_multiple_of(20) {
                 log::info!("{EVENT_BG} {avg:.3} (sample {})", n + 1);
             } else {
                 log::debug!("{EVENT_BG} {avg:.3}");

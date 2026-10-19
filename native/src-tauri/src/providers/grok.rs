@@ -4,10 +4,10 @@
 //! has none, Cursor's current sign-in (same backend) is used as a single account. Both are only
 //! ever read.
 
+use super::util::{string_or_null, to_iso};
 use super::{collect_accounts, CachedProvider, FetchError, LiveAccount, ProviderError, TrackedAccount};
 use crate::win::os_crypt::{app_key, unseal, AppKey};
 use crate::Core;
-use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -55,33 +55,6 @@ pub fn parse_sand_reply(bytes: &[u8]) -> Result<SandReply, ProviderError> {
     Ok(reply)
 }
 
-/// `toIso` in lib/time.ts: epoch seconds or ms (number or numeric string), or a date string.
-pub fn to_iso(value: Option<&Value>) -> Option<String> {
-    let iso = |d: DateTime<Utc>| d.to_rfc3339_opts(SecondsFormat::Millis, true);
-    let from_number = |n: f64| {
-        let ms = if n < 1e12 { n * 1000.0 } else { n };
-        DateTime::from_timestamp_millis(ms as i64).map(iso)
-    };
-    match value? {
-        Value::Number(n) => from_number(n.as_f64()?),
-        Value::String(s) => {
-            let t = s.trim();
-            if t.is_empty() {
-                None
-            } else if let Ok(n) = t.parse::<f64>() {
-                from_number(n)
-            } else {
-                DateTime::parse_from_rfc3339(t).ok().map(|d| iso(d.with_timezone(&Utc)))
-            }
-        }
-        _ => None,
-    }
-}
-
-fn string_or_null(v: Option<&Value>) -> Option<String> {
-    v.and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string)
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct GrokAccount {
     pub id: String,
@@ -97,9 +70,9 @@ pub fn build_usage(reply: &SandReply, account: &GrokAccount) -> GrokUsage {
         email: account.email.clone(),
         name: account.name.clone(),
         percent_used: reply.usage_percent.filter(|p| p.is_finite()),
-        reset_at: to_iso(reply.next_reset_timestamp_utc.as_ref()),
-        plan_label: string_or_null(reply.grok_plan_label.as_ref()),
-        cursor_plan_name: string_or_null(reply.cursor_plan_name.as_ref()),
+        reset_at: reply.next_reset_timestamp_utc.as_ref().and_then(to_iso),
+        plan_label: reply.grok_plan_label.as_ref().and_then(string_or_null),
+        cursor_plan_name: reply.cursor_plan_name.as_ref().and_then(string_or_null),
         source: account.source.to_string(),
     }
 }
@@ -128,8 +101,8 @@ pub fn grok_bot_accounts(secrets: &Value, key: &AppKey) -> Vec<GrokAccount> {
         let Some(token) = unseal(key, entry.get("cursor-access-token")) else { continue };
         let profile = unseal(key, entry.get("cursor-account-profile"))
             .and_then(|raw| serde_json::from_str::<Value>(&raw).ok());
-        let email = string_or_null(profile.as_ref().and_then(|p| p.get("email")));
-        let name = string_or_null(profile.as_ref().and_then(|p| p.get("name")));
+        let email = profile.as_ref().and_then(|p| p.get("email")).and_then(string_or_null);
+        let name = profile.as_ref().and_then(|p| p.get("name")).and_then(string_or_null);
         let id = email.as_deref().unwrap_or(storage_id).trim().to_lowercase();
         if id.is_empty() {
             continue;
@@ -161,25 +134,11 @@ fn read_grok_bot_accounts() -> Vec<GrokAccount> {
     grok_bot_accounts(&secrets, &key)
 }
 
-/// Cursor's current sign-in (`readCursorState` in lib/cursor.ts), read-only. Kept here rather
-/// than shared with providers/cursor.rs, which another builder owns in this wave.
+/// Cursor's current sign-in (`readCursorState` in lib/cursor.ts), read-only through the Cursor
+/// provider's reader. A busy DB counts as no sign-in here.
 fn read_cursor_sign_in() -> Option<(String, Option<String>)> {
-    use rusqlite::{Connection, OpenFlags, OptionalExtension};
-    let db = appdata().join("Cursor").join("User").join("globalStorage").join("state.vscdb");
-    let conn = Connection::open_with_flags(&db, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX).ok()?;
-    let get = |key: &str| -> Option<String> {
-        conn.query_row("SELECT value FROM ItemTable WHERE key = ?1", [key], |r| r.get::<_, String>(0))
-            .optional()
-            .ok()
-            .flatten()
-    };
-    let token = get("cursorAuth/accessToken")?;
-    let name = get("cursorAuth/cachedEmail").or_else(|| {
-        get("cursorAuth/cachedScopedProfile")
-            .and_then(|p| serde_json::from_str::<Value>(&p).ok())
-            .and_then(|p| p.get("displayName").and_then(Value::as_str).map(str::to_string))
-    });
-    Some((token, name))
+    let state = super::cursor::read_state(&super::cursor::state_db(), Duration::ZERO).ok()??;
+    Some((state.token?, state.account_name))
 }
 
 /// Grok Bot's saved sign-ins; when it has none, Cursor's current sign-in as a single account.
@@ -289,10 +248,10 @@ mod tests {
 
     #[test]
     fn to_iso_matches_lib_time() {
-        assert_eq!(to_iso(Some(&json!(1_760_000_000))).as_deref(), Some("2025-10-09T08:53:20.000Z"));
-        assert_eq!(to_iso(Some(&json!("2025-10-09T08:53:20Z"))).as_deref(), Some("2025-10-09T08:53:20.000Z"));
-        assert_eq!(to_iso(Some(&json!(""))), None);
-        assert_eq!(to_iso(Some(&json!(true))), None);
+        assert_eq!(to_iso(&json!(1_760_000_000)).as_deref(), Some("2025-10-09T08:53:20.000Z"));
+        assert_eq!(to_iso(&json!("2025-10-09T08:53:20Z")).as_deref(), Some("2025-10-09T08:53:20.000Z"));
+        assert_eq!(to_iso(&json!("")), None);
+        assert_eq!(to_iso(&json!(true)), None);
     }
 
     #[tokio::test]

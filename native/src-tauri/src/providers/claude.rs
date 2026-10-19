@@ -433,7 +433,7 @@ async fn fetch(http: reqwest::Client, live: LiveClaude) -> Result<ClaudeUsage, F
     let fallback = build_usage(&live.account, live.token.as_ref(), None);
     let fail = |error| FetchError {
         error,
-        fallback: Some(fallback.clone()),
+        fallback: Some(Box::new(fallback.clone())),
     };
     let Some(token) = live.token.as_ref() else {
         return Err(fail(ProviderError::MissingCredentials));
@@ -539,7 +539,7 @@ mod tests {
             "old:claude_code": { "token": "c", "expiresAt": 1 },
         });
         assert_eq!(pick_token(&entries).unwrap().token, "b");
-        assert_eq!(pick_token(&json!({ "only": { "token": "c", "expiresAt": 1 } })).unwrap().expired, true);
+        assert!(pick_token(&json!({ "only": { "token": "c", "expiresAt": 1 } })).unwrap().expired);
     }
 
     #[tokio::test]
