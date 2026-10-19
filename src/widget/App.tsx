@@ -26,7 +26,7 @@ import { DEFAULT_SETTINGS } from "@/lib/settings-schema";
 import type { ProviderId, TrackedAccount, WidgetProvider } from "@/lib/types";
 import { ClaudeCard, CodexCard, CursorCard, GrokCard, OpenCodeCard } from "./_components/cards";
 import { nextBrightness, resolveWidgetTheme } from "./_lib/theme";
-import { useWidgetData, type AccountList } from "./_lib/useWidgetData";
+import { slotFromAccount, useWidgetData, type AccountList } from "./_lib/useWidgetData";
 
 const WIDTH = 238;
 const MENU_WIDTH = 120;
@@ -168,13 +168,7 @@ export default function WidgetPage() {
     return <Fragment key={provider}>{shown.map((account) => card(account, multiple))}</Fragment>;
   };
 
-  const slotOf = <T,>(account: TrackedAccount<T> | null, loaded: boolean) => ({
-    data: account?.usage ?? null,
-    stale: account?.stale ?? false,
-    cachedAt: account?.cachedAt ?? null,
-    authExpired: account?.authExpired ?? false,
-    loaded,
-  });
+  const slotOf = slotFromAccount;
 
   const renderProvider = (id: WidgetProvider) => {
     switch (id) {
