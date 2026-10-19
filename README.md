@@ -65,7 +65,11 @@ Settings → General (applied at once). Copies run from a cargo `target` folder 
 autostart.
 
 Logs (about 1 MB per file, 5 files kept) are in `%LOCALAPPDATA%\com.usagedeck.app\logs\`; the
-tray menu's **Open log folder** opens it in Explorer.
+tray menu's **Open log folder** opens it in Explorer. A crash leaves a `crash-<time>.txt` report
+there (panic message, location, backtrace, version; newest 10 kept).
+
+Uninstalling removes the start-at-login entry. Tick **Delete the application data** in the
+uninstaller to also remove settings, logs and the stored OpenCode keys (details in SECURITY.md).
 
 ## Features
 

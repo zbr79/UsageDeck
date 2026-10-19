@@ -83,6 +83,11 @@ per file, at most 5 files, oldest deleted first. They hold start-up steps, provi
 results and errors (HTTP status, error kind), with account ids hashed. They never hold API keys or
 tokens.
 
+**Crash files.** If the app panics it writes `crash-<unix-seconds>.txt` to the same log folder:
+the panic message, its source location, a backtrace (function names and addresses) and the app
+version. The newest 10 are kept. Nothing else is collected and nothing is sent anywhere. The panic
+message is code-written text; the code never formats account emails, keys or tokens into one.
+
 **Screen sampler.** With the widget theme on `auto`, every 3 s the app reads the screen pixels in
 a 48 px band around the widget (GDI), averages their brightness in memory and keeps only that one
 number to pick the card style. No pixels are saved, logged or sent anywhere. With `light` or
@@ -92,6 +97,15 @@ number to pick the card style. No pixels are saved, logged or sent anywhere. Wit
 default) adds or removes `UsageDeck` in
 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. Only the Rust side changes it, at start-up
 and when you flip the setting; copies run from a cargo `target` folder never touch it.
+
+**Uninstall.** Every uninstall (not an in-place update) removes the program files, the shortcuts,
+the `UsageDeck` value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` and the
+matching Task Manager entry under `...\Explorer\StartupApproved\Run`. With the uninstaller's
+**Delete the application data** box ticked it also removes `%APPDATA%\com.usagedeck.app` and
+`%LOCALAPPDATA%\com.usagedeck.app` (settings, usage cache, logs, crash files) and every
+`<account>.UsageDeck` generic credential in Credential Manager (the OpenCode keys). Unticked, the
+data and the keys stay, so a reinstall or a manual upgrade picks them up again. A `Run` value under
+`HKLM` exists only if the app was once run elevated; the per-user uninstaller cannot remove it.
 
 ## Network
 
