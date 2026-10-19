@@ -109,6 +109,7 @@ export default function SettingsPage() {
     content = (
       <OpenCodeAccounts
         accounts={summaries.accounts}
+        failed={summaries.accountsFailed}
         usage={summaries.usage}
         settings={settings}
         update={update}

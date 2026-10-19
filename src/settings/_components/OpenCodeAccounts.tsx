@@ -37,6 +37,7 @@ type Pending = { kind: "add" } | { kind: "rename" | "key" | "remove"; email: str
 
 export default function OpenCodeAccounts({
   accounts,
+  failed = false,
   usage,
   settings,
   update,
@@ -44,6 +45,8 @@ export default function OpenCodeAccounts({
   reloadAll,
 }: {
   accounts: OpenCodeAccountSummary[] | null;
+  /** The account list could not be loaded: say so, never show the empty "add a key" state. */
+  failed?: boolean;
   usage: Record<string, OpenCodeAccountUsage>;
   settings: Settings;
   update: Update;
@@ -76,7 +79,14 @@ export default function OpenCodeAccounts({
       aside={accountCount(sorted?.length ?? null)}
       action={sorted && sorted.length > 0 ? addButton : undefined}
     >
-      {sorted === null ? (
+      {sorted === null && failed ? (
+        <p className="text-sm text-(--p-muted)">
+          Couldn&apos;t load your OpenCode accounts.{" "}
+          <button type="button" onClick={() => void reload()} className="underline">
+            Retry
+          </button>
+        </p>
+      ) : sorted === null ? (
         <p className="text-sm text-(--p-muted)">Loading…</p>
       ) : sorted.length === 0 ? (
         <EmptyState>

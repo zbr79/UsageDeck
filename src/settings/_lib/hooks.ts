@@ -65,6 +65,8 @@ export function useSettings() {
 
 export interface Summaries {
   accounts: OpenCodeAccountSummary[] | null;
+  /** The last account-list load failed (shown as an error, never as "no accounts"). */
+  accountsFailed: boolean;
   usage: Record<string, OpenCodeAccountUsage>;
   cursor: { accounts: TrackedAccount<CursorUsage>[] } | null;
   grok: { accounts: TrackedAccount<GrokUsage>[] } | null;
@@ -78,9 +80,14 @@ async function fetchAccounts(): Promise<(s: Summaries) => Summaries> {
     getJson<{ accounts: OpenCodeAccountSummary[] }>("/api/accounts"),
     getJson<{ accounts: OpenCodeAccountUsage[] }>("/api/usage"),
   ]);
+  if (accounts.status === "rejected")
+    console.error("loading OpenCode accounts failed", accounts.reason);
   return (s) => ({
     ...s,
-    accounts: accounts.status === "fulfilled" ? accounts.value.accounts : (s.accounts ?? []),
+    // A failed load keeps what was there (null until the first success) instead of an empty
+    // list, which the page would show as "no accounts yet".
+    accounts: accounts.status === "fulfilled" ? accounts.value.accounts : s.accounts,
+    accountsFailed: accounts.status === "rejected",
     usage:
       usage.status === "fulfilled"
         ? Object.fromEntries(usage.value.accounts.map((a) => [a.email, a]))
@@ -92,6 +99,7 @@ async function fetchAccounts(): Promise<(s: Summaries) => Summaries> {
 export function useSummaries() {
   const [state, setState] = useState<Summaries>({
     accounts: null,
+    accountsFailed: false,
     usage: {},
     cursor: null,
     grok: null,
