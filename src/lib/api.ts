@@ -30,8 +30,7 @@ function parse<T>(res: ApiReply): T {
   const ok = res.status >= 200 && res.status < 300;
   const body = (res.body ?? null) as { error?: unknown } | null;
   if (!ok) {
-    const message =
-      typeof body?.error === "string" ? body.error : `request failed (${res.status})`;
+    const message = typeof body?.error === "string" ? body.error : `request failed (${res.status})`;
     throw new ApiError(res.status, message);
   }
   return body as T;

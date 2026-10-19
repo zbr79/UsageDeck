@@ -1,78 +1,86 @@
 # Security
 
-Provider Usage Monitor is a single-user, local-only desktop tool. This page lists exactly what it
-reads, stores and sends, and how the local server is protected.
+UsageDeck is a single-user, local-only Windows desktop tool. This page lists exactly what it reads,
+stores and sends.
+
+## No local server
+
+UsageDeck is one process (`usagedeck.exe`, Tauri 2). The widget and settings pages are bundled
+into the exe and talk to the Rust core through Tauri `invoke`, in process.
+
+- Nothing listens on a port: there is no HTTP server, no loopback API and no shared secret to
+  protect one. Other programs and web pages have nothing to connect to.
+- The two windows (`widget`, `settings`) get only the permissions in
+  `src-tauri/capabilities/default.json`: core window and event calls, autostart and log. No file
+  system, shell or HTTP plugin is exposed to the frontend; all file and network access happens in
+  Rust.
+- Single instance: a second launch shows the running widget instead.
 
 ## Other apps' credentials: read-only
 
-The monitor **reads** sign-ins that other apps already keep on this machine. It **never writes,
+UsageDeck **reads** sign-ins that other apps already keep on this machine. It **never writes,
 refreshes or deletes them** — refreshing would rotate their refresh tokens and log those apps out.
-When a token has expired, the card shows `re-auth` and the last known numbers instead.
+When a token has expired or is rejected, the card shows `re-auth` and the last known numbers
+instead. No token-refresh endpoint is ever called.
 
-| App            | What is read (read-only)                                                                                                |
-| -------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| Claude Code    | `~/.claude/.credentials.json` (`claudeAiOauth`), `~/.claude.json` (account email/plan)                                   |
-| Claude desktop | `%APPDATA%\Claude\config.json` token cache and `Local State` key (or the Microsoft Store package equivalent)             |
-| Codex CLI      | `~/.codex/auth.json`                                                                                                    |
-| Cursor         | `%APPDATA%\Cursor\User\globalStorage\state.vscdb` (opened read-only via `node:sqlite`)                                  |
-| Grok Bot       | `%APPDATA%\Grok Bot\sand-secrets.json` and `Local State`                                                                |
+| App            | What is read (read-only)                                                                                    |
+| -------------- | ----------------------------------------------------------------------------------------------------------- |
+| Claude Code    | `~/.claude/.credentials.json` (`claudeAiOauth`), `~/.claude.json` (account email / plan)                    |
+| Claude desktop | `%APPDATA%\Claude\config.json` token cache and `Local State` key (or the Microsoft Store package equivalent) |
+| Codex CLI      | `~/.codex/auth.json`                                                                                        |
+| Cursor         | `%APPDATA%\Cursor\User\globalStorage\state.vscdb` (SQLite, opened with `SQLITE_OPEN_READ_ONLY`)             |
+| Grok Bot       | `%APPDATA%\Grok Bot\sand-secrets.json` and `Local State`; falls back to Cursor's `state.vscdb`              |
 
-Claude desktop and Grok Bot keep their tokens in Chromium "safeStorage": the AES key in `Local State`
-is protected with Windows DPAPI for the current user. The monitor unprotects that key via PowerShell
-(`ProtectedData.Unprotect`, current user scope), caches it in memory only, and decrypts the token in
-process. Nothing decrypted is written to disk.
-
-A unit test (`tests/unit/credentials-readonly.test.ts`) fails if expired or rejected tokens cause
-any write to these files or any call to a token endpoint.
+Claude desktop and Grok Bot keep their tokens in Chromium "safeStorage": the AES key in
+`Local State` is protected with Windows DPAPI for the current user. UsageDeck unprotects that key
+**in process** with `CryptUnprotectData` (current-user scope; no PowerShell or child process),
+keeps it in memory only, and decrypts the token with AES-GCM. Nothing decrypted is written to disk.
 
 ## What the app stores
 
-All in `data/` (gitignored), or `USAGE_DATA_DIR` if set:
+All in `%APPDATA%\com.usagedeck.app`, protected by your Windows account's file permissions:
 
-| File               | Contents                                     | Notes                                                              |
-| ------------------ | -------------------------------------------- | ------------------------------------------------------------------ |
-| `accounts.json`    | OpenCode account labels and `sk-…` API keys  | Plain JSON, protected by your Windows account's file permissions   |
-| `settings.json`      | Toggles, nicknames, hidden accounts          | Validated server-side; unknown fields ignored                      |
-| `seen-accounts.json` | Emails of provider accounts already seen     | No tokens. Lets a switched-away account stay listed                |
-| `usage-cache.json`   | Last known usage, account emails/plan names  | Shown as `cached` when providers are unreachable                   |
-| `.api-secret`      | 256-bit random secret                        | Shared by the Electron shell and the server                        |
+| File                 | Contents                                    | Notes                                              |
+| -------------------- | ------------------------------------------- | -------------------------------------------------- |
+| `settings.json`      | Toggles, themes, nicknames, hidden accounts | Validated in Rust; unknown fields ignored          |
+| `accounts.json`      | OpenCode account labels (emails)            | **No keys**                                        |
+| `seen-accounts.json` | Emails of provider accounts already seen    | No tokens. Lets a switched-away account stay listed |
+| `usage-cache.json`   | Last known usage, account emails / plans    | Shown as `cached` when providers are unreachable   |
+| `window-pos.json`    | Widget position                             |                                                    |
+
+**OpenCode API keys** are stored in **Windows Credential Manager** (generic credentials, service
+`UsageDeck`), never in a file. The settings window shows only a hint (`sk-…a1b2`); deleting an
+account deletes its credential. `--import-old-data` moves keys from the old app's `accounts.json`
+(plaintext or `enc:v1:`) into Credential Manager and never prints them; `--dump` prints a redacted
+summary with labels cut to two characters.
 
 Writes are atomic (temp file + rename) and serialised per file.
 
 ## Network
 
-**Inbound.** The server listens on `127.0.0.1:3100` only. `proxy.ts` runs before every request:
+**Inbound.** None. UsageDeck opens no listening socket.
 
-- the `Host` header must be `127.0.0.1`, `localhost` or `[::1]` (blocks DNS-rebinding attacks from
-  web pages);
-- every `/api/*` request must carry the `x-usage-secret` header (constant-time comparison). The
-  Electron preload injects it; ordinary browsers and other local pages get `401`.
+**Outbound.** HTTPS (rustls) to each provider's own usage endpoint, and nothing else:
 
-Responses carry a Content-Security-Policy (`default-src 'self'`, `frame-ancestors 'none'`),
-`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` and `Referrer-Policy: no-referrer`.
+| Provider    | Endpoint                                                                      | Credential sent             |
+| ----------- | ----------------------------------------------------------------------------- | --------------------------- |
+| OpenCode Go | `https://opencode.ai/zen/go/v1/usage`                                         | your OpenCode API key       |
+| Cursor      | `https://api2.cursor.sh/aiserver.v1.DashboardService/…` (usage and plan)      | Cursor's access token       |
+| Grok Bot    | `https://api2.cursor.sh/aiserver.v1.DashboardService/GetSandUsageStatus`      | Grok Bot's (or Cursor's) token |
+| Codex       | `https://chatgpt.com/backend-api/wham/usage`                                  | Codex CLI's access token    |
+| Claude      | `https://api.anthropic.com/api/oauth/usage`                                   | Claude's OAuth access token |
 
-**Outbound.** Only each provider's own usage endpoint: `opencode.ai`, `api2.cursor.sh`,
-`chatgpt.com`, `api.anthropic.com`. No telemetry. No token-refresh endpoints are called.
-
-## Electron shell
-
-- Single instance; renderers are sandboxed with context isolation, no Node integration, no
-  `<webview>`.
-- Navigation, redirects and new windows are blocked unless they stay on the app origin.
-- IPC handlers ignore messages from any other origin, so the API secret is never handed to foreign
-  content.
-- All permission requests are denied except clipboard writes from the app (copy key).
-- Electron is kept on a supported major version (Dependabot watches `desktop/`).
+Each token goes only to its own provider. No telemetry, no analytics, no update check, no
+token-refresh endpoints.
 
 ## Known limitations
 
 - **Undocumented endpoints.** Provider usage endpoints are not public APIs and may change or break
   without notice; some requests identify as the provider's own client.
-- **OpenCode keys are stored as plain JSON** in `data/accounts.json`, relying on Windows file
-  permissions. Encrypting them with DPAPI is a possible future improvement.
-- **Dev-only advisory.** `braces` (via `eslint-config-next`'s file globbing) has an advisory with no
-  patched release yet. It is lint tooling only and never runs in the app; CI audits production
-  dependencies at `high`.
+- **Same-user trust.** Anything running as your Windows user can read the same sign-ins and
+  Credential Manager entries UsageDeck can; UsageDeck does not try to defend against that.
+- **No Content-Security-Policy yet.** `src-tauri/tauri.conf.json` sets `"csp": null`. The webview
+  loads only the bundled pages and no remote content, but a CSP would be a cheap extra layer.
 
 ## Reporting a problem
 
