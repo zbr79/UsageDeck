@@ -317,7 +317,7 @@ export default function WidgetPage() {
             top: menuPosition.y,
             width: MENU_WIDTH,
           }}
-          className="absolute z-50 rounded-lg border border-(--w-border) bg-(--w-card) p-1 shadow-xl text-(--w-text)"
+          className="absolute z-50 rounded-lg border border-(--w-cardBorder) bg-(--w-card) p-1 shadow-xl text-(--w-text)"
           onContextMenu={(e) => e.preventDefault()}
         >
           {canToggleExpand && (
@@ -349,7 +349,7 @@ export default function WidgetPage() {
             <GearIcon size={14} />
             Settings
           </button>
-          <div className="my-1 border-t border-(--w-border)" />
+          <div className="my-1 border-t border-(--w-cardBorder)" />
           <button
             type="button"
             role="menuitem"

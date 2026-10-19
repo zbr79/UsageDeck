@@ -1,5 +1,5 @@
 import { useId, useState, type FormEvent } from "react";
-import { Badge, IconButton, Switch } from "@/ui/controls";
+import { Badge, HIT_24, IconButton, Switch } from "@/ui/controls";
 import Dialog from "@/ui/Dialog";
 import { CloseIcon, GearIcon, PencilIcon, PlusIcon, TrashIcon } from "@/ui/Icons";
 import { toastSuccess } from "@/components/toast/toast";
@@ -345,7 +345,7 @@ export default function OpenCodeAccounts({
                           void reload();
                         }
                       }}
-                      className="text-[11px] px-1.5 py-0.5 rounded bg-(--p-dangerBg) text-(--p-dangerFg) hover:opacity-90"
+                      className={`${HIT_24} text-[11px] px-1.5 py-0.5 rounded bg-(--p-dangerBg) text-(--p-dangerFg) hover:opacity-90`}
                     >
                       Remove
                     </button>
@@ -353,7 +353,7 @@ export default function OpenCodeAccounts({
                       type="button"
                       autoFocus
                       onClick={() => setConfirmRemove(null)}
-                      className="text-[11px] px-1.5 py-0.5 rounded text-(--p-textSecondary) hover:bg-(--p-surfaceHover)"
+                      className={`${HIT_24} text-[11px] px-1.5 py-0.5 rounded text-(--p-textSecondary) hover:bg-(--p-surfaceHover)`}
                     >
                       Cancel
                     </button>

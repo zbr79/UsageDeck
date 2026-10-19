@@ -1,7 +1,9 @@
-import { Badge } from "@/ui/controls";
+import type { ReactNode } from "react";
+import { Badge, HIT_24 } from "@/ui/controls";
 import { CopyIcon } from "@/ui/Icons";
 import type { Tone } from "@/ui/palette";
-import { capitalize, formatDuration, formatUntil } from "@/lib/format";
+import { errorHint, isAuthRejected } from "@/lib/errors";
+import { capitalize, formatDuration, formatUntil, staleAge } from "@/lib/format";
 import type { PeakInfo } from "@/lib/peak";
 import { isAccountExhausted, isExhaustedWindow, isPassed, isUnknownWindow } from "@/lib/ranking";
 import type {
@@ -56,12 +58,32 @@ export function accountTitle(
   return providerName;
 }
 
-function ReauthHint({ expired, how }: { expired: boolean; how: string }) {
-  if (!expired) return null;
+/**
+ * Header hints next to the account name. The widget is 238 px wide: when several hints show,
+ * they wrap onto a second line (this group shrinks first, down to its widest hint) so the
+ * account name keeps its width.
+ */
+function HintGroup({ children }: { children: ReactNode }) {
+  return <span className="flex flex-wrap items-center gap-x-1.5 shrink-[100]">{children}</span>;
+}
+
+/** Re-auth hint for a rejected sign-in, else a short hint for why the last fetch failed. */
+function SlotHints<T>({ slot, how }: { slot: ProviderSlot<T>; how: string }) {
+  if (isAuthRejected(slot.authExpired, slot.error)) {
+    return (
+      <Hint color="warn" title={`Sign-in expired · ${how} to refresh it`}>
+        re-auth
+      </Hint>
+    );
+  }
+  const failure = errorHint(slot.error, how);
+  if (!failure) return null;
   return (
-    <Hint color="warn" title={`Sign-in expired · ${how} to refresh it`}>
-      re-auth
-    </Hint>
+    <HintGroup>
+      <Hint color="warn" title={failure.long}>
+        {failure.short}
+      </Hint>
+    </HintGroup>
   );
 }
 
@@ -121,6 +143,8 @@ export function OpenCodeCard({
   const reset = (w: "rolling" | "weekly" | "monthly", show: boolean) =>
     u && show && !unknown(w) ? formatUntil(u[w].resetsAt, now) : null;
 
+  const rejected = isAuthRejected(row.authExpired, row.error);
+  const failure = errorHint(row.error, "add the key again in Settings");
   let peakHint = null;
   if (settings.deepseekPeakHourWarning && primary) {
     if (peak.active && peak.endAt) {
@@ -135,6 +159,7 @@ export function OpenCodeCard({
   return (
     <Card
       extras={extras}
+      age={staleAge(row.stale, row.cachedAt, now)}
       label={`OpenCode account ${title}`}
       state={state}
       icon={
@@ -143,7 +168,7 @@ export function OpenCodeCard({
           onClick={onCopyKey}
           aria-label={`Copy API key for ${title}`}
           title="Copy API key"
-          className="group/copy relative shrink-0 rounded-[3px] p-0.5 -m-0.5 hover:bg-(--w-hover)"
+          className={`group/copy ${HIT_24} shrink-0 rounded-[3px] p-0.5 -m-0.5 hover:bg-(--w-hover)`}
         >
           <ProviderIcon src="/opencode.ico" alt="" />
           <span className="absolute inset-0 flex items-center justify-center rounded-[3px] bg-(--w-card) text-(--w-text) opacity-0 group-hover/copy:opacity-100 group-focus-visible/copy:opacity-100 transition-opacity">
@@ -154,17 +179,20 @@ export function OpenCodeCard({
       title={title}
       titleHint={row.email}
       hints={
-        (row.authExpired || peakHint) && (
-          // The widget is 238 px wide: when both hints show, they wrap onto a second line (this
-          // group shrinks first, down to its widest hint) so the account name keeps its width.
-          <span className="flex flex-wrap items-center gap-x-1.5 shrink-[100]">
-            {row.authExpired && (
+        (rejected || failure || peakHint) && (
+          <HintGroup>
+            {rejected && (
               <Hint color="warn" title="OpenCode rejected this API key · add a new key in Settings">
                 key rejected
               </Hint>
             )}
+            {failure && (
+              <Hint color="warn" title={failure.long}>
+                {failure.short}
+              </Hint>
+            )}
             {peakHint}
-          </span>
+          </HintGroup>
         )
       }
       badges={
@@ -246,16 +274,13 @@ export function CursorCard({
   return (
     <Card
       extras={extras}
+      age={staleAge(slot.stale, slot.cachedAt, now)}
       label={`Cursor ${title}`}
       icon={<ProviderIcon src="/cursor.ico" alt="" />}
       title={title}
       titleHint={c?.accountName ?? undefined}
       state={exhausted ? "exhausted" : "normal"}
-      hints={
-        <>
-          <ReauthHint expired={slot.authExpired} how="open Cursor" />
-        </>
-      }
+      hints={<SlotHints slot={slot} how="open Cursor" />}
       badges={
         c?.planName ? (
           <Badge scope="w" tone="blue">
@@ -324,16 +349,13 @@ export function GrokCard({
   return (
     <Card
       extras={extras}
+      age={staleAge(slot.stale, slot.cachedAt, now)}
       label={`Grok Bot ${title}`}
       icon={<ProviderIcon src="/grokbot.ico" alt="" />}
       title={title}
       titleHint={account}
       state={exhausted ? "exhausted" : "normal"}
-      hints={
-        <>
-          <ReauthHint expired={slot.authExpired} how="open Grok Bot" />
-        </>
-      }
+      hints={<SlotHints slot={slot} how="open Grok Bot" />}
       badges={
         plan ? (
           <Badge scope="w" tone="blue">
@@ -397,16 +419,13 @@ export function CodexCard({
   return (
     <Card
       extras={extras}
+      age={staleAge(slot.stale, slot.cachedAt, now)}
       label={`Codex ${title}`}
       icon={<ProviderIcon src="/openai.png" alt="" invert={light} />}
       title={title}
       titleHint={x?.email ?? undefined}
       state={exhausted ? "exhausted" : "normal"}
-      hints={
-        <>
-          <ReauthHint expired={slot.authExpired} how="run codex" />
-        </>
-      }
+      hints={<SlotHints slot={slot} how="run codex" />}
       badges={
         <>
           {x?.resetCredits != null && (
@@ -499,16 +518,13 @@ export function ClaudeCard({
   return (
     <Card
       extras={extras}
+      age={staleAge(slot.stale, slot.cachedAt, now)}
       label={`Claude ${title}`}
       icon={<ProviderIcon src="/claude.ico" alt="" />}
       title={title}
       titleHint={c?.email ?? undefined}
       state={exhausted ? "exhausted" : "normal"}
-      hints={
-        <>
-          <ReauthHint expired={slot.authExpired} how="open Claude Code" />
-        </>
-      }
+      hints={<SlotHints slot={slot} how="open Claude Code" />}
       badges={
         <>
           {c?.resetCredits != null && (

@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { formatPercent } from "@/lib/format";
 
 export type CardState = "normal" | "active" | "exhausted";
@@ -15,6 +15,20 @@ export interface CardExtras {
   footer?: ReactNode;
 }
 
+/**
+ * A dimmed card's meters read the palette's dim tokens instead of fading with opacity, so text
+ * keeps 4.5:1 and meter fills 3:1 against the card (tests/palette.test.ts).
+ */
+const DIM_VARS = {
+  "--w-text": "var(--w-dimText)",
+  "--w-label": "var(--w-dimText)",
+  "--w-muted": "var(--w-dimMuted)",
+  "--w-peakNext": "var(--w-dimText)",
+  "--w-barOk": "var(--w-dimBarOk)",
+  "--w-barWarn": "var(--w-dimBarWarn)",
+  "--w-barDanger": "var(--w-dimBarDanger)",
+} as CSSProperties;
+
 /** Shared shell for every provider card on the widget. */
 export function Card({
   label,
@@ -24,6 +38,7 @@ export function Card({
   hints,
   badges,
   state = "normal",
+  age,
   extras,
   children,
 }: {
@@ -35,6 +50,8 @@ export function Card({
   hints?: ReactNode;
   badges?: ReactNode;
   state?: CardState;
+  /** "updated 2h ago" for cached data; the widget shows it, settings has its own footer note */
+  age?: string | null;
   extras?: CardExtras;
   children: ReactNode;
 }) {
@@ -61,7 +78,12 @@ export function Card({
         {hints}
         <span className="ml-auto flex items-center gap-1 shrink-0">{badges}</span>
       </div>
-      {extras?.dimmed ? <div className="opacity-60">{children}</div> : children}
+      {extras?.dimmed ? <div style={DIM_VARS}>{children}</div> : children}
+      {age && !extras && (
+        <div className="mt-1.5 pt-1 border-t border-(--w-cardBorder) truncate text-[10px] leading-3 text-(--w-muted) transition-colors duration-700">
+          {age}
+        </div>
+      )}
       {extras?.footer}
     </section>
   );

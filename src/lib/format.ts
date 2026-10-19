@@ -70,6 +70,11 @@ export function formatAgo(at: number, now: number): string {
   return `${Math.floor(ms / DAY)}d ago`;
 }
 
+/** "updated 2h ago" for cached (stale) data; null when the data is fresh or has no time. */
+export function staleAge(stale: boolean, cachedAt: number | null, now: number): string | null {
+  return stale && cachedAt ? `updated ${formatAgo(cachedAt, now)}` : null;
+}
+
 /** "plus" → "Plus" */
 export function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);

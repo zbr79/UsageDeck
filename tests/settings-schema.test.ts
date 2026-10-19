@@ -71,6 +71,13 @@ describe("applySettingsPatch", () => {
     );
   });
 
+  it("starts with Windows by default and keeps a boolean change", () => {
+    expect(DEFAULT_SETTINGS.startAtLogin).toBe(true);
+    expect(normalizeSettings({}).startAtLogin).toBe(true);
+    expect(applySettingsPatch(DEFAULT_SETTINGS, { startAtLogin: false }).startAtLogin).toBe(false);
+    expect(applySettingsPatch(DEFAULT_SETTINGS, { startAtLogin: "no" }).startAtLogin).toBe(true);
+  });
+
   it("normalises garbage from disk to defaults", () => {
     expect(normalizeSettings(null)).toEqual(DEFAULT_SETTINGS);
     expect(normalizeSettings([1, 2])).toEqual(DEFAULT_SETTINGS);

@@ -2,6 +2,13 @@ import { useRef, type KeyboardEvent, type ReactNode } from "react";
 import { CheckIcon } from "./Icons";
 import type { Tone } from "./palette";
 
+/**
+ * Grows a small control's hit area to at least 24x24 px (WCAG 2.5.8) with a centred invisible
+ * pseudo-element, so the visible size and the layout stay the same.
+ */
+export const HIT_24 =
+  "relative before:absolute before:left-1/2 before:top-1/2 before:size-6 before:-translate-x-1/2 before:-translate-y-1/2";
+
 /** On/off control exposed to assistive tech as a switch. */
 export function Switch({
   checked,
@@ -25,7 +32,7 @@ export function Switch({
       aria-labelledby={labelledBy}
       disabled={disabled}
       onClick={() => onChange(!checked)}
-      className={`h-[18px] w-[18px] rounded-[4px] border flex items-center justify-center shrink-0 transition-colors disabled:opacity-50 ${
+      className={`${HIT_24} h-[18px] w-[18px] rounded-[4px] border flex items-center justify-center shrink-0 transition-colors disabled:opacity-50 ${
         checked
           ? "bg-(--p-switchOn) border-(--p-switchOn) text-white"
           : "bg-(--p-inputBg) border-(--p-inputBorder)"
@@ -140,7 +147,7 @@ export function IconButton({
       aria-label={label}
       title={label}
       onClick={onClick}
-      className={`p-1 rounded text-(--p-muted) hover:bg-(--p-surfaceHover) shrink-0 ${
+      className={`${HIT_24} p-1 rounded text-(--p-muted) hover:bg-(--p-surfaceHover) shrink-0 ${
         danger ? "hover:text-(--p-danger)" : "hover:text-(--p-text)"
       }`}
     >

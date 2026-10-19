@@ -29,6 +29,7 @@ let settings: Settings = {
   displayNames: { "main@example.com": "Main", "spare@example.com": "Spare" },
   disabledAccounts: ["hidden@example.com"],
   providerOrder: ["opencode", "cursor", "grok", "codex", "claude"],
+  startAtLogin: true,
 };
 
 const win = (percent: number, resetsIn: number) => ({
@@ -61,7 +62,11 @@ function account(
 
 let usage: OpenCodeAccountUsage[] = [
   account("main@example.com", 2, 10, 85, { lastChangeAt: NOW - 60_000 }),
-  account("spare@example.com", 0, 100, 40),
+  account("spare@example.com", 0, 100, 40, {
+    error: "rate-limited",
+    stale: true,
+    cachedAt: NOW - 2 * H,
+  }),
   account("hidden@example.com", 5, 5, 5, { enabled: false }),
   account("lapsed@example.com", 0, 0, 0, { subscriptionActive: false }),
 ];
@@ -91,17 +96,21 @@ function tracked<T>(
 }
 
 const providers: Record<string, unknown> = {
-  cursor: tracked<CursorUsage>("dev@example.com", {
-    autoPercentUsed: 86,
-    apiPercentUsed: 54,
-    totalPercentUsed: 70,
-    billingCycleEnd: iso(10 * 24 * H),
-    totalSpend: null,
-    limit: null,
-    bonusSpend: null,
-    accountName: "dev@example.com",
-    planName: "Pro",
-  } as CursorUsage),
+  cursor: tracked<CursorUsage>(
+    "dev@example.com",
+    {
+      autoPercentUsed: 86,
+      apiPercentUsed: 54,
+      totalPercentUsed: 70,
+      billingCycleEnd: iso(10 * 24 * H),
+      totalSpend: null,
+      limit: null,
+      bonusSpend: null,
+      accountName: "dev@example.com",
+      planName: "Pro",
+    } as CursorUsage,
+    { stale: true, cachedAt: NOW - 25 * 60_000, error: "network" },
+  ),
   grok: tracked<GrokUsage>(
     "dev@example.com",
     {
@@ -113,18 +122,22 @@ const providers: Record<string, unknown> = {
       cursorPlanName: null,
       source: "grok-bot",
     } as GrokUsage,
-    { stale: true, cachedAt: NOW - H },
+    { stale: true, cachedAt: NOW - H, error: "schema-changed" },
   ),
-  codex: tracked<CodexUsage>("c@example.com", {
-    email: "c@example.com",
-    planType: "plus",
-    usedPercent: 100,
-    limitWindowSeconds: 18000,
-    resetAt: iso(2 * H),
-    creditsBalance: null,
-    resetCredits: 1,
-    limitReached: true,
-  } as CodexUsage),
+  codex: tracked<CodexUsage>(
+    "c@example.com",
+    {
+      email: "c@example.com",
+      planType: "plus",
+      usedPercent: 100,
+      limitWindowSeconds: 18000,
+      resetAt: iso(2 * H),
+      creditsBalance: null,
+      resetCredits: 1,
+      limitReached: true,
+    } as CodexUsage,
+    { stale: true, cachedAt: NOW - 5 * H, error: "http" },
+  ),
   claude: tracked<ClaudeUsage>(
     "me@example.com",
     {
@@ -143,12 +156,20 @@ const providers: Record<string, unknown> = {
       rateLimitTier: null,
       orgUuid: null,
     } as ClaudeUsage,
-    { authExpired: true },
+    { authExpired: true, error: "auth-rejected" },
   ),
 };
 
 // A remembered Claude account that is not signed in: its cached usage, with the 5h
 // window already past its reset (shows "--") and the weekly one still running.
+// A remembered Codex account whose sign-in file is gone.
+(providers.codex as { accounts: TrackedAccount<CodexUsage>[] }).accounts.push(
+  tracked<CodexUsage | null>("old@example.com", null, {
+    active: false,
+    error: "missing-credentials",
+  }).accounts[0] as TrackedAccount<CodexUsage>,
+);
+
 (providers.claude as { accounts: TrackedAccount<ClaudeUsage>[] }).accounts.push(
   tracked<ClaudeUsage>(
     "work@example.com",
@@ -168,7 +189,7 @@ const providers: Record<string, unknown> = {
       rateLimitTier: null,
       orgUuid: null,
     } as ClaudeUsage,
-    { active: false, stale: true, cachedAt: NOW - 3 * H },
+    { active: false, stale: true, cachedAt: NOW - 3 * H, error: "locked" },
   ).accounts[0],
 );
 
@@ -176,6 +197,12 @@ const providers: Record<string, unknown> = {
 if (typeof location !== "undefined") {
   const panel = new URLSearchParams(location.search).get("panel");
   if (panel === "light" || panel === "dark") settings = { ...settings, panelTheme: panel };
+}
+
+/** Browser stand-in for the Rust `copy_key` command: fails for an unknown account, like Rust. */
+export async function mockCopyKey(email: string): Promise<void> {
+  if (!usage.some((u) => u.email === email.toLowerCase())) throw new Error("unknown account");
+  await navigator.clipboard?.writeText("sk-test-key-123");
 }
 
 type Reply = { status: number; body: unknown };
@@ -213,8 +240,6 @@ export async function mockApi(method: string, path: string, body: unknown): Prom
       return json({ accounts: usage });
     case "accounts":
       return json({ accounts: summaries() });
-    case "key":
-      return json({ key: "sk-test-key-123" });
     default:
       if (name in providers) return json(providers[name]);
       return json({ error: "not found" }, 404);

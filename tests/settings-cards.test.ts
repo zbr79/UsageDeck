@@ -24,6 +24,7 @@ describe("slotFromAccount", () => {
       stale: true,
       cachedAt: 1_700_000_000_000,
       authExpired: false,
+      error: null,
       loaded: true,
     });
   });
@@ -34,6 +35,7 @@ describe("slotFromAccount", () => {
       stale: false,
       cachedAt: null,
       authExpired: false,
+      error: null,
       loaded: false,
     });
   });

@@ -20,11 +20,26 @@ export interface Settings {
   disabledAccounts: string[];
   /** left-to-right provider order, also the top-to-bottom widget order */
   providerOrder: WidgetProvider[];
+  /** start the app when the user signs in to Windows */
+  startAtLogin: boolean;
 }
 
 export type ProviderId = "cursor" | "grok" | "codex" | "claude";
 /** Providers on the widget, including OpenCode. Order is user-controlled. */
 export type WidgetProvider = "opencode" | ProviderId;
+
+/**
+ * Why the last fetch of an account failed. `null` (or a missing field from an older backend)
+ * means it succeeded.
+ */
+export type ProviderErrorKind =
+  | "missing-credentials"
+  | "auth-rejected"
+  | "rate-limited"
+  | "network"
+  | "http"
+  | "schema-changed"
+  | "locked";
 
 /** JSON shape of a one-account provider response. */
 export interface ProviderResponse<T> {
@@ -32,7 +47,7 @@ export interface ProviderResponse<T> {
   stale: boolean;
   cachedAt: number | null;
   authExpired: boolean;
-  error: "failed" | null;
+  error: ProviderErrorKind | null;
 }
 
 /** One signed-in account of Cursor, Grok Bot, Codex, or Claude. */
@@ -46,6 +61,8 @@ export interface TrackedAccount<T> {
   stale: boolean;
   cachedAt: number | null;
   authExpired: boolean;
+  /** why the last fetch failed; absent from older backends (treat as null) */
+  error?: ProviderErrorKind | null;
 }
 
 // ---- OpenCode Go ----------------------------------------------------------
@@ -68,7 +85,7 @@ export interface OpenCodeAccountUsage {
   /** the previous distinct snapshot, for "usage went up" arrows */
   prev: OpenCodeUsage | null;
   enabled: boolean;
-  error: "failed" | null;
+  error: ProviderErrorKind | null;
   stale: boolean;
   cachedAt: number | null;
   /** false when the API says the Go subscription is not active */
