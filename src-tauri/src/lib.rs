@@ -15,7 +15,8 @@ use store::{CredentialVault, Store, SEEN_ACCOUNTS_FILE, USAGE_CACHE_FILE, WINDOW
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{
-    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, WebviewWindow, WindowEvent,
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, WebviewUrl, WebviewWindow,
+    WebviewWindowBuilder, WindowEvent,
 };
 
 pub const WIDGET: &str = "widget";
@@ -66,6 +67,9 @@ async fn api(
     body: Option<Value>,
 ) -> Result<api::ApiResponse, String> {
     let response = api::dispatch(&core, &method, &path, body).await;
+    if let Some(on) = response.start_at_login {
+        set_start_at_login(&app, on);
+    }
     if response.settings_changed {
         let _ = app.emit_to(WIDGET, EVENT_SETTINGS_CHANGED, ());
     }
@@ -91,6 +95,24 @@ fn widget_resize(app: AppHandle, height: f64) {
     let _ = widget.set_size(LogicalSize::new(WIDTH, h));
 }
 
+/// Copy an OpenCode account's full key to the clipboard from Rust, so the key never enters the
+/// webview (replaces the old `GET /api/key` route).
+#[tauri::command]
+async fn copy_key(
+    app: AppHandle,
+    core: tauri::State<'_, Core>,
+    email: String,
+) -> Result<(), String> {
+    use tauri_plugin_clipboard_manager::ClipboardExt;
+    let key = api::account_key(&core, &email)
+        .await
+        .ok_or_else(|| "unknown account".to_string())?;
+    app.clipboard().write_text(key).map_err(|e| {
+        log::warn!("could not copy key: {e}");
+        "could not copy the key".to_string()
+    })
+}
+
 #[tauri::command]
 fn open_settings(app: AppHandle) {
     show_settings(&app);
@@ -98,6 +120,7 @@ fn open_settings(app: AppHandle) {
 
 #[tauri::command]
 fn close_settings(app: AppHandle) {
+    log::info!("settings closed by the page");
     hide_settings(&app);
 }
 
@@ -116,11 +139,53 @@ fn show_widget(app: &AppHandle) {
     }
 }
 
-/// Cover the work area of the widget's monitor (desktop/main.js:162-195), then show and focus.
+/// Build the settings overlay on demand, cover the work area of the widget's monitor
+/// (desktop/main.js:162-195), then show and focus it. If it is already open, focus it.
+/// Each open builds a fresh window, like Electron did, so the page always starts clean.
 fn show_settings(app: &AppHandle) {
-    let Some(settings) = app.get_webview_window(SETTINGS) else {
+    if let Some(settings) = app.get_webview_window(SETTINGS) {
+        let _ = settings.unminimize();
+        let _ = settings.show();
+        let _ = settings.set_focus();
         return;
+    }
+    // Building a window waits on the event loop: never do it on the main thread (tray, menu and
+    // single-instance callbacks and sync commands run there), or it deadlocks on Windows.
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move { build_settings(&app) });
+}
+
+fn build_settings(app: &AppHandle) {
+    if let Some(settings) = app.get_webview_window(SETTINGS) {
+        let _ = settings.set_focus();
+        return;
+    }
+    let built = WebviewWindowBuilder::new(app, SETTINGS, WebviewUrl::App("settings.html".into()))
+        .title("UsageDeck Settings")
+        .transparent(true)
+        .decorations(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .shadow(false)
+        .visible(false)
+        .build();
+    let settings = match built {
+        Ok(w) => w,
+        Err(e) => {
+            log::warn!("could not open settings: {e}");
+            return;
+        }
     };
+    // Alt+F4 closes the overlay like the close button: the window is destroyed.
+    let handle = app.clone();
+    settings.on_window_event(move |event| match event {
+        WindowEvent::CloseRequested { .. } => {
+            log::info!("settings close requested");
+            let _ = handle.emit_to(WIDGET, EVENT_SETTINGS_CHANGED, ());
+        }
+        WindowEvent::Destroyed => log::info!("settings window destroyed"),
+        _ => {}
+    });
     let monitor = app
         .get_webview_window(WIDGET)
         .and_then(|w| w.current_monitor().ok().flatten())
@@ -134,15 +199,49 @@ fn show_settings(app: &AppHandle) {
     let _ = settings.set_focus();
 }
 
-/// Hide the overlay and reload its page while hidden, so the next open starts fresh: the panel
-/// centred (a drag offset is page state), the first tab selected. Electron got this for free by
-/// building a new window per open (desktop/main.js:165-195); here the hidden window is reused.
+/// Destroy the overlay (it is rebuilt on the next open) and tell the widget to reload settings.
 fn hide_settings(app: &AppHandle) {
     if let Some(settings) = app.get_webview_window(SETTINGS) {
-        let _ = settings.hide();
-        let _ = settings.reload();
+        if let Err(e) = settings.destroy() {
+            log::warn!("could not close settings: {e}");
+        }
     }
     let _ = app.emit_to(WIDGET, EVENT_SETTINGS_CHANGED, ());
+}
+
+/// Register or remove the Run key entry. Release builds only, and never from a cargo target
+/// folder, so dev and test runs never write the Run key.
+fn set_start_at_login(app: &AppHandle, on: bool) {
+    if cfg!(debug_assertions) || running_from_cargo_target() {
+        log::info!("start at login left unchanged (dev build), wanted {on}");
+        return;
+    }
+    use tauri_plugin_autostart::ManagerExt;
+    let launcher = app.autolaunch();
+    let result = match (on, launcher.is_enabled().unwrap_or(!on)) {
+        (true, _) => launcher.enable(),
+        (false, true) => launcher.disable(),
+        (false, false) => Ok(()),
+    };
+    match result {
+        Ok(()) => log::info!("start at login set to {on}"),
+        Err(e) => log::warn!("could not set start at login to {on}: {e}"),
+    }
+}
+
+/// Open the app's log folder in Explorer.
+fn open_log_folder(app: &AppHandle) {
+    let dir = match app.path().app_log_dir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            log::warn!("no log folder: {e}");
+            return;
+        }
+    };
+    let _ = std::fs::create_dir_all(&dir);
+    if let Err(e) = std::process::Command::new("explorer.exe").arg(&dir).spawn() {
+        log::warn!("could not open the log folder: {e}");
+    }
 }
 
 /// Restore the saved widget position if it is still on a visible monitor (desktop/main.js:71-87).
@@ -202,8 +301,9 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let toggle = MenuItem::with_id(app, "toggle", "Expand/Collapse", true, None::<&str>)?;
     let refresh = MenuItem::with_id(app, "refresh", "Refresh", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
+    let logs = MenuItem::with_id(app, "logs", "Open log folder", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&toggle, &refresh, &settings, &quit])?;
+    let menu = Menu::with_items(app, &[&toggle, &refresh, &settings, &logs, &quit])?;
     let mut tray = TrayIconBuilder::with_id("main")
         .tooltip("UsageDeck")
         .menu(&menu)
@@ -216,6 +316,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 let _ = app.emit_to(WIDGET, EVENT_REFRESH, ());
             }
             "settings" => show_settings(app),
+            "logs" => open_log_folder(app),
             "quit" => app.exit(0),
             _ => {}
         })
@@ -238,7 +339,6 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 
 /// True when the exe sits inside a cargo target folder: any `target` component, or an ancestor
 /// holding cargo's `CACHEDIR.TAG` / `.rustc_info.json` (covers a custom CARGO_TARGET_DIR).
-#[cfg_attr(debug_assertions, allow(dead_code))]
 fn running_from_cargo_target() -> bool {
     let Ok(exe) = std::env::current_exe() else {
         return true;
@@ -270,14 +370,19 @@ pub fn run() {
         .plugin(
             tauri_plugin_log::Builder::new()
                 .level(log::LevelFilter::Info)
+                // ~1 MB per file; the active file plus 4 archives = 5 files
+                .max_file_size(1_000_000)
+                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(4))
                 .build(),
         )
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
+        .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
             api,
+            copy_key,
             widget_resize,
             open_settings,
             close_settings,
@@ -288,15 +393,9 @@ pub fn run() {
             app.manage(Core::new(Store::new(dir, Box::new(CredentialVault))));
             app.manage(PosSaver(AtomicU64::new(0)));
 
-            // Start at login. Release builds only, and never from a cargo target folder, so dev
-            // and test runs never write the Run key.
-            #[cfg(not(debug_assertions))]
-            if !running_from_cargo_target() {
-                use tauri_plugin_autostart::ManagerExt;
-                if let Err(e) = app.autolaunch().enable() {
-                    log::warn!("could not enable autostart: {e}");
-                }
-            }
+            // Start at login follows the setting (default on).
+            let start_at_login = app.state::<Core>().store.get_settings().start_at_login;
+            set_start_at_login(app.handle(), start_at_login);
 
             if let Some(widget) = app.get_webview_window(WIDGET) {
                 restore_position(&app.state::<Core>(), &widget);
@@ -304,16 +403,6 @@ pub fn run() {
                 widget.on_window_event(move |event| {
                     if let WindowEvent::Moved(pos) = event {
                         schedule_position_save(handle.clone(), *pos);
-                    }
-                });
-            }
-            if let Some(settings) = app.get_webview_window(SETTINGS) {
-                // Alt+F4 on the overlay hides it like the close button, so it can reopen.
-                let handle = app.handle().clone();
-                settings.on_window_event(move |event| {
-                    if let WindowEvent::CloseRequested { api, .. } = event {
-                        api.prevent_close();
-                        hide_settings(&handle);
                     }
                 });
             }

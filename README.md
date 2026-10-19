@@ -59,8 +59,12 @@ OpenCode API keys live in **Windows Credential Manager** (service `UsageDeck`), 
 The settings window only ever shows a hint (`sk-…a1b2`). All file writes are atomic (temp file +
 rename), so a crash can't corrupt settings.
 
-The installed app starts at login. Copies run from a cargo `target` folder never register
+The installed app starts at login by default; turn it off with **Start with Windows** in
+Settings → General (applied at once). Copies run from a cargo `target` folder never register
 autostart.
+
+Logs (about 1 MB per file, 5 files kept) are in `%LOCALAPPDATA%\com.usagedeck.app\logs\`; the
+tray menu's **Open log folder** opens it in Explorer.
 
 ## Features
 
@@ -77,12 +81,14 @@ autostart.
 - **States, consistently on every card** — loading, unavailable, `cached`, `re-auth`, `key
   rejected` (OpenCode 401 / 403), exhausted (red)
 - **Unavailable banner** — "Usage unavailable · updated 3m ago" with Retry
-- **Copy key** — hover the OpenCode icon on a card (a copy glyph appears) and click
+- **Copy key** — hover the OpenCode icon on a card (a copy glyph appears) and click; the key is
+  copied by the Rust side and never passes through the page
 - Settings changes apply live; right-click or **Shift+F10** opens the menu
 
 ### Settings (right-click widget → Settings)
 
-- General: panel theme, widget theme, show provider names, DeepSeek peak-hour warning
+- General: panel theme, widget theme, show provider names, DeepSeek peak-hour warning, start with
+  Windows
 - Accounts: one tab per provider. Drag a provider tab to change its order on the widget
 - Every provider can be hidden as a whole. Each account has its own nickname and can be hidden on
   its own. OpenCode accounts are added with an API key and can all appear on the widget. Cursor,

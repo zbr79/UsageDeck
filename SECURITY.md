@@ -11,10 +11,32 @@ into the exe and talk to the Rust core through Tauri `invoke`, in process.
 - Nothing listens on a port: there is no HTTP server, no loopback API and no shared secret to
   protect one. Other programs and web pages have nothing to connect to.
 - The two windows (`widget`, `settings`) get only the permissions in
-  `src-tauri/capabilities/default.json`: core window and event calls, autostart and log. No file
-  system, shell or HTTP plugin is exposed to the frontend; all file and network access happens in
-  Rust.
-- Single instance: a second launch shows the running widget instead.
+  `src-tauri/capabilities/default.json`: core window and event calls, and log. No file system,
+  shell, HTTP, clipboard or autostart plugin is exposed to the frontend; all file, network,
+  clipboard and Run-key access happens in Rust.
+- The settings window is not created at startup. It is built when you open Settings and destroyed
+  when you close it; the capability matches it by its label (`settings`).
+- Single instance: a second launch shows the running widget instead (or opens Settings when it
+  was started with `--settings`).
+
+## Content-Security-Policy
+
+`src-tauri/tauri.conf.json` sets this CSP on both pages:
+
+```
+default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;
+connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; frame-ancestors 'none'
+```
+
+Scripts load only from the bundled app; no inline or remote script, no `eval`. Inline styles are
+allowed because the UI sets element styles (sizes, positions, colours) at run time. `connect-src`
+allows only Tauri's IPC channel, so page script cannot reach the network.
+
+## OpenCode key copy
+
+**Copy key** on the widget calls the Rust command `copy_key(email)`. Rust reads the key from
+Credential Manager and writes it to the Windows clipboard itself; the full key never reaches the
+page. The old `GET /api/key` route that returned the key to the page is gone (it now answers 404).
 
 ## Other apps' credentials: read-only
 
@@ -56,6 +78,21 @@ summary with labels cut to two characters.
 
 Writes are atomic (temp file + rename) and serialised per file.
 
+**Logs.** `%LOCALAPPDATA%\com.usagedeck.app\logs\` (tray menu → _Open log folder_). About 1 MB
+per file, at most 5 files, oldest deleted first. They hold start-up steps, provider request
+results and errors (HTTP status, error kind), with account ids hashed. They never hold API keys or
+tokens.
+
+**Screen sampler.** With the widget theme on `auto`, every 3 s the app reads the screen pixels in
+a 48 px band around the widget (GDI), averages their brightness in memory and keeps only that one
+number to pick the card style. No pixels are saved, logged or sent anywhere. With `light` or
+`dark` it does not sample at all.
+
+**Start at login.** The `startAtLogin` setting (Settings → General → _Start with Windows_, on by
+default) adds or removes `UsageDeck` in
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. Only the Rust side changes it, at start-up
+and when you flip the setting; copies run from a cargo `target` folder never touch it.
+
 ## Network
 
 **Inbound.** None. UsageDeck opens no listening socket.
@@ -79,8 +116,8 @@ token-refresh endpoints.
   without notice; some requests identify as the provider's own client.
 - **Same-user trust.** Anything running as your Windows user can read the same sign-ins and
   Credential Manager entries UsageDeck can; UsageDeck does not try to defend against that.
-- **No Content-Security-Policy yet.** `src-tauri/tauri.conf.json` sets `"csp": null`. The webview
-  loads only the bundled pages and no remote content, but a CSP would be a cheap extra layer.
+- **Inline styles allowed.** The CSP keeps `style-src 'unsafe-inline'` because the UI sets styles
+  at run time; scripts stay strictly `'self'`.
 
 ## Reporting a problem
 
