@@ -118,9 +118,11 @@ fn open_settings(app: AppHandle) {
     show_settings(&app);
 }
 
+/// `reason` names the page's close path (close button, Escape, backdrop) and the event behind
+/// it; it is logged so an unexpected close can be traced (src/ui/close-reason.ts).
 #[tauri::command]
-fn close_settings(app: AppHandle) {
-    log::info!("settings closed by the page");
+fn close_settings(app: AppHandle, reason: String) {
+    log::info!("settings closed by the page: {reason}");
     hide_settings(&app);
 }
 
@@ -180,7 +182,7 @@ fn build_settings(app: &AppHandle) {
     let handle = app.clone();
     settings.on_window_event(move |event| match event {
         WindowEvent::CloseRequested { .. } => {
-            log::info!("settings close requested");
+            log::info!("settings close requested by the window (Alt+F4 or system close)");
             let _ = handle.emit_to(WIDGET, EVENT_SETTINGS_CHANGED, ());
         }
         WindowEvent::Destroyed => log::info!("settings window destroyed"),

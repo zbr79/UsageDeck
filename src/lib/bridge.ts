@@ -50,8 +50,9 @@ export function menuAction(action: "settings" | "quit"): void {
   call(action === "settings" ? "open_settings" : "quit_app");
 }
 
-export function closeSettings(): void {
-  call("close_settings");
+/** `reason` names the close path (close button, Escape, backdrop...); Rust logs it. */
+export function closeSettings(reason: string): void {
+  call("close_settings", { reason });
 }
 
 /** Screen brightness behind the widget, 0..1 (themeMode "auto"). */
