@@ -160,13 +160,15 @@ fn read_grok_bot_accounts() -> Vec<GrokAccount> {
 }
 
 /// Cursor's current sign-in (`readCursorState` in lib/cursor.ts), read-only through the Cursor
-/// provider's reader. A busy DB counts as no sign-in here.
+/// provider's reader. A busy DB counts as no sign-in here. Blocking (SQLite): reached only through
+/// `read_accounts` on the blocking pool, never on an async worker.
 fn read_cursor_sign_in() -> Option<(String, Option<String>)> {
     let state = super::cursor::read_state(&super::cursor::state_db(), Duration::ZERO).ok()??;
     Some((state.token?, state.account_name))
 }
 
 /// Grok Bot's saved sign-ins; when it has none, Cursor's current sign-in as a single account.
+/// Blocking (files and SQLite): call through `tokio::task::spawn_blocking`, as `accounts` does.
 fn read_accounts() -> Vec<GrokAccount> {
     let own = read_grok_bot_accounts();
     if !own.is_empty() {
@@ -370,7 +372,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn live_grok() {
-        let accounts = read_accounts();
+        let accounts = tokio::task::spawn_blocking(read_accounts).await.unwrap();
         println!(
             "accounts: {} (source {:?})",
             accounts.len(),
