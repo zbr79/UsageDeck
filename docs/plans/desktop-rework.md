@@ -284,6 +284,9 @@ Row 6 disappears with the server.
 - The OpenCode card hides its title when both "key rejected" and the peak hint show (width).
 - The identifier ends in `.app` (Tauri warns; harmless on Windows, kept to match the contract).
 
+**2026-10-18:** the old Next.js + Electron app (`app/`, `lib/`, `desktop/`, its tests and config)
+was removed and `native/` moved to the repo root; paths in this file before this line are as built.
+
 ### Review map (wave 3)
 
 - `native/src-tauri/src/cli.rs:28-57` `try_run`: picks a headless mode before any window exists.
