@@ -11,6 +11,20 @@
   zoom: 1.1;
 }
 
+/* Cards in one row share its height, and every meter keeps its reset line (empty when the
+   reset is unknown), so a no-data card lines up with its neighbour. */
+.settings-root .ud-cards > li {
+  display: flex;
+  flex-direction: column;
+}
+.settings-root .ud-cards > li > section {
+  flex: 1;
+}
+.settings-root .ud-cards .ud-reset {
+  display: block;
+  min-height: 1rem;
+}
+
 .settings-root main,
 .settings-root nav {
   scrollbar-width: thin;
