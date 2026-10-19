@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { closeSettings, inTauri } from "@/lib/bridge";
-import { cssVars, PANEL_PALETTES, WIDGET_PALETTES } from "@/ui/palette";
+import { cssVars, PANEL_PALETTES, SETTINGS_CARD_PALETTES } from "@/ui/palette";
 import { useSettings, useSummaries } from "./_lib/hooks";
 import { PanelThemeContext, resolvePanelTheme, useSystemDark } from "./_lib/theme";
 import {
@@ -52,7 +52,7 @@ export default function SettingsPage() {
     () =>
       ({
         ...cssVars("p", PANEL_PALETTES[theme]),
-        ...cssVars("w", WIDGET_PALETTES[theme]),
+        ...cssVars("w", SETTINGS_CARD_PALETTES[theme]),
         ...SURFACES[theme],
         colorScheme: theme,
         fontFamily: '"Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif',
