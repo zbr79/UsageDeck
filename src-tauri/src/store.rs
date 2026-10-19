@@ -360,6 +360,8 @@ pub struct Settings {
     /// lower-cased account keys hidden from the widget
     pub disabled_accounts: Vec<String>,
     pub provider_order: Vec<WidgetProvider>,
+    /// register the app in the Windows Run key so it starts with Windows
+    pub start_at_login: bool,
 }
 
 impl Default for Settings {
@@ -377,6 +379,7 @@ impl Default for Settings {
             display_names: Map::new(),
             disabled_accounts: Vec::new(),
             provider_order: DEFAULT_PROVIDER_ORDER.to_vec(),
+            start_at_login: true,
         }
     }
 }
@@ -470,7 +473,7 @@ pub fn apply_settings_patch(current: &Settings, patch: &Value) -> Settings {
     };
     let mut next = current.clone();
     {
-        let bools: [(&str, &mut bool); 7] = [
+        let bools: [(&str, &mut bool); 8] = [
             ("opencodeEnabled", &mut next.opencode_enabled),
             ("cursorEnabled", &mut next.cursor_enabled),
             ("grokEnabled", &mut next.grok_enabled),
@@ -481,6 +484,7 @@ pub fn apply_settings_patch(current: &Settings, patch: &Value) -> Settings {
                 &mut next.deepseek_peak_hour_warning,
             ),
             ("showProviderNames", &mut next.show_provider_names),
+            ("startAtLogin", &mut next.start_at_login),
         ];
         for (key, slot) in bools {
             if let Some(Value::Bool(b)) = obj.get(key) {
@@ -627,6 +631,25 @@ mod tests {
         assert_eq!(out["themeMode"], json!("light"));
         assert_eq!(out["providerOrder"][0], json!("claude"));
         assert_eq!(out["deepseekPeakHourWarning"], json!(true));
+    }
+
+    #[test]
+    fn settings_patch_start_at_login() {
+        let current = Settings::default();
+        assert!(current.start_at_login);
+        assert_eq!(
+            serde_json::to_value(&current).unwrap()["startAtLogin"],
+            json!(true)
+        );
+        let off = apply_settings_patch(&current, &json!({ "startAtLogin": false }));
+        assert!(!off.start_at_login);
+        // wrong types are ignored
+        let same = apply_settings_patch(&off, &json!({ "startAtLogin": "true" }));
+        assert!(!same.start_at_login);
+        let on = apply_settings_patch(&off, &json!({ "startAtLogin": true }));
+        assert!(on.start_at_login);
+        // an old settings file without the field starts at login
+        assert!(normalize_settings(Some(&json!({ "grokEnabled": false }))).start_at_login);
     }
 
     #[test]
