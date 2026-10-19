@@ -33,6 +33,8 @@ export interface WidgetPalette {
   peakNext: string;
   warn: string;
   hover: string;
+  /** keyboard focus ring (the settings panel's --p-focus values, 3:1 against the card) */
+  focus: string;
   badge: Record<Tone, BadgeColors>;
 }
 
@@ -76,6 +78,7 @@ const lightBase: Omit<WidgetPalette, "card" | "track"> = {
   peakNext: "#006045",
   warn: "#973c00",
   hover: "rgba(0,0,0,0.08)",
+  focus: "#1447e6",
   badge: lightBadges,
 };
 
@@ -102,6 +105,7 @@ export const WIDGET_PALETTES: Record<WidgetTheme, WidgetPalette> = {
     peakNext: "#5ee9b5",
     warn: "#ffd230",
     hover: "rgba(255,255,255,0.1)",
+    focus: "#8ec5ff",
     badge: darkBadges,
   },
   light: { ...lightBase, card: "#e4e4e7", track: "rgba(113,113,123,0.25)" },

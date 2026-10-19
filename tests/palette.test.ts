@@ -38,6 +38,10 @@ describe.each(Object.entries(WIDGET_PALETTES))("widget %s theme", (_name, p) => 
     (key) => expect(contrast(p[key], p.card)).toBeGreaterThanOrEqual(AA_NON_TEXT),
   );
 
+  it("focus ring meets 3:1 against the card", () => {
+    expect(contrast(p.focus, p.card)).toBeGreaterThanOrEqual(3);
+  });
+
   it("dimmed colours are quieter than the normal ones", () => {
     expect(contrast(p.dimText, p.card)).toBeLessThan(contrast(p.text, p.card));
     expect(contrast(p.dimMuted, p.card)).toBeLessThanOrEqual(contrast(p.muted, p.card));
