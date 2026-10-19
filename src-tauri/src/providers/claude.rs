@@ -11,11 +11,15 @@
 use super::{
     collect_accounts, CachedProvider, FetchError, LiveAccount, ProviderError, TrackedAccount,
 };
+use crate::history::{
+    append as append_history, Reading, WindowReading, FIVE_HOUR, HISTORY_FILE, WEEKLY,
+};
 use crate::win::os_crypt::{app_key, unseal};
 use crate::Core;
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -533,8 +537,32 @@ async fn fetch(
     Ok(build_usage(&live.account, Some(token), Some(&reply)))
 }
 
+/// The history reading of a fresh fetch: both windows' percentages and reset times, keyed by the
+/// hashed account id. None when the reply carried no window percentage.
+pub fn history_reading(account_id: &str, usage: &ClaudeUsage, now: i64) -> Option<Reading> {
+    let mut w = BTreeMap::new();
+    for (name, window) in [(FIVE_HOUR, &usage.five_hour), (WEEKLY, &usage.weekly)] {
+        if let Some(pct) = window.percent {
+            w.insert(
+                name.to_string(),
+                WindowReading {
+                    pct,
+                    resets_at: window.resets_at.clone(),
+                },
+            );
+        }
+    }
+    (!w.is_empty()).then(|| Reading {
+        t: now,
+        p: PROVIDER.to_string(),
+        a: super::log_id(account_id),
+        w,
+    })
+}
+
 /// Rows for the `accounts` array of the old route's JSON body (`TrackedAccount<ClaudeUsage>` each).
 pub async fn accounts(core: &Core) -> Vec<Value> {
+    let history_file = core.store.file(HISTORY_FILE);
     let live = tokio::task::spawn_blocking(read_live_claude)
         .await
         .ok()
@@ -545,13 +573,25 @@ pub async fn accounts(core: &Core) -> Vec<Value> {
             let id = live.id.clone();
             let label = live.label.clone();
             let http = core.http.clone();
+            let history_file = history_file.clone();
             LiveAccount {
                 id: id.clone(),
                 label,
                 active: true,
                 load: Box::pin(async move {
+                    let account_id = id.clone();
                     CACHE
-                        .get(&core.cache, &id, move |_| fetch(http, live))
+                        .get(&core.cache, &id, move |_| async move {
+                            let result = fetch(http, live).await;
+                            // only a fresh, live reply of the signed-in account is recorded
+                            if let Ok(usage) = &result {
+                                let now = Utc::now().timestamp_millis();
+                                if let Some(r) = history_reading(&account_id, usage, now) {
+                                    append_history(&history_file, &r, now);
+                                }
+                            }
+                            result
+                        })
                         .await
                 }),
                 label_from: None,
@@ -624,6 +664,23 @@ mod tests {
         assert_eq!(usage.weekly_opus, None);
         assert_eq!(usage.reset_credits, None);
         assert_eq!(v["fiveHour"]["resetsAt"], json!("2026-10-19T00:49:59.594Z"));
+    }
+
+    #[test]
+    fn history_reading_is_hashed_and_skips_empty_windows() {
+        let usage = build_usage(
+            &cli_account("u-1"),
+            None,
+            Some(&parse_usage_reply(OK).unwrap()),
+        );
+        let r = history_reading("someone@example.com", &usage, 1).unwrap();
+        assert_eq!(r.a, crate::providers::log_id("someone@example.com"));
+        assert_eq!(r.w[FIVE_HOUR].pct, 68.0);
+        assert!(r.w[FIVE_HOUR].resets_at.is_some());
+        let text = serde_json::to_string(&r).unwrap();
+        assert!(!text.contains('@') && !text.contains("example"));
+        let empty = build_usage(&cli_account("u-1"), None, None);
+        assert_eq!(history_reading("x", &empty, 1), None);
     }
 
     #[test]
