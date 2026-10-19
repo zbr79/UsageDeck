@@ -53,6 +53,89 @@ impl ProviderError {
     pub fn is_auth_expired(self) -> bool {
         matches!(self, ProviderError::AuthRejected)
     }
+
+    /// The `error` string of the JSON contract (any HTTP status is just "http").
+    pub fn kind(self) -> &'static str {
+        match self {
+            ProviderError::MissingCredentials => "missing-credentials",
+            ProviderError::AuthRejected => "auth-rejected",
+            ProviderError::RateLimited => "rate-limited",
+            ProviderError::Network => "network",
+            ProviderError::Http(_) => "http",
+            ProviderError::SchemaChanged => "schema-changed",
+            ProviderError::Locked => "locked",
+        }
+    }
+}
+
+/// Serialised as its `kind()` string.
+impl Serialize for ProviderError {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.kind())
+    }
+}
+
+/// A short stable stand-in for an account key or email in log lines: the first 8 hex characters
+/// of its SHA-256, so logs can tell accounts apart without naming them.
+pub fn log_id(id: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(id.trim().to_lowercase().as_bytes());
+    digest[..4].iter().map(|b| format!("{b:02x}")).collect()
+}
+
+// ---- 429 backoff ----------------------------------------------------------------------------
+
+tokio::task_local! {
+    /// The Retry-After of a 429 seen during the current `CachedProvider` fetch.
+    static RETRY_HINT: std::cell::Cell<Option<Duration>>;
+}
+
+/// The longest Retry-After honoured. Provisional: no service documents a maximum, this only stops
+/// a broken header from silencing an account until restart.
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(60 * 60);
+const BACKOFF_STEP: Duration = Duration::from_secs(60);
+const BACKOFF_CAP: Duration = Duration::from_secs(15 * 60);
+
+/// `Retry-After` as delay-seconds or an HTTP date, relative to `now`; None when unparseable.
+pub fn parse_retry_after(value: &str, now: chrono::DateTime<chrono::Utc>) -> Option<Duration> {
+    let value = value.trim();
+    let delay = match value.parse::<u64>() {
+        Ok(secs) => Duration::from_secs(secs),
+        Err(_) => {
+            let at = chrono::DateTime::parse_from_rfc2822(value).ok()?;
+            (at.with_timezone(&chrono::Utc) - now)
+                .to_std()
+                .unwrap_or(Duration::ZERO)
+        }
+    };
+    Some(delay.min(MAX_RETRY_AFTER))
+}
+
+/// How long to stay off the network after the `failures`-th 429 in a row: the server's hint
+/// when given, else 1, 2, 4, 8 minutes, capped at 15.
+pub fn backoff_delay(retry_after: Option<Duration>, failures: u32) -> Duration {
+    retry_after.unwrap_or_else(|| {
+        let exp = failures.saturating_sub(1).min(8);
+        (BACKOFF_STEP * 2u32.pow(exp)).min(BACKOFF_CAP)
+    })
+}
+
+/// Record the Retry-After hint for the fetch in progress (no-op outside a `CachedProvider` fetch).
+pub fn record_retry_hint(hint: Option<Duration>) {
+    let _ = RETRY_HINT.try_with(|c| c.set(hint));
+}
+
+/// Call on every provider reply: on a 429 it records the Retry-After header for the backoff.
+pub fn note_retry_after(resp: &reqwest::Response) {
+    if resp.status().as_u16() != 429 {
+        return;
+    }
+    let hint = resp
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| parse_retry_after(v, chrono::Utc::now()));
+    record_retry_hint(hint);
 }
 
 /// A failed fetch. `fallback` is shown only when there is no cached value either (never persisted).
@@ -90,6 +173,7 @@ pub async fn fetch_json<T: DeserializeOwned>(
         log::warn!("provider request failed: {e}");
         ProviderError::Network
     })?;
+    note_retry_after(&resp);
     let status = resp.status().as_u16();
     match status {
         401 | 403 => return Err(ProviderError::AuthRejected),
@@ -112,8 +196,7 @@ pub struct ProviderResult<T> {
     pub stale: bool,
     pub cached_at: Option<i64>,
     pub auth_expired: bool,
-    /// why the live fetch failed (not part of the JSON contract)
-    #[serde(skip)]
+    /// why the live fetch failed, as its kind string ("rate-limited", ...), or null
     pub error: Option<ProviderError>,
 }
 
@@ -128,6 +211,8 @@ pub struct TrackedAccount<T> {
     pub stale: bool,
     pub cached_at: Option<i64>,
     pub auth_expired: bool,
+    /// why the live fetch failed, as its kind string, or null
+    pub error: Option<ProviderError>,
 }
 
 fn now_ms() -> i64 {
@@ -181,22 +266,33 @@ impl UsageCache {
 
     /// Store a good value and write the file at once, merged with what is on disk (newest entry
     /// wins) so other sections are never clobbered. Best-effort: a write error is only logged.
-    pub async fn write<T: Serialize>(&self, section: &str, key: &str, data: &T) {
+    /// When the data equals what is stored, only the in-memory `savedAt` moves on and the file is
+    /// not rewritten. Returns whether the file was written.
+    pub async fn write<T: Serialize>(&self, section: &str, key: &str, data: &T) -> bool {
         let Ok(data) = serde_json::to_value(data) else {
-            return;
+            return false;
         };
         let mut state = self.state.lock().await;
         if state.is_none() {
             *state = Some(self.read_disk());
         }
         let mine = state.as_mut().expect("loaded above");
-        let entry = serde_json::json!({ "savedAt": now_ms(), "data": data });
         if !mine.get(section).is_some_and(Value::is_object) {
             mine.insert(section.to_string(), Value::Object(Map::new()));
         }
-        if let Some(Value::Object(s)) = mine.get_mut(section) {
-            s.insert(key.to_string(), entry);
+        let Some(Value::Object(s)) = mine.get_mut(section) else {
+            return false;
+        };
+        if let Some(Value::Object(stored)) = s.get_mut(key) {
+            if stored.get("data") == Some(&data) {
+                stored.insert("savedAt".into(), Value::from(now_ms()));
+                return false;
+            }
         }
+        s.insert(
+            key.to_string(),
+            serde_json::json!({ "savedAt": now_ms(), "data": data }),
+        );
         let mut merged = self.read_disk();
         for (section, entries) in mine.iter() {
             let Some(entries) = entries.as_object() else {
@@ -221,7 +317,9 @@ impl UsageCache {
         }
         if let Err(e) = write_json_atomic(&self.file, &merged) {
             log::warn!("usage cache write failed: {e}");
+            return false;
         }
+        true
     }
 }
 
@@ -245,6 +343,54 @@ pub struct CachedProvider<T> {
     failure_ttl: Duration,
     memo: Mutex<HashMap<String, Memo<T>>>,
     gates: Mutex<HashMap<String, Arc<AsyncMutex<()>>>>,
+    backoff: Mutex<HashMap<String, Backoff>>,
+    activity: fn() -> Activity,
+}
+
+/// An account that got a 429: no network call before `until`.
+#[derive(Clone, Copy, Debug)]
+struct Backoff {
+    until: Instant,
+    failures: u32,
+}
+
+/// What the polling gate needs to know about the user.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Activity {
+    /// time since the last keyboard or mouse input
+    pub idle: Duration,
+    /// the workstation is locked (lock screen or no input desktop)
+    pub locked: bool,
+}
+
+/// The live user activity. Tests never read the real desktop, so they always see an active user.
+fn current_activity() -> Activity {
+    #[cfg(not(test))]
+    {
+        Activity {
+            idle: crate::win::idle::idle_time(),
+            locked: crate::win::idle::workstation_locked(),
+        }
+    }
+    #[cfg(test)]
+    {
+        Activity::default()
+    }
+}
+
+/// After this long without input the user is away and polling slows down to this interval.
+pub const IDLE_AFTER: Duration = Duration::from_secs(10 * 60);
+
+/// How long a memoised result stays good: `base`, at least `IDLE_AFTER` while the user is idle
+/// for longer than that, and forever while the workstation is locked (no fetch at all).
+pub fn effective_ttl(base: Duration, idle: Duration, locked: bool) -> Duration {
+    if locked {
+        Duration::MAX
+    } else if idle > IDLE_AFTER {
+        base.max(IDLE_AFTER)
+    } else {
+        base
+    }
 }
 
 impl<T> CachedProvider<T>
@@ -258,27 +404,67 @@ where
             failure_ttl: failure_ttl.unwrap_or(ttl),
             memo: Mutex::new(HashMap::new()),
             gates: Mutex::new(HashMap::new()),
+            backoff: Mutex::new(HashMap::new()),
+            activity: current_activity,
         }
+    }
+
+    /// Replace the activity source (tests).
+    #[cfg(test)]
+    fn with_activity(mut self, activity: fn() -> Activity) -> Self {
+        self.activity = activity;
+        self
     }
 
     pub fn section(&self) -> &'static str {
         self.section
     }
 
-    fn fresh(&self, key: &str) -> Option<ProviderResult<T>> {
+    fn fresh(&self, key: &str, activity: Activity) -> Option<ProviderResult<T>> {
         let memo = self.memo.lock().unwrap();
         let hit = memo.get(key)?;
-        let ttl = if hit.ok { self.ttl } else { self.failure_ttl };
+        let base = if hit.ok { self.ttl } else { self.failure_ttl };
+        let ttl = effective_ttl(base, activity.idle, activity.locked);
         (hit.at.elapsed() < ttl).then(|| hit.result.clone())
     }
 
+    /// The last good value from disk, marked stale, with `error` as the reason (or `fallback`
+    /// when nothing is cached).
+    async fn stale_from_cache(
+        &self,
+        cache: &UsageCache,
+        key: &str,
+        error: Option<ProviderError>,
+        fallback: Option<Box<T>>,
+    ) -> ProviderResult<T> {
+        let auth_expired = error.is_some_and(ProviderError::is_auth_expired);
+        match cache.read::<T>(self.section, key).await {
+            Some(cached) => ProviderResult {
+                usage: Some(cached.data),
+                stale: true,
+                cached_at: Some(cached.saved_at),
+                auth_expired,
+                error,
+            },
+            None => ProviderResult {
+                usage: fallback.map(|b| *b),
+                stale: false,
+                cached_at: None,
+                auth_expired,
+                error,
+            },
+        }
+    }
+
     /// Cached result for `key` (use "default" for one-account providers), fetching when expired.
+    /// No network call while the workstation is locked or while the key is backing off a 429.
     pub async fn get<F, Fut>(&self, cache: &UsageCache, key: &str, fetch: F) -> ProviderResult<T>
     where
         F: FnOnce(String) -> Fut,
         Fut: Future<Output = Result<T, FetchError<T>>>,
     {
-        if let Some(hit) = self.fresh(key) {
+        let activity = (self.activity)();
+        if let Some(hit) = self.fresh(key, activity) {
             return hit;
         }
         let gate = {
@@ -286,41 +472,70 @@ where
             gates.entry(key.to_string()).or_default().clone()
         };
         let _in_flight = gate.lock().await;
-        if let Some(hit) = self.fresh(key) {
+        if let Some(hit) = self.fresh(key, activity) {
             return hit;
         }
-        let (ok, result) = match fetch(key.to_string()).await {
-            Ok(data) => {
-                cache.write(self.section, key, &data).await;
-                let result = ProviderResult {
-                    usage: Some(data),
-                    stale: false,
-                    cached_at: None,
-                    auth_expired: false,
-                    error: None,
-                };
-                (true, result)
-            }
-            Err(FetchError { error, fallback }) => {
-                log::info!("{} [{key}]: {error}", self.section);
-                let auth_expired = error.is_auth_expired();
-                let result = match cache.read::<T>(self.section, key).await {
-                    Some(cached) => ProviderResult {
-                        usage: Some(cached.data),
-                        stale: true,
-                        cached_at: Some(cached.saved_at),
-                        auth_expired,
-                        error: Some(error),
-                    },
-                    None => ProviderResult {
-                        usage: fallback.map(|b| *b),
+        if activity.locked {
+            // nothing memoised yet: show the disk cache, fetch once the user is back
+            return self.stale_from_cache(cache, key, None, None).await;
+        }
+        let backing_off = self
+            .backoff
+            .lock()
+            .unwrap()
+            .get(key)
+            .is_some_and(|b| Instant::now() < b.until);
+        let (ok, result) = if backing_off {
+            let result = self
+                .stale_from_cache(cache, key, Some(ProviderError::RateLimited), None)
+                .await;
+            (false, result)
+        } else {
+            let (outcome, hint) = RETRY_HINT
+                .scope(std::cell::Cell::new(None), async {
+                    let outcome = fetch(key.to_string()).await;
+                    (outcome, RETRY_HINT.with(|c| c.get()))
+                })
+                .await;
+            match outcome {
+                Ok(data) => {
+                    self.backoff.lock().unwrap().remove(key);
+                    cache.write(self.section, key, &data).await;
+                    let result = ProviderResult {
+                        usage: Some(data),
                         stale: false,
                         cached_at: None,
-                        auth_expired,
-                        error: Some(error),
-                    },
-                };
-                (false, result)
+                        auth_expired: false,
+                        error: None,
+                    };
+                    (true, result)
+                }
+                Err(FetchError { error, fallback }) => {
+                    if error == ProviderError::RateLimited {
+                        let mut backoff = self.backoff.lock().unwrap();
+                        let failures = backoff.get(key).map_or(0, |b| b.failures) + 1;
+                        let delay = backoff_delay(hint, failures);
+                        backoff.insert(
+                            key.to_string(),
+                            Backoff {
+                                until: Instant::now() + delay,
+                                failures,
+                            },
+                        );
+                        log::info!(
+                            "{} [{}]: rate-limited, no fetch for {}s",
+                            self.section,
+                            log_id(key),
+                            delay.as_secs()
+                        );
+                    } else {
+                        log::info!("{} [{}]: {error}", self.section, log_id(key));
+                    }
+                    let result = self
+                        .stale_from_cache(cache, key, Some(error), fallback)
+                        .await;
+                    (false, result)
+                }
             }
         };
         self.memo.lock().unwrap().insert(
@@ -335,6 +550,14 @@ where
     }
 
     /// Forget the memo for one key, or all keys, so the next `get` fetches again.
+    /// End a key's 429 backoff early (tests).
+    #[cfg(test)]
+    fn expire_backoff(&self, key: &str) {
+        if let Some(b) = self.backoff.lock().unwrap().get_mut(key) {
+            b.until = Instant::now();
+        }
+    }
+
     pub fn invalidate(&self, key: Option<&str>) {
         let mut memo = self.memo.lock().unwrap();
         match key {
@@ -563,6 +786,7 @@ where
                 cached_at: cached.as_ref().map(|c| c.saved_at),
                 usage: cached.map(|c| c.data),
                 auth_expired: false,
+                error: None,
             });
             continue;
         };
@@ -593,6 +817,7 @@ where
             stale,
             cached_at,
             auth_expired: result.auth_expired,
+            error: result.error,
         });
     }
 
@@ -756,5 +981,210 @@ mod tests {
     fn account_keys() {
         assert_eq!(account_key("codex", "  A@B.com "), "codex:a@b.com");
         assert!(is_account_hidden(&["claude:x".to_string()], "claude", "X"));
+    }
+
+    #[test]
+    fn retry_after_parse_and_exponential_schedule() {
+        let now = chrono::DateTime::parse_from_rfc3339("2015-10-21T07:28:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert_eq!(
+            parse_retry_after("120", now),
+            Some(Duration::from_secs(120))
+        );
+        assert_eq!(parse_retry_after(" 0 ", now), Some(Duration::from_secs(0)));
+        assert_eq!(
+            parse_retry_after("Wed, 21 Oct 2015 07:30:30 GMT", now),
+            Some(Duration::from_secs(150))
+        );
+        // a date in the past means "now"
+        assert_eq!(
+            parse_retry_after("Wed, 21 Oct 2015 07:00:00 GMT", now),
+            Some(Duration::ZERO)
+        );
+        assert_eq!(parse_retry_after("soon", now), None);
+        assert_eq!(parse_retry_after("-5", now), None);
+        // absurd hints are capped
+        assert_eq!(parse_retry_after("999999", now), Some(MAX_RETRY_AFTER));
+
+        let min = |m: u64| Duration::from_secs(m * 60);
+        let schedule: Vec<Duration> = (1..=7).map(|n| backoff_delay(None, n)).collect();
+        assert_eq!(
+            schedule,
+            vec![min(1), min(2), min(4), min(8), min(15), min(15), min(15)]
+        );
+        assert_eq!(backoff_delay(None, 1000), min(15));
+        // the server's hint wins over the schedule
+        assert_eq!(
+            backoff_delay(Some(Duration::from_secs(30)), 4),
+            Duration::from_secs(30)
+        );
+    }
+
+    #[tokio::test]
+    async fn no_network_during_backoff_then_reset_on_success() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let dir = temp_dir("backoff");
+        let cache = UsageCache::new(dir.join("usage-cache.json"));
+        // zero TTL: only the backoff can keep a call off the network
+        let provider: CachedProvider<Usage> = CachedProvider::new("test", Duration::ZERO, None);
+        let calls = AtomicUsize::new(0);
+        let good = |calls: &AtomicUsize| -> Result<Usage, FetchError<Usage>> {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Usage { percent_used: 7.0 })
+        };
+        let limited =
+            |calls: &AtomicUsize, hint: Option<Duration>| -> Result<Usage, FetchError<Usage>> {
+                calls.fetch_add(1, Ordering::SeqCst);
+                record_retry_hint(hint);
+                Err(ProviderError::RateLimited.into())
+            };
+
+        provider.get(&cache, "k", |_| async { good(&calls) }).await;
+        let r = provider
+            .get(&cache, "k", |_| async {
+                limited(&calls, Some(Duration::from_secs(90)))
+            })
+            .await;
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(r.error, Some(ProviderError::RateLimited));
+        {
+            let b = provider.backoff.lock().unwrap()["k"];
+            assert_eq!(b.failures, 1);
+            let left = b.until - Instant::now();
+            assert!(left > Duration::from_secs(85) && left <= Duration::from_secs(90));
+        }
+
+        // during the backoff: cached value, stale, rate-limited, and no call
+        for _ in 0..3 {
+            let r = provider.get(&cache, "k", |_| async { good(&calls) }).await;
+            assert_eq!(r.usage, Some(Usage { percent_used: 7.0 }));
+            assert!(r.stale);
+            assert_eq!(r.error, Some(ProviderError::RateLimited));
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        // other keys are not held back
+        provider
+            .get(&cache, "other", |_| async { good(&calls) })
+            .await;
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+
+        // a second 429 without a hint: the exponential schedule, step 2
+        provider.expire_backoff("k");
+        provider
+            .get(&cache, "k", |_| async { limited(&calls, None) })
+            .await;
+        {
+            let b = provider.backoff.lock().unwrap()["k"];
+            assert_eq!(b.failures, 2);
+            let left = b.until - Instant::now();
+            assert!(left > Duration::from_secs(115) && left <= Duration::from_secs(120));
+        }
+
+        // success resets the schedule
+        provider.expire_backoff("k");
+        let ok = provider.get(&cache, "k", |_| async { good(&calls) }).await;
+        assert!(!ok.stale && ok.error.is_none());
+        assert!(!provider.backoff.lock().unwrap().contains_key("k"));
+        assert_eq!(calls.load(Ordering::SeqCst), 5);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn effective_ttl_gate() {
+        let base = Duration::from_secs(30);
+        let min = |m: u64| Duration::from_secs(m * 60);
+        assert_eq!(effective_ttl(base, Duration::ZERO, false), base);
+        assert_eq!(effective_ttl(base, min(10), false), base);
+        assert_eq!(effective_ttl(base, min(11), false), min(10));
+        // a base longer than the idle floor is kept
+        assert_eq!(effective_ttl(min(20), min(11), false), min(20));
+        assert_eq!(effective_ttl(base, Duration::ZERO, true), Duration::MAX);
+        assert_eq!(effective_ttl(base, min(60), true), Duration::MAX);
+    }
+
+    #[tokio::test]
+    async fn locked_or_idle_user_is_served_from_memory() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let dir = temp_dir("gate");
+        let cache = UsageCache::new(dir.join("usage-cache.json"));
+        let calls = AtomicUsize::new(0);
+        let fetch = |calls: &AtomicUsize| -> Result<Usage, FetchError<Usage>> {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Usage { percent_used: 1.0 })
+        };
+
+        // locked: never fetch, even with nothing memoised; the disk cache is shown
+        cache.write("test", "k", &Usage { percent_used: 3.0 }).await;
+        let locked: CachedProvider<Usage> = CachedProvider::new("test", Duration::ZERO, None)
+            .with_activity(|| Activity {
+                idle: Duration::ZERO,
+                locked: true,
+            });
+        let r = locked.get(&cache, "k", |_| async { fetch(&calls) }).await;
+        assert_eq!(r.usage, Some(Usage { percent_used: 3.0 }));
+        assert!(r.stale);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        // idle 11 minutes: a 0 s TTL becomes 10 minutes, so the second call is memoised
+        let idle: CachedProvider<Usage> = CachedProvider::new("test", Duration::ZERO, None)
+            .with_activity(|| Activity {
+                idle: Duration::from_secs(11 * 60),
+                locked: false,
+            });
+        idle.get(&cache, "k", |_| async { fetch(&calls) }).await;
+        idle.get(&cache, "k", |_| async { fetch(&calls) }).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn cache_file_is_rewritten_only_when_data_changes() {
+        let dir = temp_dir("unchanged");
+        let file = dir.join("usage-cache.json");
+        let cache = UsageCache::new(file.clone());
+        assert!(cache.write("test", "k", &Usage { percent_used: 5.0 }).await);
+        let first = std::fs::read_to_string(&file).unwrap();
+        // drop a marker: an unchanged write must leave the file alone
+        std::fs::write(&file, first.replace("5.0", "5.0 ")).unwrap();
+        let marked = std::fs::read_to_string(&file).unwrap();
+        assert!(!cache.write("test", "k", &Usage { percent_used: 5.0 }).await);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), marked);
+        // savedAt still moves on in memory
+        assert!(cache.read::<Usage>("test", "k").await.is_some());
+        // changed data is written
+        assert!(cache.write("test", "k", &Usage { percent_used: 6.0 }).await);
+        assert_eq!(
+            read_json(&file).unwrap()["test"]["k"]["data"],
+            json!({ "percentUsed": 6.0 })
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn errors_serialise_as_kinds_and_logs_hide_ids() {
+        let row = TrackedAccount::<Usage> {
+            id: "a@x.com".into(),
+            label: None,
+            active: true,
+            usage: None,
+            stale: false,
+            cached_at: None,
+            auth_expired: false,
+            error: Some(ProviderError::Http(503)),
+        };
+        assert_eq!(serde_json::to_value(&row).unwrap()["error"], "http");
+        let none = TrackedAccount { error: None, ..row };
+        assert_eq!(serde_json::to_value(&none).unwrap()["error"], Value::Null);
+        assert_eq!(
+            serde_json::to_value(ProviderError::MissingCredentials).unwrap(),
+            "missing-credentials"
+        );
+        assert_eq!(ProviderError::RateLimited.kind(), "rate-limited");
+        let id = log_id("Someone@Example.com");
+        assert_eq!(id.len(), 8);
+        assert_eq!(id, log_id(" someone@example.com"));
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(id, log_id("other@example.com"));
     }
 }

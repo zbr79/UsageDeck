@@ -168,6 +168,7 @@ async fn fetch_usage(
             log::warn!("opencode request failed: {}", e.without_url());
             ProviderError::Network
         })?;
+    super::note_retry_after(&resp);
     let status = resp.status().as_u16();
     let bytes = resp.bytes().await.map_err(|_| ProviderError::Network)?;
     handle_reply(email, status, &bytes)
@@ -193,7 +194,7 @@ fn row(email: &str, enabled: bool, result: super::ProviderResult<OpenCodeUsage>)
         "usage": result.usage,
         "prev": prev,
         "enabled": enabled,
-        "error": if result.usage.is_some() { Value::Null } else { Value::from("failed") },
+        "error": result.error,
         "stale": result.stale,
         "cachedAt": result.cached_at,
         "subscriptionActive": subscription,
@@ -222,6 +223,10 @@ pub async fn accounts(core: &Core) -> Vec<Value> {
         }
         let result = CACHE
             .get(&core.cache, &email, |email| async move {
+                if acc.key.is_empty() {
+                    // the email is listed but its key could not be read from Credential Manager
+                    return Err(ProviderError::MissingCredentials.into());
+                }
                 fetch_usage(&core.http, &email, &acc.key)
                     .await
                     .map_err(FetchError::from)
@@ -285,7 +290,7 @@ mod tests {
         assert!(bad.stale);
         assert_eq!(bad.error, Some(ProviderError::SchemaChanged));
         let r = row(email, true, bad);
-        assert_eq!(r["error"], Value::Null);
+        assert_eq!(r["error"], "schema-changed");
         assert_eq!(r["subscriptionActive"], Value::Null);
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -310,7 +315,7 @@ mod tests {
         };
         let r = row(email, true, result);
         assert_eq!(r["authExpired"], true);
-        assert_eq!(r["error"], "failed");
+        assert_eq!(r["error"], "auth-rejected");
         // no subscription: a working key, so not a rejected one
         let body = br#"{"error":{"type":"EntitlementError"}}"#;
         assert_eq!(

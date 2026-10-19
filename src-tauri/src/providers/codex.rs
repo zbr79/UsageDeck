@@ -218,6 +218,7 @@ async fn fetch_usage(
         log::warn!("codex request failed: {}", e.without_url());
         ProviderError::Network
     })?;
+    super::note_retry_after(&resp);
     let status = resp.status().as_u16();
     let bytes = resp.bytes().await.map_err(|_| ProviderError::Network)?;
     classify_reply(status, &bytes)

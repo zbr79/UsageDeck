@@ -183,6 +183,21 @@ type StateCache = HashMap<PathBuf, (Instant, Option<CursorState>)>;
 /// Last good read per DB path. A locked read never replaces it.
 static STATE: LazyLock<Mutex<StateCache>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// `current_state` on the blocking pool: the SQLite read can wait up to `busy` on a locked DB and
+/// must not stall the async runtime.
+async fn current_state_off_runtime(
+    db: &Path,
+    busy: Duration,
+) -> Result<Option<CursorState>, ProviderError> {
+    let db = db.to_path_buf();
+    tokio::task::spawn_blocking(move || current_state(&db, busy))
+        .await
+        .unwrap_or_else(|e| {
+            log::warn!("cursor state read did not finish: {e}");
+            Err(ProviderError::Locked)
+        })
+}
+
 fn current_state(db: &Path, busy: Duration) -> Result<Option<CursorState>, ProviderError> {
     if let Some((at, state)) = STATE.lock().unwrap().get(db) {
         if at.elapsed() < STATE_TTL {
@@ -248,6 +263,7 @@ async fn fetch_usage(
         log::warn!("cursor request failed: {}", e.without_url());
         ProviderError::Network
     })?;
+    super::note_retry_after(&usage);
     match usage.status().as_u16() {
         401 => return Err(ProviderError::AuthRejected),
         429 => return Err(ProviderError::RateLimited),
@@ -268,7 +284,7 @@ pub async fn accounts(core: &Core) -> Vec<Value> {
 }
 
 async fn accounts_from(core: &Core, db: &Path, busy: Duration) -> Vec<Value> {
-    let live = match current_state(db, busy) {
+    let live = match current_state_off_runtime(db, busy).await {
         Ok(state) => match account_of(state) {
             Some(account) => {
                 let key = account.id.clone();

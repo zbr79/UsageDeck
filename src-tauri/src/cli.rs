@@ -132,7 +132,8 @@ pub fn decrypt_key(stored: &str, secret: &str) -> Result<String, String> {
 // ---- --import-old-data ------------------------------------------------------------------------
 
 fn read_old(dir: &Path, name: &str) -> Option<Value> {
-    crate::store::read_json(&dir.join(name))
+    // the old app's folder is read only: a corrupt file there is skipped, never moved
+    crate::store::read_json_untouched(&dir.join(name))
 }
 
 /// `{ provider: [ { id: string, label?: string|null } ] }`
@@ -423,5 +424,13 @@ mod tests {
         assert_eq!(r["windows"]["usedPercent"]["reset"], "r1");
         assert_eq!(r["windows"]["weeklyUsedPercent"]["reset"], "r2");
         assert!(!r.to_string().contains("example.com"));
+        assert_eq!(r["error"], Value::Null);
+    }
+
+    #[test]
+    fn dump_shows_the_error_kind() {
+        let row = json!({ "id": "a@b.com", "stale": true, "authExpired": false,
+                          "error": "rate-limited", "usage": null });
+        assert_eq!(redact_account(&row)["error"], "rate-limited");
     }
 }
