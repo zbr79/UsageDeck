@@ -116,7 +116,8 @@ struct CodexAccount {
 
 /// Unit tests never read this PC's real sign-ins; only the `#[ignore]` live tests switch it on.
 #[cfg(test)]
-pub(crate) static REAL_SIGN_INS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub(crate) static REAL_SIGN_INS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 /// True when the real sign-in files may be read (always outside tests).
 pub(crate) fn real_sign_ins() -> bool {
@@ -171,7 +172,10 @@ pub fn email_from_jwt(token: Option<&str>) -> Option<String> {
 
 fn account_from_auth(auth: &Value) -> Option<CodexAccount> {
     let tokens = auth.get("tokens")?;
-    let token = tokens.get("access_token")?.as_str().filter(|t| !t.is_empty())?;
+    let token = tokens
+        .get("access_token")?
+        .as_str()
+        .filter(|t| !t.is_empty())?;
     let email = email_from_jwt(tokens.get("id_token").and_then(Value::as_str));
     let account_id = tokens
         .get("account_id")
@@ -198,7 +202,10 @@ fn read_codex_account() -> Option<CodexAccount> {
 static CACHE: LazyLock<CachedProvider<CodexUsage>> =
     LazyLock::new(|| CachedProvider::new(SECTION, Duration::from_secs(30), None));
 
-async fn fetch_usage(http: &reqwest::Client, account: &CodexAccount) -> Result<CodexUsage, ProviderError> {
+async fn fetch_usage(
+    http: &reqwest::Client,
+    account: &CodexAccount,
+) -> Result<CodexUsage, ProviderError> {
     let mut req = http
         .get(USAGE_URL)
         .bearer_auth(&account.token)
@@ -229,7 +236,9 @@ pub async fn accounts(core: &Core) -> Vec<Value> {
                 load: Box::pin(async move {
                     CACHE
                         .get(&core.cache, &key, |_| async move {
-                            fetch_usage(&core.http, &account).await.map_err(FetchError::from)
+                            fetch_usage(&core.http, &account)
+                                .await
+                                .map_err(FetchError::from)
                         })
                         .await
                 }),
@@ -250,9 +259,14 @@ mod tests {
     use super::*;
     use crate::providers::UsageCache;
 
-    const OK: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/codex/ok.json"));
-    const INVALID: &[u8] =
-        include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/codex/invalid.json"));
+    const OK: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/codex/ok.json"
+    ));
+    const INVALID: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/codex/invalid.json"
+    ));
 
     #[test]
     fn codex_ok_fixture_parses_with_weekly_window() {
@@ -264,7 +278,10 @@ mod tests {
         assert_eq!(u.reset_at.as_deref(), Some("2026-10-14T17:46:40.000Z"));
         assert_eq!(u.weekly_used_percent, Some(81.0));
         assert_eq!(u.weekly_limit_window_seconds, Some(604800.0));
-        assert_eq!(u.weekly_reset_at.as_deref(), Some("2026-10-18T17:46:40.000Z"));
+        assert_eq!(
+            u.weekly_reset_at.as_deref(),
+            Some("2026-10-18T17:46:40.000Z")
+        );
         assert_eq!(u.credits_balance, Some(12.5));
         assert_eq!(u.reset_credits, Some(2.0));
         assert!(!u.limit_reached);
@@ -277,23 +294,41 @@ mod tests {
     #[test]
     fn codex_status_mapping() {
         assert_eq!(classify_reply(401, b"{}"), Err(ProviderError::AuthRejected));
-        assert_eq!(classify_reply(403, br#"{"detail":"nope"}"#), Err(ProviderError::AuthRejected));
+        assert_eq!(
+            classify_reply(403, br#"{"detail":"nope"}"#),
+            Err(ProviderError::AuthRejected)
+        );
         let cloudflare = b"<!DOCTYPE html><html><title>Just a moment...</title></html>";
-        assert_eq!(classify_reply(403, cloudflare), Err(ProviderError::Http(403)));
+        assert_eq!(
+            classify_reply(403, cloudflare),
+            Err(ProviderError::Http(403))
+        );
         assert_eq!(classify_reply(429, b""), Err(ProviderError::RateLimited));
         assert_eq!(classify_reply(500, b""), Err(ProviderError::Http(500)));
     }
 
     #[tokio::test]
     async fn codex_invalid_fixture_is_schema_changed_and_keeps_last_good() {
-        assert_eq!(classify_reply(200, INVALID), Err(ProviderError::SchemaChanged));
+        assert_eq!(
+            classify_reply(200, INVALID),
+            Err(ProviderError::SchemaChanged)
+        );
         let dir = std::env::temp_dir().join(format!("usagedeck-codex-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let cache = UsageCache::new(dir.join("usage-cache.json"));
-        let p: CachedProvider<CodexUsage> = CachedProvider::new(SECTION, Duration::from_secs(60), None);
-        let good = p.get(&cache, "k", |_| async { classify_reply(200, OK).map_err(FetchError::from) }).await;
+        let p: CachedProvider<CodexUsage> =
+            CachedProvider::new(SECTION, Duration::from_secs(60), None);
+        let good = p
+            .get(&cache, "k", |_| async {
+                classify_reply(200, OK).map_err(FetchError::from)
+            })
+            .await;
         p.invalidate(None);
-        let bad = p.get(&cache, "k", |_| async { classify_reply(200, INVALID).map_err(FetchError::from) }).await;
+        let bad = p
+            .get(&cache, "k", |_| async {
+                classify_reply(200, INVALID).map_err(FetchError::from)
+            })
+            .await;
         assert_eq!(bad.usage, good.usage);
         assert!(bad.stale);
         assert_eq!(bad.error, Some(ProviderError::SchemaChanged));

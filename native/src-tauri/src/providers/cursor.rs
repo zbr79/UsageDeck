@@ -50,14 +50,21 @@ struct RawUsage {
 fn mentions_twenty(s: &str) -> bool {
     let b = s.as_bytes();
     (0..b.len().saturating_sub(1)).any(|i| {
-        b[i] == b'2' && b[i + 1] == b'0' && b.get(i + 2).is_none_or(|c| !(c.is_ascii_alphanumeric() || *c == b'_'))
+        b[i] == b'2'
+            && b[i + 1] == b'0'
+            && b.get(i + 2)
+                .is_none_or(|c| !(c.is_ascii_alphanumeric() || *c == b'_'))
     })
 }
 
 fn cursor_plan_name(value: &Value) -> Option<String> {
     let plan = string_or_null(value)?;
     let lower = plan.to_lowercase();
-    Some(if lower.contains("pro") || mentions_twenty(&lower) { "Pro".into() } else { plan })
+    Some(if lower.contains("pro") || mentions_twenty(&lower) {
+        "Pro".into()
+    } else {
+        plan
+    })
 }
 
 /// Port of `parseCursorUsage`. The plan reply is optional (a failed plan call is `None`).
@@ -100,15 +107,26 @@ pub(crate) fn state_db() -> PathBuf {
     if !super::codex::real_sign_ins() {
         return PathBuf::from("no-real-sign-in-in-tests");
     }
-    let roaming = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(|| {
-        let home = std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_default();
-        home.join("AppData").join("Roaming")
-    });
-    roaming.join("Cursor").join("User").join("globalStorage").join("state.vscdb")
+    let roaming = std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            let home = std::env::var_os("USERPROFILE")
+                .map(PathBuf::from)
+                .unwrap_or_default();
+            home.join("AppData").join("Roaming")
+        });
+    roaming
+        .join("Cursor")
+        .join("User")
+        .join("globalStorage")
+        .join("state.vscdb")
 }
 
 fn is_busy(e: &rusqlite::Error) -> bool {
-    matches!(e.sqlite_error_code(), Some(ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked))
+    matches!(
+        e.sqlite_error_code(),
+        Some(ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked)
+    )
 }
 
 /// Read the sign-in in one read-only open. Ok(None): Cursor not installed or not signed in.
@@ -123,7 +141,9 @@ pub fn read_state(db: &Path, busy: Duration) -> Result<Option<CursorState>, Prov
         conn.busy_timeout(busy)?;
         let get = |key: &str| -> rusqlite::Result<Option<String>> {
             let v: Option<rusqlite::types::Value> = conn
-                .query_row("SELECT value FROM ItemTable WHERE key = ?1", [key], |r| r.get(0))
+                .query_row("SELECT value FROM ItemTable WHERE key = ?1", [key], |r| {
+                    r.get(0)
+                })
                 .optional()?;
             Ok(match v {
                 Some(rusqlite::types::Value::Text(s)) => Some(s),
@@ -136,9 +156,16 @@ pub fn read_state(db: &Path, busy: Duration) -> Result<Option<CursorState>, Prov
         if account_name.is_none() {
             account_name = get("cursorAuth/cachedScopedProfile")?
                 .and_then(|p| serde_json::from_str::<Value>(&p).ok())
-                .and_then(|p| p.get("displayName").and_then(Value::as_str).map(str::to_string));
+                .and_then(|p| {
+                    p.get("displayName")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                });
         }
-        Ok(CursorState { token, account_name })
+        Ok(CursorState {
+            token,
+            account_name,
+        })
     };
     match read() {
         Ok(state) => Ok(Some(state)),
@@ -154,8 +181,7 @@ pub fn read_state(db: &Path, busy: Duration) -> Result<Option<CursorState>, Prov
 type StateCache = HashMap<PathBuf, (Instant, Option<CursorState>)>;
 
 /// Last good read per DB path. A locked read never replaces it.
-static STATE: LazyLock<Mutex<StateCache>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+static STATE: LazyLock<Mutex<StateCache>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn current_state(db: &Path, busy: Duration) -> Result<Option<CursorState>, ProviderError> {
     if let Some((at, state)) = STATE.lock().unwrap().get(db) {
@@ -165,7 +191,10 @@ fn current_state(db: &Path, busy: Duration) -> Result<Option<CursorState>, Provi
     }
     match read_state(db, busy) {
         Ok(state) => {
-            STATE.lock().unwrap().insert(db.to_path_buf(), (Instant::now(), state.clone()));
+            STATE
+                .lock()
+                .unwrap()
+                .insert(db.to_path_buf(), (Instant::now(), state.clone()));
             Ok(state)
         }
         Err(e) => {
@@ -181,7 +210,10 @@ fn current_state(db: &Path, busy: Duration) -> Result<Option<CursorState>, Provi
 fn account_of(state: Option<CursorState>) -> Option<CursorAccount> {
     let state = state?;
     let token = state.token.filter(|t| !t.is_empty())?;
-    let label = state.account_name.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let label = state
+        .account_name
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     Some(CursorAccount {
         id: label.as_deref().unwrap_or("signed-in").to_lowercase(),
         label,
@@ -204,7 +236,10 @@ fn post(http: &reqwest::Client, token: &str, method: &str) -> reqwest::RequestBu
         .timeout(Duration::from_secs(10))
 }
 
-async fn fetch_usage(http: &reqwest::Client, account: &CursorAccount) -> Result<CursorUsage, ProviderError> {
+async fn fetch_usage(
+    http: &reqwest::Client,
+    account: &CursorAccount,
+) -> Result<CursorUsage, ProviderError> {
     let (usage, plan) = tokio::join!(
         post(http, &account.token, "GetCurrentPeriodUsage").send(),
         post(http, &account.token, "GetPlanInfo").send()
@@ -244,7 +279,9 @@ async fn accounts_from(core: &Core, db: &Path, busy: Duration) -> Vec<Value> {
                     load: Box::pin(async move {
                         CACHE
                             .get(&core.cache, &key, |_| async move {
-                                fetch_usage(&core.http, &account).await.map_err(FetchError::from)
+                                fetch_usage(&core.http, &account)
+                                    .await
+                                    .map_err(FetchError::from)
                             })
                             .await
                     }),
@@ -263,7 +300,9 @@ async fn accounts_from(core: &Core, db: &Path, busy: Duration) -> Vec<Value> {
                     label: seen.label,
                     active: true,
                     load: Box::pin(async move {
-                        CACHE.get(&core.cache, &key, |_| async move { Err(error.into()) }).await
+                        CACHE
+                            .get(&core.cache, &key, |_| async move { Err(error.into()) })
+                            .await
                     }),
                     label_from: None,
                 }]
@@ -284,9 +323,14 @@ mod tests {
     use crate::providers::{SeenAccount, UsageCache};
     use crate::store::{MemoryVault, Store};
 
-    const OK: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/cursor/ok.json"));
-    const INVALID: &[u8] =
-        include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/cursor/invalid.json"));
+    const OK: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/cursor/ok.json"
+    ));
+    const INVALID: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/cursor/invalid.json"
+    ));
 
     fn split(fixture: &[u8]) -> (Vec<u8>, Value) {
         let v: Value = serde_json::from_slice(fixture).unwrap();
@@ -294,8 +338,14 @@ mod tests {
     }
 
     fn temp_dir(tag: &str) -> PathBuf {
-        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let dir = std::env::temp_dir().join(format!("usagedeck-cursor-{tag}-{}-{nanos}", std::process::id()));
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "usagedeck-cursor-{tag}-{}-{nanos}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -310,27 +360,49 @@ mod tests {
         assert_eq!(u.total_spend, Some(5374.0));
         assert_eq!(u.limit, Some(2000.0));
         assert_eq!(u.bonus_spend, Some(3374.0));
-        assert_eq!(u.billing_cycle_end.as_deref(), Some("2026-11-11T22:16:13.000Z"));
+        assert_eq!(
+            u.billing_cycle_end.as_deref(),
+            Some("2026-11-11T22:16:13.000Z")
+        );
         assert_eq!(u.plan_name.as_deref(), Some("Pro"));
         assert_eq!(u.account_name.as_deref(), Some("user@example.com"));
-        assert_eq!(cursor_plan_name(&Value::from("$20/mo")).as_deref(), Some("Pro"));
-        assert_eq!(cursor_plan_name(&Value::from("Business")).as_deref(), Some("Business"));
-        assert_eq!(cursor_plan_name(&Value::from("plan 200")).as_deref(), Some("plan 200"));
+        assert_eq!(
+            cursor_plan_name(&Value::from("$20/mo")).as_deref(),
+            Some("Pro")
+        );
+        assert_eq!(
+            cursor_plan_name(&Value::from("Business")).as_deref(),
+            Some("Business")
+        );
+        assert_eq!(
+            cursor_plan_name(&Value::from("plan 200")).as_deref(),
+            Some("plan 200")
+        );
     }
 
     #[tokio::test]
     async fn cursor_invalid_fixture_is_schema_changed_and_keeps_last_good() {
         let (bad, _) = split(INVALID);
-        assert_eq!(parse_cursor_usage(&bad, None, None), Err(ProviderError::SchemaChanged));
+        assert_eq!(
+            parse_cursor_usage(&bad, None, None),
+            Err(ProviderError::SchemaChanged)
+        );
         let dir = temp_dir("invalid");
         let cache = UsageCache::new(dir.join("usage-cache.json"));
-        let p: CachedProvider<CursorUsage> = CachedProvider::new(SECTION, Duration::from_secs(60), None);
+        let p: CachedProvider<CursorUsage> =
+            CachedProvider::new(SECTION, Duration::from_secs(60), None);
         let (usage, plan) = split(OK);
         let good = p
-            .get(&cache, "k", |_| async { parse_cursor_usage(&usage, Some(&plan), None).map_err(FetchError::from) })
+            .get(&cache, "k", |_| async {
+                parse_cursor_usage(&usage, Some(&plan), None).map_err(FetchError::from)
+            })
             .await;
         p.invalidate(None);
-        let stale = p.get(&cache, "k", |_| async { parse_cursor_usage(&bad, None, None).map_err(FetchError::from) }).await;
+        let stale = p
+            .get(&cache, "k", |_| async {
+                parse_cursor_usage(&bad, None, None).map_err(FetchError::from)
+            })
+            .await;
         assert_eq!(stale.usage, good.usage);
         assert!(stale.stale);
         assert_eq!(stale.error, Some(ProviderError::SchemaChanged));
@@ -372,10 +444,19 @@ mod tests {
 
         // fresh run, locked DB, nothing in memory: the remembered account keeps its cached usage
         let core = Core::new(Store::new(dir.clone(), Box::new(MemoryVault::default())));
-        let cached = CursorUsage { total_percent_used: Some(42.0), ..Default::default() };
+        let cached = CursorUsage {
+            total_percent_used: Some(42.0),
+            ..Default::default()
+        };
         core.cache.write(SECTION, "user@example.com", &cached).await;
         core.seen
-            .remember(SECTION, &[SeenAccount { id: "user@example.com".into(), label: Some("User@Example.com".into()) }])
+            .remember(
+                SECTION,
+                &[SeenAccount {
+                    id: "user@example.com".into(),
+                    label: Some("User@Example.com".into()),
+                }],
+            )
             .await;
         let rows = accounts_from(&core, &db, short).await;
         assert_eq!(rows.len(), 1, "card must not disappear");
@@ -413,7 +494,11 @@ mod tests {
         match fetch_usage(&reqwest::Client::new(), &account).await {
             Ok(u) => println!(
                 "cursor live: plan={:?} total={:?}% auto={:?}% api={:?}% cycleEnd={:?}",
-                u.plan_name, u.total_percent_used, u.auto_percent_used, u.api_percent_used, u.billing_cycle_end
+                u.plan_name,
+                u.total_percent_used,
+                u.auto_percent_used,
+                u.api_percent_used,
+                u.billing_cycle_end
             ),
             Err(e) => println!("cursor live: {e}"),
         }

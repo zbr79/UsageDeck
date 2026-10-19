@@ -66,7 +66,10 @@ pub fn average_luminance(bgra: &[u8], area: Rect, skip: Rect, stride: usize) -> 
                 continue;
             }
             let i = (row * w + col) * 4;
-            sum += (0.0722 * bgra[i] as f64 + 0.7152 * bgra[i + 1] as f64 + 0.2126 * bgra[i + 2] as f64) / 255.0;
+            sum += (0.0722 * bgra[i] as f64
+                + 0.7152 * bgra[i + 1] as f64
+                + 0.2126 * bgra[i + 2] as f64)
+                / 255.0;
             count += 1;
         }
     }
@@ -104,7 +107,15 @@ fn capture(area: Rect) -> Result<Vec<u8>, String> {
         };
         let mut buf = vec![0u8; (w * h * 4) as usize];
         let lines = if blit.is_ok() {
-            GetDIBits(mem, bmp, 0, h as u32, Some(buf.as_mut_ptr().cast()), &mut info, DIB_RGB_COLORS)
+            GetDIBits(
+                mem,
+                bmp,
+                0,
+                h as u32,
+                Some(buf.as_mut_ptr().cast()),
+                &mut info,
+                DIB_RGB_COLORS,
+            )
         } else {
             0
         };
@@ -159,7 +170,9 @@ fn tick(app: &AppHandle) -> Duration {
     let auto = app
         .try_state::<Core>()
         .is_some_and(|core| core.store.get_settings().theme_mode == ThemeMode::Auto);
-    let Some(widget) = app.get_webview_window(WIDGET) else { return IDLE_DELAY };
+    let Some(widget) = app.get_webview_window(WIDGET) else {
+        return IDLE_DELAY;
+    };
     if !auto || !widget.is_visible().unwrap_or(false) {
         return IDLE_DELAY;
     }
@@ -205,8 +218,18 @@ mod tests {
     #[test]
     fn luminance_skips_the_widget() {
         // 4x2 area: left half white, right half black; the black half is the "widget".
-        let area = Rect { x0: 10, y0: 20, x1: 14, y1: 22 };
-        let skip = Rect { x0: 12, y0: 20, x1: 14, y1: 22 };
+        let area = Rect {
+            x0: 10,
+            y0: 20,
+            x1: 14,
+            y1: 22,
+        };
+        let skip = Rect {
+            x0: 12,
+            y0: 20,
+            x1: 14,
+            y1: 22,
+        };
         let mut buf = Vec::new();
         for _row in 0..2 {
             for col in 0..4 {
@@ -214,7 +237,18 @@ mod tests {
                 buf.extend_from_slice(&[v, v, v, 255]);
             }
         }
-        let all = average_luminance(&buf, area, Rect { x0: 0, y0: 0, x1: 0, y1: 0 }, 1).unwrap();
+        let all = average_luminance(
+            &buf,
+            area,
+            Rect {
+                x0: 0,
+                y0: 0,
+                x1: 0,
+                y1: 0,
+            },
+            1,
+        )
+        .unwrap();
         assert!((all - 0.5).abs() < 1e-9);
         let around = average_luminance(&buf, area, skip, 1).unwrap();
         assert!((around - 1.0).abs() < 1e-9);
@@ -223,8 +257,27 @@ mod tests {
 
     #[test]
     fn capture_area_is_clamped_to_the_monitor() {
-        let display = Rect { x0: 0, y0: 0, x1: 1920, y1: 1080 };
-        let outer = Rect { x0: -48, y0: 1000, x1: 238, y1: 1200 }.clamp_to(display);
-        assert_eq!(outer, Rect { x0: 0, y0: 1000, x1: 238, y1: 1080 });
+        let display = Rect {
+            x0: 0,
+            y0: 0,
+            x1: 1920,
+            y1: 1080,
+        };
+        let outer = Rect {
+            x0: -48,
+            y0: 1000,
+            x1: 238,
+            y1: 1200,
+        }
+        .clamp_to(display);
+        assert_eq!(
+            outer,
+            Rect {
+                x0: 0,
+                y0: 1000,
+                x1: 238,
+                y1: 1080
+            }
+        );
     }
 }

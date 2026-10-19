@@ -23,7 +23,10 @@ pub(crate) fn to_iso(value: &Value) -> Option<String> {
                 }
             }
             let d = chrono::DateTime::parse_from_rfc3339(t).ok()?;
-            Some(d.with_timezone(&chrono::Utc).to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+            Some(
+                d.with_timezone(&chrono::Utc)
+                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            )
         }
         _ => None,
     }

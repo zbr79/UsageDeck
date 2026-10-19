@@ -14,7 +14,9 @@ use std::time::Duration;
 use store::{CredentialVault, Store, SEEN_ACCOUNTS_FILE, USAGE_CACHE_FILE, WINDOW_POS_FILE};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, WebviewWindow, WindowEvent};
+use tauri::{
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, WebviewWindow, WindowEvent,
+};
 
 pub const WIDGET: &str = "widget";
 pub const SETTINGS: &str = "settings";
@@ -76,7 +78,9 @@ fn widget_resize(app: AppHandle, height: f64) {
     if !height.is_finite() {
         return;
     }
-    let Some(widget) = app.get_webview_window(WIDGET) else { return };
+    let Some(widget) = app.get_webview_window(WIDGET) else {
+        return;
+    };
     let max_h = widget
         .current_monitor()
         .ok()
@@ -114,7 +118,9 @@ fn show_widget(app: &AppHandle) {
 
 /// Cover the work area of the widget's monitor (desktop/main.js:162-195), then show and focus.
 fn show_settings(app: &AppHandle) {
-    let Some(settings) = app.get_webview_window(SETTINGS) else { return };
+    let Some(settings) = app.get_webview_window(SETTINGS) else {
+        return;
+    };
     let monitor = app
         .get_webview_window(WIDGET)
         .and_then(|w| w.current_monitor().ok().flatten())
@@ -137,16 +143,30 @@ fn hide_settings(app: &AppHandle) {
 
 /// Restore the saved widget position if it is still on a visible monitor (desktop/main.js:71-87).
 fn restore_position(core: &Core, widget: &WebviewWindow) {
-    let Some(saved) = core.store.read_json(WINDOW_POS_FILE) else { return };
-    let (Some(x), Some(y)) = (saved["x"].as_i64(), saved["y"].as_i64()) else { return };
-    let width = widget.outer_size().map(|s| s.width as i64).unwrap_or(WIDTH as i64);
-    let visible = widget.available_monitors().unwrap_or_default().iter().any(|m| {
-        let a = m.work_area();
-        let margin = (40.0 * m.scale_factor()).round() as i64;
-        let (ax, ay) = (a.position.x as i64, a.position.y as i64);
-        let (aw, ah) = (a.size.width as i64, a.size.height as i64);
-        x + margin < ax + aw && x + width - margin > ax && y + margin < ay + ah && y + margin > ay
-    });
+    let Some(saved) = core.store.read_json(WINDOW_POS_FILE) else {
+        return;
+    };
+    let (Some(x), Some(y)) = (saved["x"].as_i64(), saved["y"].as_i64()) else {
+        return;
+    };
+    let width = widget
+        .outer_size()
+        .map(|s| s.width as i64)
+        .unwrap_or(WIDTH as i64);
+    let visible = widget
+        .available_monitors()
+        .unwrap_or_default()
+        .iter()
+        .any(|m| {
+            let a = m.work_area();
+            let margin = (40.0 * m.scale_factor()).round() as i64;
+            let (ax, ay) = (a.position.x as i64, a.position.y as i64);
+            let (aw, ah) = (a.size.width as i64, a.size.height as i64);
+            x + margin < ax + aw
+                && x + width - margin > ax
+                && y + margin < ay + ah
+                && y + margin > ay
+        });
     if visible {
         let _ = widget.set_position(PhysicalPosition::new(x as i32, y as i32));
     }
@@ -165,10 +185,10 @@ fn schedule_position_save(app: AppHandle, pos: PhysicalPosition<i32>) {
             return;
         }
         let core = app.state::<Core>();
-        if let Err(e) = core
-            .store
-            .write_json(WINDOW_POS_FILE, &serde_json::json!({ "x": pos.x, "y": pos.y }))
-        {
+        if let Err(e) = core.store.write_json(
+            WINDOW_POS_FILE,
+            &serde_json::json!({ "x": pos.x, "y": pos.y }),
+        ) {
             log::warn!("could not save widget position: {e}");
         }
     });
@@ -216,9 +236,12 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 /// holding cargo's `CACHEDIR.TAG` / `.rustc_info.json` (covers a custom CARGO_TARGET_DIR).
 #[cfg_attr(debug_assertions, allow(dead_code))]
 fn running_from_cargo_target() -> bool {
-    let Ok(exe) = std::env::current_exe() else { return true };
+    let Ok(exe) = std::env::current_exe() else {
+        return true;
+    };
     exe.ancestors().skip(1).any(|dir| {
-        dir.file_name().is_some_and(|n| n.eq_ignore_ascii_case("target"))
+        dir.file_name()
+            .is_some_and(|n| n.eq_ignore_ascii_case("target"))
             || dir.join("CACHEDIR.TAG").is_file()
             || dir.join(".rustc_info.json").is_file()
     })

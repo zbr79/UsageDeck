@@ -128,7 +128,10 @@ pub async fn dispatch(core: &Core, method: &str, path: &str, body: Option<Value>
                 .store
                 .update_accounts(|mut accounts| {
                     let lower = email.to_lowercase();
-                    match accounts.iter_mut().find(|a| a.email.to_lowercase() == lower) {
+                    match accounts
+                        .iter_mut()
+                        .find(|a| a.email.to_lowercase() == lower)
+                    {
                         Some(existing) => existing.key = key.clone(),
                         None => accounts.push(crate::store::Account {
                             email: email.clone(),
@@ -173,19 +176,28 @@ pub async fn dispatch(core: &Core, method: &str, path: &str, body: Option<Value>
                 .map(|(_, v)| v.to_lowercase())
                 .unwrap_or_default();
             let accounts = core.store.get_accounts().await;
-            match accounts.into_iter().find(|a| a.email.to_lowercase() == email) {
+            match accounts
+                .into_iter()
+                .find(|a| a.email.to_lowercase() == email)
+            {
                 Some(a) => ok(json!({ "key": a.key })),
                 None => error(404, "unknown account"),
             }
         }
-        ("/api/usage", "GET") => ok(json!({ "accounts": providers::opencode::accounts(core).await })),
-        ("/api/cursor", "GET") => ok(json!({ "accounts": providers::cursor::accounts(core).await })),
+        ("/api/usage", "GET") => {
+            ok(json!({ "accounts": providers::opencode::accounts(core).await }))
+        }
+        ("/api/cursor", "GET") => {
+            ok(json!({ "accounts": providers::cursor::accounts(core).await }))
+        }
         ("/api/grok", "GET") => ok(json!({ "accounts": providers::grok::accounts(core).await })),
         ("/api/codex", "GET") => ok(json!({ "accounts": providers::codex::accounts(core).await })),
-        ("/api/claude", "GET") => ok(json!({ "accounts": providers::claude::accounts(core).await })),
+        ("/api/claude", "GET") => {
+            ok(json!({ "accounts": providers::claude::accounts(core).await }))
+        }
         (
-            "/api/settings" | "/api/accounts" | "/api/key" | "/api/usage" | "/api/cursor" | "/api/grok"
-            | "/api/codex" | "/api/claude",
+            "/api/settings" | "/api/accounts" | "/api/key" | "/api/usage" | "/api/cursor"
+            | "/api/grok" | "/api/codex" | "/api/claude",
             _,
         ) => error(405, "method not allowed"),
         _ => error(404, "not found"),
@@ -212,35 +224,76 @@ mod tests {
     #[tokio::test]
     async fn settings_and_accounts_routes() {
         let core = core("routes");
-        let r = dispatch(&core, "POST", "/api/settings", Some(json!({ "grokEnabled": false, "x": 1 }))).await;
+        let r = dispatch(
+            &core,
+            "POST",
+            "/api/settings",
+            Some(json!({ "grokEnabled": false, "x": 1 })),
+        )
+        .await;
         assert_eq!(r.status, 200);
         assert!(r.settings_changed);
         assert_eq!(r.body["settings"]["grokEnabled"], json!(false));
         let r = dispatch(&core, "GET", "/api/settings", None).await;
         assert_eq!(r.body["settings"]["grokEnabled"], json!(false));
 
-        let bad = dispatch(&core, "POST", "/api/accounts", Some(json!({ "email": "a@b.com", "key": "sk-a b" }))).await;
-        assert_eq!((bad.status, bad.body["error"].clone()), (400, json!("a valid sk- key is required")));
-        let bad = dispatch(&core, "POST", "/api/accounts", Some(json!({ "key": "sk-abc" }))).await;
+        let bad = dispatch(
+            &core,
+            "POST",
+            "/api/accounts",
+            Some(json!({ "email": "a@b.com", "key": "sk-a b" })),
+        )
+        .await;
+        assert_eq!(
+            (bad.status, bad.body["error"].clone()),
+            (400, json!("a valid sk- key is required"))
+        );
+        let bad = dispatch(
+            &core,
+            "POST",
+            "/api/accounts",
+            Some(json!({ "key": "sk-abc" })),
+        )
+        .await;
         assert_eq!(bad.status, 400);
 
-        let r = dispatch(&core, "POST", "/api/accounts", Some(json!({ "email": " A@b.com ", "key": "sk-1234567890" }))).await;
+        let r = dispatch(
+            &core,
+            "POST",
+            "/api/accounts",
+            Some(json!({ "email": " A@b.com ", "key": "sk-1234567890" })),
+        )
+        .await;
         assert_eq!(r.body, json!({ "ok": true }));
         let r = dispatch(&core, "GET", "/api/accounts", None).await;
-        assert_eq!(r.body, json!({ "accounts": [{ "email": "A@b.com", "keyHint": "sk-…7890" }] }));
+        assert_eq!(
+            r.body,
+            json!({ "accounts": [{ "email": "A@b.com", "keyHint": "sk-…7890" }] })
+        );
         // the file holds emails only
         let file = core.store.read_json(crate::store::ACCOUNTS_FILE).unwrap();
         assert_eq!(file, json!([{ "email": "A@b.com" }]));
 
         let r = dispatch(&core, "GET", "/api/key?email=a%40B.com", None).await;
         assert_eq!(r.body, json!({ "key": "sk-1234567890" }));
-        let r = dispatch(&core, "DELETE", "/api/accounts", Some(json!({ "email": "a@b.com" }))).await;
+        let r = dispatch(
+            &core,
+            "DELETE",
+            "/api/accounts",
+            Some(json!({ "email": "a@b.com" })),
+        )
+        .await;
         assert_eq!(r.status, 200);
         let r = dispatch(&core, "GET", "/api/key?email=a@b.com", None).await;
         assert_eq!(r.status, 404);
 
         assert_eq!(dispatch(&core, "GET", "/api/nope", None).await.status, 404);
-        assert_eq!(dispatch(&core, "DELETE", "/api/settings", None).await.status, 405);
+        assert_eq!(
+            dispatch(&core, "DELETE", "/api/settings", None)
+                .await
+                .status,
+            405
+        );
         let r = dispatch(&core, "GET", "/api/cursor", None).await;
         assert_eq!(r.body, json!({ "accounts": [] }));
     }

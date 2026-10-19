@@ -85,7 +85,9 @@ pub fn unseal(key: &AppKey, sealed_b64: Option<&Value>) -> Option<String> {
     }
     let cipher = Aes256Gcm::new_from_slice(key).ok()?;
     // aes-gcm expects ciphertext || tag, which is exactly the rest of the value.
-    let plain = cipher.decrypt(Nonce::from_slice(&b[3..15]), &b[15..]).ok()?;
+    let plain = cipher
+        .decrypt(Nonce::from_slice(&b[3..15]), &b[15..])
+        .ok()?;
     String::from_utf8(plain).ok()
 }
 
@@ -94,7 +96,9 @@ pub fn unseal(key: &AppKey, sealed_b64: Option<&Value>) -> Option<String> {
 pub fn seal(key: &AppKey, plain: &str) -> String {
     let nonce = [7u8; 12];
     let cipher = Aes256Gcm::new_from_slice(key).unwrap();
-    let ct = cipher.encrypt(Nonce::from_slice(&nonce), plain.as_bytes()).unwrap();
+    let ct = cipher
+        .encrypt(Nonce::from_slice(&nonce), plain.as_bytes())
+        .unwrap();
     let mut out = b"v10".to_vec();
     out.extend_from_slice(&nonce);
     out.extend_from_slice(&ct);
@@ -125,7 +129,10 @@ mod tests {
 
         assert_eq!(app_key(&local_state), Some(key));
         let sealed = seal(&key, r#"{"hello":"world"}"#);
-        assert_eq!(unseal(&key, Some(&json!(sealed))).as_deref(), Some(r#"{"hello":"world"}"#));
+        assert_eq!(
+            unseal(&key, Some(&json!(sealed))).as_deref(),
+            Some(r#"{"hello":"world"}"#)
+        );
 
         // wrong key, wrong prefix, not a string: no value
         let other: AppKey = [1; 32];
