@@ -2,6 +2,9 @@
 //!
 //! - `--import-old-data <dir>`: one-time copy of the old app's `data/` folder.
 //! - `--dump`: run every provider route once and print a redacted JSON summary.
+//! - `--pace [<data dir>]`: scan the Claude Code transcripts once and print the
+//!   `/api/claude/pace` JSON (scan timings on stderr). The optional folder replaces the app data
+//!   folder, so a diagnostic run need not touch the real index files.
 //!
 //! Neither mode ever prints an API key or a full account label.
 
@@ -34,11 +37,14 @@ const DUMP_ROUTES: [&str; 5] = [
 pub fn try_run() -> Option<i32> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mode = args.first()?.as_str();
-    if mode != "--import-old-data" && mode != "--dump" {
+    if mode != "--import-old-data" && mode != "--dump" && mode != "--pace" {
         return None;
     }
     attach_console();
-    let Some(dir) = app_data_dir() else {
+    let custom_dir = (mode == "--pace")
+        .then(|| args.get(1).map(PathBuf::from))
+        .flatten();
+    let Some(dir) = custom_dir.or_else(app_data_dir) else {
         eprintln!("APPDATA is not set");
         return Some(2);
     };
@@ -58,8 +64,32 @@ pub fn try_run() -> Option<i32> {
                 2
             }
         },
+        "--pace" => runtime.block_on(pace(Core::new(store))),
         _ => runtime.block_on(dump(Core::new(store))),
     })
+}
+
+// ---- --pace -----------------------------------------------------------------------------------
+
+async fn pace(core: Core) -> i32 {
+    let engine = core.spend.clone();
+    let now = crate::claude_logs::now_ms();
+    let Ok(stats) = tokio::task::spawn_blocking(move || engine.scan_once(now)).await else {
+        eprintln!("scan failed");
+        return 1;
+    };
+    let response = crate::api::dispatch(&core, "GET", "/api/claude/pace", None).await;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&response.body).unwrap_or_default()
+    );
+    let diag = json!({ "scan": stats, "last24h": core.spend.spend(now).last24h });
+    eprintln!("{diag}");
+    if response.status == 200 {
+        0
+    } else {
+        1
+    }
 }
 
 /// True when the command line (the process's own, or the argv a second launch hands to the
