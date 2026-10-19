@@ -320,7 +320,7 @@ export default function OpenCodeAccounts({
               : updated
                 ? `Cached · ${updated}`
                 : off
-                  ? "Hidden from widget"
+                  ? null // the "hidden" badge says it
                   : "On widget";
             const footer = (
               <CardFooter
@@ -386,6 +386,7 @@ export default function OpenCodeAccounts({
                   increased={() => false}
                   onCopyKey={() => void copyKey(a.email)}
                   extras={{ dimmed: lapsed, dashed: off, footer }}
+                  fullEmail
                 />
               </li>
             );

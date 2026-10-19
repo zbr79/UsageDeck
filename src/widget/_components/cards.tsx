@@ -88,6 +88,7 @@ export function OpenCodeCard({
   increased,
   onCopyKey,
   extras,
+  fullEmail = false,
 }: {
   row: OpenCodeAccountUsage;
   active: boolean;
@@ -100,8 +101,15 @@ export function OpenCodeCard({
   onCopyKey: () => void;
   /** settings-only additions; the widget passes none */
   extras?: CardExtras;
+  /** without a nickname, title the card with the whole email (settings), not its first letters */
+  fullEmail?: boolean;
 }) {
-  const title = nameFor(settings, row.email, "OpenCode", row.email.slice(0, 4));
+  const title = nameFor(
+    settings,
+    row.email,
+    "OpenCode",
+    fullEmail ? row.email : row.email.slice(0, 4),
+  );
   const u = row.usage;
   const state: CardState = isAccountExhausted(row, now)
     ? "exhausted"
