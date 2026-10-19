@@ -178,15 +178,13 @@ fn build_settings(app: &AppHandle) {
     };
     // Alt+F4 closes the overlay like the close button: the window is destroyed.
     let handle = app.clone();
-    settings.on_window_event(move |event| {
-        match event {
-            WindowEvent::CloseRequested { .. } => {
-                log::info!("settings close requested");
-                let _ = handle.emit_to(WIDGET, EVENT_SETTINGS_CHANGED, ());
-            }
-            WindowEvent::Destroyed => log::info!("settings window destroyed"),
-            _ => {}
+    settings.on_window_event(move |event| match event {
+        WindowEvent::CloseRequested { .. } => {
+            log::info!("settings close requested");
+            let _ = handle.emit_to(WIDGET, EVENT_SETTINGS_CHANGED, ());
         }
+        WindowEvent::Destroyed => log::info!("settings window destroyed"),
+        _ => {}
     });
     let monitor = app
         .get_webview_window(WIDGET)
