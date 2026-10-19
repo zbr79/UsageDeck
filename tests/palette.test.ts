@@ -40,6 +40,12 @@ describe.each(CARD_PALETTES)("%s card theme", (_name, p) => {
     expect(contrast(p[key], p.card)).toBeGreaterThanOrEqual(AA_NON_TEXT);
   });
 
+  // The even-pace tick sits on the meter track and pokes out onto the card.
+  it("pace tick meets 3:1 against the track and the card", () => {
+    expect(contrast(p.paceTick, p.card)).toBeGreaterThanOrEqual(AA_NON_TEXT);
+    expect(contrast(p.paceTick, p.track, p.card)).toBeGreaterThanOrEqual(AA_NON_TEXT);
+  });
+
   // Signed-out / lapsed accounts swap in these instead of fading the card with opacity.
   it.each(["dimText", "dimMuted"] as const)("dimmed %s meets AA on the card", (key) => {
     expect(contrast(p[key], p.card)).toBeGreaterThanOrEqual(AA_TEXT);
