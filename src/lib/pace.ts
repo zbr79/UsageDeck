@@ -1,4 +1,5 @@
-// Pure helpers for the Claude "spend and pace" line (widget) and section (settings).
+// Pure helpers for Claude spend and pace: the widget card (header rate, even-pace tick, meter colour
+// and tooltip) and the settings section.
 // Data comes from GET /api/claude/pace; see docs/plans/claude-spend-and-pace.md.
 import type { ClaudePace, PaceWindow } from "./types";
 
@@ -8,13 +9,15 @@ export type PaceWindowKey = "fiveHour" | "weekly";
 /** Red once the projected limit is this close (or closer). */
 export const RED_WITHIN_MS = 30 * 60_000;
 
-/** The line drops its window label above this many characters, to fit a 238 px card. */
-export const LINE_MAX_CHARS = 36;
+const H = 3_600_000;
 
-export const WINDOW_LABELS: Record<PaceWindowKey, { short: string; long: string }> = {
-  fiveHour: { short: "5h", long: "5-hour" },
-  weekly: { short: "wk", long: "Weekly" },
+export const WINDOW_LABELS: Record<PaceWindowKey, { long: string }> = {
+  fiveHour: { long: "5-hour" },
+  weekly: { long: "Weekly" },
 };
+
+/** Length of each Claude usage window. */
+export const WINDOW_MS: Record<PaceWindowKey, number> = { fiveHour: 5 * H, weekly: 7 * 24 * H };
 
 /** Dollars: one decimal under $10, whole dollars otherwise ("$7.4", "$71", "$1,293"). */
 export function formatUsd(v: number): string {
@@ -64,22 +67,6 @@ export function formatClock(at: number, now: number): string {
 const limitEta = (w: PaceWindow | null): number | null =>
   w && w.state === "limit" && w.etaToLimit != null ? w.etaToLimit : null;
 
-/**
- * The window that matters more: the one heading for its limit soonest, else the 5-hour window
- * (else the weekly one, when the 5-hour one is missing).
- */
-export function pickWindow(
-  windows: ClaudePace["windows"],
-): { key: PaceWindowKey; window: PaceWindow } | null {
-  const five = limitEta(windows.fiveHour);
-  const week = limitEta(windows.weekly);
-  if (week != null && (five == null || week < five))
-    return { key: "weekly", window: windows.weekly! };
-  if (windows.fiveHour) return { key: "fiveHour", window: windows.fiveHour };
-  if (windows.weekly) return { key: "weekly", window: windows.weekly };
-  return null;
-}
-
 /** Muted normally; amber when heading for a limit; red when that is 30 minutes away or less. */
 export function paceTone(w: PaceWindow | null, now: number): PaceTone {
   const eta = limitEta(w);
@@ -97,49 +84,78 @@ export function windowForecast(w: PaceWindow, now: number, untilReset = false): 
   return untilReset ? "lasts until reset" : "lasts";
 }
 
-export interface PaceLine {
-  text: string;
-  tone: PaceTone;
-  /** multi-line tooltip */
-  title: string;
+/** The card header's rate, "$28/h"; null while backfilling or without pace (the call failed). */
+export function headerRate(pace: ClaudePace | null): string | null {
+  return !pace || pace.spend.backfilling ? null : formatUsdRate(pace.spend.rate60m);
 }
 
-/** The widget's one line: "$71/h · 5h +9%/h · lasts" or "… · limit 3:40 PM". */
-export function paceLine(pace: ClaudePace, now: number, maxChars = LINE_MAX_CHARS): PaceLine {
-  const rate = formatUsdRate(pace.spend.backfilling ? null : pace.spend.rate60m);
-  const picked = pickWindow(pace.windows);
-  let text = rate;
-  if (picked) {
-    const w = picked.window;
-    if (isMeasuring(w)) text = `${rate} · measuring…`;
+const resetTime = (resetsAt: string | null | undefined): number | null => {
+  const t = resetsAt ? Date.parse(resetsAt) : NaN;
+  return Number.isFinite(t) ? t : null;
+};
+
+/**
+ * Where the even-pace tick sits, in percent of the bar: the server's value, else the share of the
+ * window already gone (from its reset time and length; needs no history). Null hides the tick: the
+ * reset is unknown or already past.
+ */
+export function evenPacePct(
+  resetsAt: string | null | undefined,
+  lengthMs: number,
+  now: number,
+  fromServer: number | null = null,
+): number | null {
+  const reset = resetTime(resetsAt);
+  if (reset == null || reset <= now) return null;
+  const v = fromServer ?? (1 - (reset - now) / lengthMs) * 100;
+  return Math.min(100, Math.max(0, v));
+}
+
+export type MeterSeverity = "ok" | "warn" | "danger";
+const RANK: Record<MeterSeverity, number> = { ok: 0, warn: 1, danger: 2 };
+
+/** The meter's usage colours: warn from 80%, danger from 100%. */
+export function usageSeverity(percent: number): MeterSeverity {
+  return percent >= 100 ? "danger" : percent >= 80 ? "warn" : "ok";
+}
+
+/**
+ * A Claude meter's fill: the more severe of its usage colour and its pace (amber when heading for
+ * the limit more than 30 minutes away, red at 30 minutes or less).
+ */
+export function meterSeverity(percent: number, w: PaceWindow | null, now: number): MeterSeverity {
+  const tone = paceTone(w, now);
+  const pace: MeterSeverity = tone === "red" ? "danger" : tone === "amber" ? "warn" : "ok";
+  const usage = usageSeverity(percent);
+  return RANK[pace] > RANK[usage] ? pace : usage;
+}
+
+/**
+ * The pace part of a meter's tooltip: "37% used · even pace 69% · +9%/h · ends ~51% at reset", or
+ * "… · full by 3:40 PM", or "… · measuring speed…". The end is pct + speed × hours left, capped at 100.
+ */
+export function meterPaceText(
+  pct: number,
+  even: number | null,
+  w: PaceWindow | null,
+  now: number,
+): string {
+  const parts = [`${formatPct(pct)} used`];
+  if (even != null) parts.push(`even pace ${formatPct(even)}`);
+  if (w) {
+    if (isMeasuring(w)) parts.push("measuring speed…");
     else {
-      const speed = formatPctPerHour(w.pctPerHour!);
-      const tail = windowForecast(w, now);
-      text = `${rate} · ${WINDOW_LABELS[picked.key].short} ${speed} · ${tail}`;
-      if (text.length > maxChars) text = `${rate} · ${speed} · ${tail}`;
+      parts.push(formatPctPerHour(w.pctPerHour!));
+      const eta = limitEta(w);
+      const reset = resetTime(w.resetsAt);
+      if (eta != null) parts.push(`full by ${formatClock(eta, now)}`);
+      else if (reset != null && reset > now) {
+        const end = Math.max(0, Math.min(100, pct + (w.pctPerHour! * (reset - now)) / H));
+        parts.push(`ends ~${formatPct(end)} at reset`);
+      }
     }
   }
-  return { text, tone: paceTone(picked?.window ?? null, now), title: paceTitle(pace, now) };
-}
-
-/** Tooltip: both rates, both windows' speed and forecast, and the coverage. */
-export function paceTitle(pace: ClaudePace, now: number): string {
-  const s = pace.spend;
-  const lines = [
-    s.backfilling
-      ? "Spend: reading Claude Code logs…"
-      : `Spend: ${formatUsdRate(s.rate60m)} (last 60 min) · ${formatUsdRate(s.rate15m)} (last 15 min)`,
-  ];
-  for (const key of ["fiveHour", "weekly"] as const) {
-    const w = pace.windows[key];
-    if (!w) continue;
-    const speed = isMeasuring(w) ? "" : ` · ${formatPctPerHour(w.pctPerHour!)}`;
-    lines.push(
-      `${WINDOW_LABELS[key].long}: ${formatPct(w.pct)}${speed} · ${windowForecast(w, now, true)}`,
-    );
-  }
-  lines.push("Claude Code on this PC (API-equivalent, not your bill)");
-  return lines.join("\n");
+  return parts.join(" · ");
 }
 
 /** "ahead of even pace by 12 pts" / "behind even pace by 5 pts" / "on even pace". */

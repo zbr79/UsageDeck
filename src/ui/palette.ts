@@ -21,6 +21,8 @@ export interface WidgetPalette {
   barWarn: string;
   barDanger: string;
   barDim: string;
+  /** Claude's even-pace tick on a meter (3:1 against the track and the card) */
+  paceTick: string;
   /** text and meter fills of a signed-out or lapsed account (instead of fading with opacity) */
   dimText: string;
   dimMuted: string;
@@ -67,6 +69,7 @@ const lightBase: Omit<WidgetPalette, "card" | "track"> = {
   barWarn: "#bb4d00",
   barDanger: "#c10007",
   barDim: "#71717b",
+  paceTick: "#3f3f46",
   dimText: "#5f5f66",
   dimMuted: "#62626b",
   dimBarOk: "#2b8e71",
@@ -94,6 +97,7 @@ export const WIDGET_PALETTES: Record<WidgetTheme, WidgetPalette> = {
     barWarn: "#ffb900",
     barDanger: "#ff6467",
     barDim: "#71717b",
+    paceTick: "#e4e4e7",
     dimText: "#a1a1aa",
     dimMuted: "#83838b",
     dimBarOk: "#0a8962",

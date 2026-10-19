@@ -4,7 +4,14 @@ import { CopyIcon } from "@/ui/Icons";
 import type { Tone } from "@/ui/palette";
 import { errorHint, isAuthRejected } from "@/lib/errors";
 import { capitalize, formatDuration, formatUntil } from "@/lib/format";
-import { paceLine, type PaceTone } from "@/lib/pace";
+import {
+  evenPacePct,
+  headerRate,
+  meterPaceText,
+  meterSeverity,
+  WINDOW_MS,
+  type PaceWindowKey,
+} from "@/lib/pace";
 import type { PeakInfo } from "@/lib/peak";
 import { isAccountExhausted, isExhaustedWindow, isPassed, isUnknownWindow } from "@/lib/ranking";
 import type {
@@ -14,6 +21,7 @@ import type {
   CursorUsage,
   GrokUsage,
   OpenCodeAccountUsage,
+  PaceWindow,
   ProviderId,
   Settings,
 } from "@/lib/types";
@@ -477,25 +485,23 @@ export function CodexCard({
 
 // ---- Claude ---------------------------------------------------------------
 
-const PACE_COLORS: Record<PaceTone, string> = {
-  muted: "var(--w-muted)",
-  amber: "var(--w-warn)",
-  red: "var(--w-peakActive)",
-};
-
-/** One glanceable line under the meters: "$71/h · 5h +9%/h · lasts". */
-export function PaceLine({ pace, now }: { pace: ClaudePace; now: number }) {
-  const line = paceLine(pace, now);
-  return (
-    <div
-      data-testid="claude-pace"
-      title={line.title}
-      className={`text-[11px] leading-4 mt-1 truncate tabular-nums transition-colors duration-700${line.tone === "muted" ? "" : " font-medium"}`}
-      style={{ color: PACE_COLORS[line.tone] }}
-    >
-      {line.text}
-    </div>
-  );
+/**
+ * A Claude meter's pace: the even-pace tick (the server's, else from the reset time; works without
+ * pace data), the fill severity and the tooltip details.
+ */
+function claudeMeterPace(
+  percent: number,
+  pw: PaceWindow | null,
+  key: PaceWindowKey,
+  w: ClaudeUsage["fiveHour"],
+  now: number,
+) {
+  const tick = evenPacePct(pw?.resetsAt ?? w.resetsAt, WINDOW_MS[key], now, pw?.evenPacePct);
+  return {
+    tick,
+    severity: meterSeverity(percent, pw, now),
+    detail: meterPaceText(percent, tick, pw, now),
+  };
 }
 
 export function ClaudeCard({
@@ -509,7 +515,7 @@ export function ClaudeCard({
   extras,
 }: {
   slot: ProviderSlot<ClaudeUsage>;
-  /** spend and pace of Claude Code on this PC; shown on one card only, null shows nothing */
+  /** spend and pace of Claude Code on this PC; one card only shows the rate, null shows none */
   pace?: ClaudePace | null;
   settings: Settings;
   now: number;
@@ -538,6 +544,7 @@ export function ClaudeCard({
     w?.percent == null || (slot.stale && isPassed(w.resetsAt, now));
   const exhausted =
     !!c && [c.fiveHour, c.weekly].some((w) => !windowUnknown(w) && (w.percent ?? 0) >= 100);
+  const rate = headerRate(pace);
   return (
     <Card
       extras={extras}
@@ -545,6 +552,17 @@ export function ClaudeCard({
       icon={<ProviderIcon src="/claude.ico" alt="" />}
       title={title}
       titleHint={c?.email ?? undefined}
+      titleAfter={
+        rate && (
+          <span
+            data-testid="claude-rate"
+            title="Claude Code spend on this PC, last 60 min (API-equivalent, not your bill)"
+            className="shrink-0 text-[12px] leading-4 tabular-nums text-(--w-muted) transition-colors duration-700"
+          >
+            {rate}
+          </span>
+        )
+      }
       state={exhausted ? "exhausted" : "normal"}
       hints={<SlotHints slot={slot} how="open Claude Code" />}
       badges={
@@ -575,21 +593,28 @@ export function ClaudeCard({
           <div className="flex gap-2">
             {(
               [
-                ["5h", "Rolling 5-hour window", c.fiveHour],
-                ["Weekly", "Weekly", c.weekly],
+                ["5h", "Rolling 5-hour window", c.fiveHour, "fiveHour"],
+                ["Weekly", "Weekly", c.weekly, "weekly"],
               ] as const
-            ).map(([label, name, w]) => (
-              <Meter
-                key={label}
-                label={label}
-                name={name}
-                percent={w.percent}
-                unknown={windowUnknown(w)}
-                reset={windowUnknown(w) ? null : formatUntil(w.resetsAt, now)}
-              />
-            ))}
+            ).map(([label, name, w, key]) => {
+              const unknown = windowUnknown(w);
+              const pw = pace?.windows[key] ?? null;
+              const meterPace = unknown ? null : claudeMeterPace(w.percent!, pw, key, w, now);
+              return (
+                <Meter
+                  key={label}
+                  label={label}
+                  name={name}
+                  percent={w.percent}
+                  unknown={unknown}
+                  reset={unknown ? null : formatUntil(w.resetsAt, now)}
+                  pacePct={meterPace?.tick}
+                  severity={meterPace?.severity}
+                  detail={meterPace?.detail}
+                />
+              );
+            })}
           </div>
-          {pace && <PaceLine pace={pace} now={now} />}
         </>
       )}
     </Card>

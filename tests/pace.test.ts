@@ -1,19 +1,23 @@
 import { describe, expect, it } from "vitest";
 import {
   calibrationText,
+  evenPacePct,
   formatShare,
   formatClock,
   formatPctPerHour,
   formatUsd,
   formatUsdRate,
+  headerRate,
   hourlyOldestFirst,
   hourlySummary,
+  meterPaceText,
+  meterSeverity,
   modelShares,
-  paceLine,
   paceTone,
   paceVsEven,
-  pickWindow,
+  usageSeverity,
   windowForecast,
+  WINDOW_MS,
 } from "@/lib/pace";
 import { paceScenario } from "@/lib/mock";
 import type { ClaudePace, PaceWindow } from "@/lib/types";
@@ -78,29 +82,6 @@ describe("formatting", () => {
   });
 });
 
-describe("pickWindow", () => {
-  it("defaults to the 5-hour window", () => {
-    expect(pickWindow(pace().windows)?.key).toBe("fiveHour");
-  });
-  it("picks the window in state limit", () => {
-    const w = { fiveHour: win(), weekly: win({ state: "limit", etaToLimit: NOW + 5 * H }) };
-    expect(pickWindow(w)?.key).toBe("weekly");
-  });
-  it("picks the earliest limit when both are heading there", () => {
-    const w = {
-      fiveHour: win({ state: "limit", etaToLimit: NOW + 2 * H }),
-      weekly: win({ state: "limit", etaToLimit: NOW + 1 * H }),
-    };
-    expect(pickWindow(w)?.key).toBe("weekly");
-    w.weekly.etaToLimit = NOW + 3 * H;
-    expect(pickWindow(w)?.key).toBe("fiveHour");
-  });
-  it("falls back to weekly, then null", () => {
-    expect(pickWindow({ fiveHour: null, weekly: win() })?.key).toBe("weekly");
-    expect(pickWindow({ fiveHour: null, weekly: null })).toBeNull();
-  });
-});
-
 describe("paceTone", () => {
   it("is muted unless heading for a limit", () => {
     expect(paceTone(win(), NOW)).toBe("muted");
@@ -113,32 +94,89 @@ describe("paceTone", () => {
   });
 });
 
-describe("paceLine", () => {
-  it("reads rate, 5h speed and lasts", () => {
-    const line = paceLine(pace(), NOW);
-    expect(line.text).toBe("$71/h · 5h +9%/h · lasts");
-    expect(line.tone).toBe("muted");
+describe("headerRate", () => {
+  it("shows the hourly rate with the usual rounding", () => {
+    expect(headerRate(pace())).toBe("$71/h");
+    expect(headerRate(pace({ rate60m: 7.44 }))).toBe("$7.4/h");
+    expect(headerRate(pace({ rate60m: 28.4 }))).toBe("$28/h");
   });
-  it("shows the limit time and drops the window label when too long", () => {
-    const w = { fiveHour: win({ state: "limit", etaToLimit: NOW + 100 * MIN }), weekly: win() };
-    expect(paceLine(pace({}, w), NOW, 99).text).toBe("$71/h · 5h +9%/h · limit 3:40 PM");
-    expect(paceLine(pace({}, w), NOW, 30).text).toBe("$71/h · +9%/h · limit 3:40 PM");
-    expect(paceLine(pace({}, w), NOW).text).toBe("$71/h · 5h +9%/h · limit 3:40 PM");
-    expect(paceLine(pace({}, w), NOW).tone).toBe("amber");
+  it("shows nothing while backfilling or without pace", () => {
+    expect(headerRate(pace({ backfilling: true }))).toBeNull();
+    expect(headerRate(null)).toBeNull();
   });
-  it("says measuring when the speed is not known yet", () => {
-    const w = { fiveHour: win({ state: "measuring", pctPerHour: null }), weekly: win() };
-    expect(paceLine(pace({}, w), NOW).text).toBe("$71/h · measuring…");
+});
+
+describe("evenPacePct", () => {
+  const at = (ms: number) => new Date(NOW + ms).toISOString();
+  it("takes the server value when there is one", () => {
+    expect(evenPacePct(at(2 * H), WINDOW_MS.fiveHour, NOW, 69)).toBe(69);
   });
-  it("hides the dollars while backfilling", () => {
-    expect(paceLine(pace({ backfilling: true }), NOW).text).toBe("$—/h · 5h +9%/h · lasts");
+  it("computes the elapsed share of the window from its reset and length", () => {
+    expect(evenPacePct(at(4 * H), WINDOW_MS.fiveHour, NOW, null)).toBeCloseTo(20);
+    expect(evenPacePct(at(3.5 * 24 * H), WINDOW_MS.weekly, NOW)).toBeCloseTo(50);
   });
-  it("puts both rates, both windows and the coverage in the tooltip", () => {
-    const title = paceLine(pace(), NOW).title;
-    expect(title).toContain("$64/h (last 15 min)");
-    expect(title).toContain("5-hour: 41% · +9%/h · lasts until reset");
-    expect(title).toContain("Weekly: 47% · +1%/h");
-    expect(title).toContain("Claude Code on this PC");
+  it("clamps to the bar", () => {
+    expect(evenPacePct(at(9 * H), WINDOW_MS.fiveHour, NOW)).toBe(0);
+    expect(evenPacePct(at(H), WINDOW_MS.fiveHour, NOW, 140)).toBe(100);
+  });
+  it("hides when the reset is unknown or already past", () => {
+    expect(evenPacePct(null, WINDOW_MS.fiveHour, NOW, 50)).toBeNull();
+    expect(evenPacePct("not a date", WINDOW_MS.fiveHour, NOW)).toBeNull();
+    expect(evenPacePct(at(-MIN), WINDOW_MS.fiveHour, NOW, 50)).toBeNull();
+    expect(evenPacePct(at(0), WINDOW_MS.fiveHour, NOW)).toBeNull();
+  });
+});
+
+describe("meterSeverity", () => {
+  it("keeps the usage colours by default", () => {
+    expect(usageSeverity(10)).toBe("ok");
+    expect(usageSeverity(80)).toBe("warn");
+    expect(usageSeverity(100)).toBe("danger");
+    expect(meterSeverity(41, win(), NOW)).toBe("ok");
+    expect(meterSeverity(85, null, NOW)).toBe("warn");
+  });
+  it("goes amber when the limit is more than 30 minutes away, red at 30 or less", () => {
+    expect(meterSeverity(41, win({ state: "limit", etaToLimit: NOW + 31 * MIN }), NOW)).toBe(
+      "warn",
+    );
+    expect(meterSeverity(41, win({ state: "limit", etaToLimit: NOW + 30 * MIN }), NOW)).toBe(
+      "danger",
+    );
+  });
+  it("takes the more severe of usage and pace", () => {
+    const far = win({ state: "limit", etaToLimit: NOW + 5 * H });
+    expect(meterSeverity(100, far, NOW)).toBe("danger");
+    const near = win({ state: "limit", etaToLimit: NOW + 10 * MIN });
+    expect(meterSeverity(85, near, NOW)).toBe("danger");
+  });
+});
+
+describe("meterPaceText", () => {
+  it("reads used, even pace, speed and where it ends at reset", () => {
+    // 2 h left at +7%/h from 37%: ends ~51%
+    const w = win({ pct: 37, pctPerHour: 7 });
+    expect(meterPaceText(37, 69, w, NOW)).toBe(
+      "37% used · even pace 69% · +7%/h · ends ~51% at reset",
+    );
+  });
+  it("caps the end at 100%", () => {
+    expect(meterPaceText(90, 50, win({ pctPerHour: 20 }), NOW)).toContain("ends ~100% at reset");
+  });
+  it("gives the full time when heading for the limit", () => {
+    const w = win({ pctPerHour: 9, state: "limit", etaToLimit: NOW + 100 * MIN });
+    expect(meterPaceText(41, 30, w, NOW)).toBe(
+      "41% used · even pace 30% · +9%/h · full by 3:40 PM",
+    );
+  });
+  it("says measuring while the speed is unknown", () => {
+    const w = win({ state: "measuring", pctPerHour: null });
+    expect(meterPaceText(2, 1, w, NOW)).toBe("2% used · even pace 1% · measuring speed…");
+  });
+  it("drops the parts it does not know", () => {
+    expect(meterPaceText(37, null, null, NOW)).toBe("37% used");
+    expect(meterPaceText(37, 20, win({ resetsAt: null }), NOW)).toBe(
+      "37% used · even pace 20% · +9%/h",
+    );
   });
 });
 
@@ -175,14 +213,15 @@ describe("settings helpers", () => {
 });
 
 describe("mock scenarios", () => {
-  it("cover every state the line can show", () => {
-    expect(paceLine(paceScenario("lasts", NOW), NOW).tone).toBe("muted");
-    expect(paceLine(paceScenario("limit", NOW), NOW).tone).toBe("red");
-    const weekly = paceScenario("weekly", NOW);
-    expect(pickWindow(weekly.windows)?.key).toBe("weekly");
-    expect(paceLine(weekly, NOW).tone).toBe("amber");
-    expect(paceLine(paceScenario("measuring", NOW), NOW).text).toContain("measuring…");
-    expect(paceLine(paceScenario("backfill", NOW), NOW).text).toMatch(/^\$—\/h/);
+  it("cover every state the card can show", () => {
+    const sev = (p: ClaudePace, key: "fiveHour" | "weekly") =>
+      meterSeverity(p.windows[key]!.pct, p.windows[key], NOW);
+    expect(sev(paceScenario("lasts", NOW), "fiveHour")).toBe("ok");
+    expect(sev(paceScenario("limit", NOW), "fiveHour")).toBe("danger");
+    expect(sev(paceScenario("weekly", NOW), "weekly")).toBe("warn");
+    const m = paceScenario("measuring", NOW).windows.fiveHour!;
+    expect(meterPaceText(m.pct, m.evenPacePct, m, NOW)).toContain("measuring speed…");
+    expect(headerRate(paceScenario("backfill", NOW))).toBeNull();
     expect(paceScenario("unpriced", NOW).spend.unpricedReplies).toBeGreaterThan(0);
     expect(paceScenario("lasts", NOW).spend.hourly).toHaveLength(24);
   });
