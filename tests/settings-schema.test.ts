@@ -102,3 +102,30 @@ describe("applySettingsPatch", () => {
     expect(normalizeSettings([1, 2])).toEqual(DEFAULT_SETTINGS);
   });
 });
+
+describe("claudeHourlyTarget", () => {
+  const patch = (v: unknown, from: number | null = 50) =>
+    applySettingsPatch({ ...DEFAULT_SETTINGS, claudeHourlyTarget: from }, { claudeHourlyTarget: v })
+      .claudeHourlyTarget;
+
+  it("is off by default", () => {
+    expect(DEFAULT_SETTINGS.claudeHourlyTarget).toBeNull();
+    expect(normalizeSettings({}).claudeHourlyTarget).toBeNull();
+  });
+  it("takes a number from 1 to 10000, rounded to a whole dollar", () => {
+    expect(patch(100)).toBe(100);
+    expect(patch(1)).toBe(1);
+    expect(patch(10000)).toBe(10000);
+    expect(patch(99.6)).toBe(100);
+    expect(patch(12.4)).toBe(12);
+  });
+  it("null clears it", () => {
+    expect(patch(null)).toBeNull();
+  });
+  it("ignores anything else", () => {
+    for (const v of [0, 0.5, -5, 10001, NaN, Infinity, "100", true, {}, []]) {
+      expect(patch(v)).toBe(50);
+    }
+    expect(applySettingsPatch(DEFAULT_SETTINGS, {}).claudeHourlyTarget).toBeNull();
+  });
+});

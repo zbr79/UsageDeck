@@ -426,6 +426,8 @@ pub struct Settings {
     pub provider_order: Vec<WidgetProvider>,
     /// register the app in the Windows Run key so it starts with Windows
     pub start_at_login: bool,
+    /// Claude Code hourly spend target in whole USD per hour (1-10000); None = off
+    pub claude_hourly_target: Option<u32>,
 }
 
 impl Default for Settings {
@@ -444,6 +446,7 @@ impl Default for Settings {
             disabled_accounts: Vec::new(),
             provider_order: DEFAULT_PROVIDER_ORDER.to_vec(),
             start_at_login: true,
+            claude_hourly_target: None,
         }
     }
 }
@@ -584,7 +587,29 @@ pub fn apply_settings_patch(current: &Settings, patch: &Value) -> Settings {
     if let Some(order @ Value::Array(_)) = obj.get("providerOrder") {
         next.provider_order = normalize_provider_order(order);
     }
+    match obj.get("claudeHourlyTarget") {
+        Some(Value::Null) => next.claude_hourly_target = None,
+        Some(v) => {
+            if let Some(target) = sanitize_hourly_target(v) {
+                next.claude_hourly_target = Some(target);
+            }
+        }
+        None => {}
+    }
     next
+}
+
+const MIN_HOURLY_TARGET: f64 = 1.0;
+const MAX_HOURLY_TARGET: f64 = 10000.0;
+
+/// A number from 1 to 10000, rounded to a whole dollar; None for anything else.
+fn sanitize_hourly_target(value: &Value) -> Option<u32> {
+    let n = value.as_f64()?;
+    if !n.is_finite() || !(MIN_HOURLY_TARGET..=MAX_HOURLY_TARGET).contains(&n) {
+        return None;
+    }
+    // In range 1..=10000, so the cast cannot truncate or wrap.
+    Some(n.round() as u32)
 }
 
 /// Settings from whatever is on disk (missing or corrupt values become defaults).
@@ -632,6 +657,48 @@ mod tests {
         assert!(leftovers.is_empty());
         assert_eq!(read_json(&dir.join("missing.json")), None);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn claude_hourly_target_patch_rules() {
+        let patch = |v: Value| {
+            let current = Settings {
+                claude_hourly_target: Some(50),
+                ..Settings::default()
+            };
+            apply_settings_patch(&current, &json!({ "claudeHourlyTarget": v })).claude_hourly_target
+        };
+        assert_eq!(Settings::default().claude_hourly_target, None);
+        assert_eq!(
+            normalize_settings(Some(&json!({}))).claude_hourly_target,
+            None
+        );
+        assert_eq!(patch(json!(100)), Some(100));
+        assert_eq!(patch(json!(1)), Some(1));
+        assert_eq!(patch(json!(10000)), Some(10000));
+        assert_eq!(patch(json!(99.6)), Some(100));
+        assert_eq!(patch(json!(12.4)), Some(12));
+        assert_eq!(patch(Value::Null), None);
+        for bad in [
+            json!(0),
+            json!(0.5),
+            json!(-5),
+            json!(10001),
+            json!("100"),
+            json!(true),
+            json!({}),
+            json!([]),
+        ] {
+            assert_eq!(patch(bad), Some(50));
+        }
+        // serialised as camelCase, null when off
+        let v = serde_json::to_value(Settings::default()).unwrap();
+        assert_eq!(v["claudeHourlyTarget"], Value::Null);
+        let on = apply_settings_patch(&Settings::default(), &json!({ "claudeHourlyTarget": 80 }));
+        assert_eq!(
+            serde_json::to_value(on).unwrap()["claudeHourlyTarget"],
+            json!(80)
+        );
     }
 
     #[test]
