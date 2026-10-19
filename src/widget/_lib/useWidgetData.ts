@@ -8,6 +8,7 @@ import type {
   CursorUsage,
   GrokUsage,
   OpenCodeAccountUsage,
+  ProviderErrorKind,
   Settings,
   TrackedAccount,
 } from "@/lib/types";
@@ -20,6 +21,8 @@ export interface ProviderSlot<T> {
   stale: boolean;
   cachedAt: number | null;
   authExpired: boolean;
+  /** why the last fetch failed; null when it worked */
+  error: ProviderErrorKind | null;
   /** set once the first response (or failure) has arrived */
   loaded: boolean;
 }
@@ -34,6 +37,7 @@ export function slotFromAccount<T>(
     stale: account?.stale ?? false,
     cachedAt: account?.cachedAt ?? null,
     authExpired: account?.authExpired ?? false,
+    error: account?.error ?? null,
     loaded,
   };
 }
