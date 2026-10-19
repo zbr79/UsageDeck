@@ -26,6 +26,15 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - name: Cache cargo registry, tools and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/bin
+            src-tauri/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
       - run: npm ci
       - run: npm run build
       - run: npm test
@@ -41,3 +50,8 @@ jobs:
         run: cargo test
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
+      - name: Audit Rust dependencies
+        working-directory: src-tauri
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
