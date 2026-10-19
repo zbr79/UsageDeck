@@ -41,6 +41,24 @@ export function GeneralPage({ settings, update }: Props) {
           )}
         />
         <SettingRow
+          title="Hide during full-screen apps"
+          description="Games, videos and presentations stay clear of the widget"
+          control={(labelId) => (
+            <Toggle
+              labelledBy={labelId}
+              checked={settings.hideInFullscreen}
+              onChange={(hideInFullscreen) =>
+                void update(
+                  { hideInFullscreen },
+                  hideInFullscreen
+                    ? "Hides during full-screen apps"
+                    : "Stays visible during full-screen apps",
+                )
+              }
+            />
+          )}
+        />
+        <SettingRow
           title="DeepSeek peak-hour warning"
           description="Show peak-hour start and end countdowns on the top OpenCode card"
           control={(labelId) => (

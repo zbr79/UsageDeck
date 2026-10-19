@@ -97,6 +97,17 @@ describe("applySettingsPatch", () => {
     expect(applySettingsPatch(DEFAULT_SETTINGS, { startAtLogin: "no" }).startAtLogin).toBe(true);
   });
 
+  it("hides during full-screen apps by default and keeps a boolean change", () => {
+    expect(DEFAULT_SETTINGS.hideInFullscreen).toBe(true);
+    expect(normalizeSettings({}).hideInFullscreen).toBe(true);
+    expect(applySettingsPatch(DEFAULT_SETTINGS, { hideInFullscreen: false }).hideInFullscreen).toBe(
+      false,
+    );
+    expect(applySettingsPatch(DEFAULT_SETTINGS, { hideInFullscreen: 0 }).hideInFullscreen).toBe(
+      true,
+    );
+  });
+
   it("normalises garbage from disk to defaults", () => {
     expect(normalizeSettings(null)).toEqual(DEFAULT_SETTINGS);
     expect(normalizeSettings([1, 2])).toEqual(DEFAULT_SETTINGS);

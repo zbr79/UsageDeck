@@ -12,6 +12,8 @@ export interface Settings {
   codexEnabled: boolean;
   claudeEnabled: boolean;
   deepseekPeakHourWarning: boolean;
+  /** hide the widget while a full-screen app is in front on its monitor */
+  hideInFullscreen: boolean;
   showProviderNames: boolean;
   themeMode: ThemeMode;
   panelTheme: PanelTheme;
