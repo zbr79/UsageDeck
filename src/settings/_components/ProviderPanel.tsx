@@ -1,4 +1,5 @@
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
+import type { CardHeader } from "@/widget/_components/Card";
 import { accountKey } from "@/lib/account-key";
 import type {
   ClaudeUsage,
@@ -44,12 +45,12 @@ function providerCard(
   account: AnyAccount,
   settings: Settings,
   now: number,
-  headerActions: ReactNode,
+  header: CardHeader,
   hidden: boolean,
   light: boolean,
 ) {
   // Cached usage looks like fresh usage: no status note and no dimming.
-  const extras = { active: account.active, dashed: hidden, headerActions };
+  const extras = { active: account.active, dashed: hidden, ...header };
   // `multiple` makes every card title the account's own label (or nickname), not the provider.
   const common = { settings, now, accountId: account.id, multiple: true, extras };
   const label = account.label;
@@ -166,9 +167,7 @@ export default function ProviderPanel({
                     onSelect: () => refreshWidget(summaries.reloadAll),
                   },
                 ]}
-                card={(actions) =>
-                  providerCard(id, account, settings, now, actions, isHidden, light)
-                }
+                card={(header) => providerCard(id, account, settings, now, header, isHidden, light)}
               />
             );
           })}

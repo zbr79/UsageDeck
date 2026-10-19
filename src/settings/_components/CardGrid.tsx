@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { Hint } from "@/widget/_components/Card";
+import { Hint, type CardHeader } from "@/widget/_components/Card";
 import { Menu, type MenuItem } from "@/ui/Menu";
 import { isContextMenuKey } from "@/ui/menu-focus";
 import { Toggle } from "@/ui/Toggle";
@@ -16,8 +16,8 @@ export function useNow(intervalMs = 60_000): number {
 
 /**
  * The widget's own cards, 2 per row, 1 when the page is narrow (a container query on the grid's
- * width). The cards are drawn at 1.2x (`.ud-cards` zoom) so their 10 px widget text reads at
- * 12 px, the settings minimum.
+ * width). The cards are drawn at 1.1x (`.ud-cards` zoom) so their 11 px widget text reads at
+ * 12 px or more, the settings minimum.
  */
 export function CardGrid({ children }: { children: ReactNode }) {
   return (
@@ -46,7 +46,7 @@ export function AccountCell({
   menuItems: MenuItem[];
   /** an actionable problem the card itself does not show, e.g. "Subscription inactive" */
   note?: string | null;
-  card: (headerActions: ReactNode) => ReactNode;
+  card: (header: CardHeader) => ReactNode;
 }) {
   const more = useRef<HTMLButtonElement>(null);
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
@@ -57,7 +57,6 @@ export function AccountCell({
   };
   const actions = (
     <>
-      {note && <Hint color="warn">{note}</Hint>}
       <Toggle label={`Show ${name} on the widget`} checked={shown} onChange={onShownChange} />
       <button
         ref={more}
@@ -90,7 +89,7 @@ export function AccountCell({
         openFromButton();
       }}
     >
-      {card(actions)}
+      {card({ headerActions: actions, headerNote: note && <Hint color="warn">{note}</Hint> })}
       {menuAt && (
         <Menu
           label={`Options for ${name}`}
