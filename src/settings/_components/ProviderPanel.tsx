@@ -14,6 +14,7 @@ import { slotFromAccount as widgetSlot } from "@/widget/_lib/useWidgetData";
 import { cardErrorKind } from "@/lib/errors";
 import { PAGE_TITLES, PROVIDER_ICONS } from "../_lib/pages";
 import { refreshWidget, type Summaries } from "../_lib/hooks";
+import { usePanelTheme } from "../_lib/theme";
 import { AccountCell, CardGrid, EmptyState, ProviderLogo, useNow } from "./CardGrid";
 import { RenameDialog } from "./dialogs";
 import { Page } from "./fields";
@@ -45,6 +46,7 @@ function providerCard(
   now: number,
   headerActions: ReactNode,
   hidden: boolean,
+  light: boolean,
 ) {
   // Cached usage looks like fresh usage: no status note and no dimming.
   const extras = { active: account.active, dashed: hidden, headerActions };
@@ -74,7 +76,7 @@ function providerCard(
         <CodexCard
           slot={slotFromAccount(a)}
           accountLabel={label ?? a.usage?.email}
-          light={settings.panelTheme === "light"}
+          light={light}
           {...common}
         />
       );
@@ -107,6 +109,7 @@ export default function ProviderPanel({
   update: Update;
 }) {
   const now = useNow();
+  const light = usePanelTheme() === "light";
   const [renaming, setRenaming] = useState<string | null>(null);
   const name = PAGE_TITLES[id];
   const accounts = summaries[id]?.accounts ?? null;
@@ -124,12 +127,7 @@ export default function ProviderPanel({
   return (
     <Page
       title={name}
-      lead={
-        <ProviderLogo
-          src={PROVIDER_ICONS[id]}
-          invert={id === "codex" && settings.panelTheme === "light"}
-        />
-      }
+      lead={<ProviderLogo src={PROVIDER_ICONS[id]} invert={id === "codex" && light} />}
       aside={accountCount(sorted?.length ?? null)}
     >
       {sorted === null ? (
@@ -168,7 +166,9 @@ export default function ProviderPanel({
                     onSelect: () => refreshWidget(summaries.reloadAll),
                   },
                 ]}
-                card={(actions) => providerCard(id, account, settings, now, actions, isHidden)}
+                card={(actions) =>
+                  providerCard(id, account, settings, now, actions, isHidden, light)
+                }
               />
             );
           })}

@@ -2,7 +2,8 @@
 // settings). Type-only: no runtime imports allowed here.
 
 export type ThemeMode = "auto" | "light" | "dark";
-export type PanelTheme = "light" | "dark";
+/** "system" follows the Windows app light / dark mode. */
+export type PanelTheme = "light" | "dark" | "system";
 
 export interface Settings {
   opencodeEnabled: boolean;

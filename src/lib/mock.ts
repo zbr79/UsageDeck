@@ -198,7 +198,8 @@ const providers: Record<string, unknown> = {
 // `?panel=light` shows the settings panel in its light theme (browser preview only).
 if (typeof location !== "undefined") {
   const panel = new URLSearchParams(location.search).get("panel");
-  if (panel === "light" || panel === "dark") settings = { ...settings, panelTheme: panel };
+  if (panel === "light" || panel === "dark" || panel === "system")
+    settings = { ...settings, panelTheme: panel };
 }
 
 /** Browser stand-in for the Rust `copy_key` command: fails for an unknown account, like Rust. */
