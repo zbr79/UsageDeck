@@ -2,6 +2,7 @@
 // in a normal browser. Data adapted from tests/e2e/fixtures.ts, with times
 // relative to the page load instead of a frozen clock.
 import type {
+  ClaudePace,
   ClaudeUsage,
   CodexUsage,
   CursorUsage,
@@ -211,6 +212,106 @@ export async function mockCopyKey(email: string): Promise<void> {
 type Reply = { status: number; body: unknown };
 const json = (body: unknown, status = 200): Reply => ({ status, body });
 
+// ---- Claude spend and pace ------------------------------------------------
+
+export type PaceScenario = "lasts" | "limit" | "weekly" | "measuring" | "backfill" | "unpriced";
+const PACE_SCENARIOS: PaceScenario[] = [
+  "lasts",
+  "limit",
+  "weekly",
+  "measuring",
+  "backfill",
+  "unpriced",
+];
+
+// Windows match the active mock Claude account (31% / 60%). The 2026-10-18 probe (newest first, $/h), padded to 24 hours.
+const PROBE_HOURLY = [
+  33, 69, 81, 86, 84, 88, 119, 61, 26, 5, 6, 64, 72, 58, 40, 12, 0, 0, 0, 3, 18, 44, 57, 66,
+];
+
+/**
+ * A realistic /api/claude/pace reply for one scenario: "lasts" (normal), "limit" (5-hour limit
+ * in 25 min, red), "weekly" (weekly limit before reset, amber), "measuring", "backfill" and
+ * "unpriced" (replies on models without a price).
+ */
+export function paceScenario(scenario: PaceScenario, now = NOW): ClaudePace {
+  const at = (ms: number) => new Date(now + ms).toISOString();
+  const pace: ClaudePace = {
+    spend: {
+      lastHour: 33.4,
+      last5h: 353.1,
+      today: 612.8,
+      last7d: 8723.4,
+      rate60m: 71.2,
+      rate15m: 64.6,
+      byModel: [
+        { model: "claude-opus-5-5", usd24h: 1240.3 },
+        { model: "claude-sonnet-5-5", usd24h: 48.6 },
+        { model: "claude-haiku-5-5", usd24h: 4.2 },
+      ],
+      hourly: [...PROBE_HOURLY],
+      unpricedReplies: 0,
+      scannedAt: now - 20_000,
+      backfilling: false,
+    },
+    windows: {
+      fiveHour: {
+        pct: 31,
+        pctPerHour: 9.2,
+        evenPacePct: 20,
+        etaToLimit: null,
+        resetsAt: at(4 * H),
+        state: "lasts",
+      },
+      weekly: {
+        pct: 60,
+        pctPerHour: 0.4,
+        evenPacePct: 69,
+        etaToLimit: null,
+        resetsAt: at(52 * H),
+        state: "lasts",
+      },
+    },
+    calibration: { usdPerWeeklyPct: 185.6 },
+    coverage: "claude-code-this-pc",
+  };
+  const fiveHour = pace.windows.fiveHour!;
+  const weekly = pace.windows.weekly!;
+  switch (scenario) {
+    case "limit":
+      Object.assign(pace.spend, { rate60m: 128.4, rate15m: 151.2, lastHour: 128.4 });
+      Object.assign(fiveHour, { pct: 88, pctPerHour: 28.8, evenPacePct: 20 });
+      Object.assign(fiveHour, { etaToLimit: now + 25 * 60_000, state: "limit" });
+      break;
+    case "weekly":
+      Object.assign(weekly, { pct: 60, pctPerHour: 1.9, evenPacePct: 69 });
+      Object.assign(weekly, { etaToLimit: now + 21 * H, state: "limit" });
+      break;
+    case "measuring":
+      Object.assign(fiveHour, { pct: 2, pctPerHour: null, evenPacePct: 1, state: "measuring" });
+      break;
+    case "backfill":
+      Object.assign(pace.spend, { lastHour: 0, last5h: 0, today: 0, last7d: 0, rate60m: 0 });
+      Object.assign(pace.spend, { rate15m: 0, byModel: [], scannedAt: null, backfilling: true });
+      pace.spend.hourly = new Array(24).fill(0);
+      pace.calibration.usdPerWeeklyPct = null;
+      break;
+    case "unpriced":
+      pace.spend.unpricedReplies = 17;
+      break;
+  }
+  return pace;
+}
+
+/** `?pace=limit` picks a scenario (browser preview only); `?pace=fail` makes the call fail. */
+function paceReply(): Reply {
+  const q =
+    typeof location === "undefined" ? null : new URLSearchParams(location.search).get("pace");
+  if (q === "fail") return json({ error: "pace unavailable" }, 500);
+  const scenario = PACE_SCENARIOS.find((s) => s === q) ?? "lasts";
+  return json(paceScenario(scenario, Date.now()));
+}
+
 export async function mockApi(method: string, path: string, body: unknown): Promise<Reply> {
   const url = new URL(path, "http://mock.local");
   const name = url.pathname.replace(/^\/api\//, "");
@@ -243,6 +344,8 @@ export async function mockApi(method: string, path: string, body: unknown): Prom
       return json({ accounts: usage });
     case "accounts":
       return json({ accounts: summaries() });
+    case "claude/pace":
+      return paceReply();
     default:
       if (name in providers) return json(providers[name]);
       return json({ error: "not found" }, 404);

@@ -10,7 +10,7 @@ no Electron, no Node at runtime.
 | **Cursor**      | First Party & API usage, plan badge, billing-cycle reset                                 | Cursor's local sign-in → `api2.cursor.sh`                                      |
 | **Grok Bot**    | Weekly usage %, plan badge, reset countdown                                              | Grok Bot's own sign-in (falls back to Cursor's) → `api2.cursor.sh` sand usage |
 | **Codex**       | Usage %, plan badge (Free/Plus/Pro), reset credits, reset countdown                      | Codex CLI sign-in → ChatGPT `wham/usage`                                      |
-| **Claude**      | 5-hour and weekly usage, plan badge, reset countdowns                                    | Claude desktop / Claude Code sign-in → Anthropic OAuth usage                  |
+| **Claude**      | 5-hour and weekly usage, plan badge, reset countdowns; spend rate ($/h) and pace (%/h, projected limit time) | Claude desktop / Claude Code sign-in → Anthropic OAuth usage; dollars from the Claude Code logs on this PC (usage fields only) |
 
 Other apps' sign-ins are **read, never written**: UsageDeck never refreshes or rewrites another
 app's tokens (doing so rotates their refresh tokens and logs them out). If a sign-in has expired,
@@ -106,11 +106,18 @@ uninstaller to also remove settings, logs and the stored OpenCode keys (details 
   Refresh now and, for OpenCode, Copy API key, Replace API key and Remove account. OpenCode
   accounts are added with an API key; Cursor, Grok Bot, Codex and Claude read that app's own
   sign-in and only the signed-in account shows on the widget
+- Claude page: a "Spend & pace" section with the API-equivalent spend of Claude Code on this PC
+  (last hour, 5 h, today, 7 days, $/h), a 24-hour bar chart, spend per model, each window's
+  speed, even pace and projected limit time, and what 1% of the weekly limit is worth in dollars.
+  The widget's Claude card shows the same in one line: `$71/h · 5h +9%/h · lasts` (amber when a
+  limit will be hit before it resets, red under 30 minutes)
 - About: version, log folder and the repository
 - Fully keyboard accessible: modal dialogs trap focus and Esc closes the topmost one first; menus
   use the arrow keys, Home and End; forced-colors (high contrast) is supported
 - `settings.html?page=<general|appearance|widget|claude|codex|cursor|grok|opencode|about>` opens a
   page directly (browser preview: add `&panel=light` or `&panel=dark`)
+- Browser preview of spend and pace: add `?pace=<lasts|limit|weekly|measuring|backfill|unpriced|fail>`
+  to `widget.html` or `settings.html`
 
 ### Ranking rules
 

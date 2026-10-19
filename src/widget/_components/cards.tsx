@@ -4,9 +4,11 @@ import { CopyIcon } from "@/ui/Icons";
 import type { Tone } from "@/ui/palette";
 import { errorHint, isAuthRejected } from "@/lib/errors";
 import { capitalize, formatDuration, formatUntil } from "@/lib/format";
+import { paceLine, type PaceTone } from "@/lib/pace";
 import type { PeakInfo } from "@/lib/peak";
 import { isAccountExhausted, isExhaustedWindow, isPassed, isUnknownWindow } from "@/lib/ranking";
 import type {
+  ClaudePace,
   ClaudeUsage,
   CodexUsage,
   CursorUsage,
@@ -475,6 +477,27 @@ export function CodexCard({
 
 // ---- Claude ---------------------------------------------------------------
 
+const PACE_COLORS: Record<PaceTone, string> = {
+  muted: "var(--w-muted)",
+  amber: "var(--w-warn)",
+  red: "var(--w-peakActive)",
+};
+
+/** One glanceable line under the meters: "$71/h · 5h +9%/h · lasts". */
+export function PaceLine({ pace, now }: { pace: ClaudePace; now: number }) {
+  const line = paceLine(pace, now);
+  return (
+    <div
+      data-testid="claude-pace"
+      title={line.title}
+      className={`text-[11px] leading-4 mt-1 truncate tabular-nums transition-colors duration-700${line.tone === "muted" ? "" : " font-medium"}`}
+      style={{ color: PACE_COLORS[line.tone] }}
+    >
+      {line.text}
+    </div>
+  );
+}
+
 export function ClaudeCard({
   slot,
   settings,
@@ -482,9 +505,12 @@ export function ClaudeCard({
   accountId = null,
   accountLabel = null,
   multiple = false,
+  pace = null,
   extras,
 }: {
   slot: ProviderSlot<ClaudeUsage>;
+  /** spend and pace of Claude Code on this PC; shown on one card only, null shows nothing */
+  pace?: ClaudePace | null;
   settings: Settings;
   now: number;
   accountId?: string | null;
@@ -545,23 +571,26 @@ export function ClaudeCard({
       ) : !c.signedIn ? (
         <Note>Not signed in</Note>
       ) : (
-        <div className="flex gap-2">
-          {(
-            [
-              ["5h", "Rolling 5-hour window", c.fiveHour],
-              ["Weekly", "Weekly", c.weekly],
-            ] as const
-          ).map(([label, name, w]) => (
-            <Meter
-              key={label}
-              label={label}
-              name={name}
-              percent={w.percent}
-              unknown={windowUnknown(w)}
-              reset={windowUnknown(w) ? null : formatUntil(w.resetsAt, now)}
-            />
-          ))}
-        </div>
+        <>
+          <div className="flex gap-2">
+            {(
+              [
+                ["5h", "Rolling 5-hour window", c.fiveHour],
+                ["Weekly", "Weekly", c.weekly],
+              ] as const
+            ).map(([label, name, w]) => (
+              <Meter
+                key={label}
+                label={label}
+                name={name}
+                percent={w.percent}
+                unknown={windowUnknown(w)}
+                reset={windowUnknown(w) ? null : formatUntil(w.resetsAt, now)}
+              />
+            ))}
+          </div>
+          {pace && <PaceLine pace={pace} now={now} />}
+        </>
       )}
     </Card>
   );
