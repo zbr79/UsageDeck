@@ -218,9 +218,22 @@ pub async fn dispatch(core: &Core, method: &str, path: &str, body: Option<Value>
         ("/api/claude", "GET") => {
             ok(json!({ "accounts": providers::claude::accounts(core).await }))
         }
+        ("/api/claude/pace", "GET") => {
+            let engine = core.spend.clone();
+            let dir = core.store.dir().to_path_buf();
+            let now = crate::claude_logs::now_ms();
+            match tokio::task::spawn_blocking(move || {
+                crate::claude_logs::pace_body(&engine, &dir, now)
+            })
+            .await
+            {
+                Ok(body) => ok(body),
+                Err(_) => error(500, "pace failed"),
+            }
+        }
         (
             "/api/settings" | "/api/accounts" | "/api/usage" | "/api/cursor" | "/api/grok"
-            | "/api/codex" | "/api/claude",
+            | "/api/codex" | "/api/claude" | "/api/claude/pace",
             _,
         ) => error(405, "method not allowed"),
         _ => error(404, "not found"),
@@ -396,6 +409,19 @@ mod tests {
         assert_eq!(dispatch(&core, "GET", "/api/nope", None).await.status, 404);
         assert_eq!(
             dispatch(&core, "DELETE", "/api/settings", None)
+                .await
+                .status,
+            405
+        );
+        let r = dispatch(&core, "GET", "/api/claude/pace", None).await;
+        assert_eq!(r.status, 200);
+        assert_eq!(r.body["coverage"], "claude-code-this-pc");
+        assert_eq!(r.body["spend"]["hourly"].as_array().map(Vec::len), Some(24));
+        assert_eq!(r.body["spend"]["backfilling"], true);
+        assert!(r.body["windows"]["fiveHour"].is_null());
+        assert!(r.body["calibration"]["usdPerWeeklyPct"].is_null());
+        assert_eq!(
+            dispatch(&core, "POST", "/api/claude/pace", None)
                 .await
                 .status,
             405
