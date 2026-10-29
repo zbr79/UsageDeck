@@ -193,15 +193,14 @@ export interface PaceWindow {
 
 /** API-equivalent spend of Claude Code on this PC, in USD. */
 export interface PaceSpend {
+  last15m: number;
   lastHour: number;
   last5h: number;
   today: number;
   last7d: number;
-  rate60m: number;
-  rate15m: number;
   byModel: { model: string; usd24h: number }[];
-  /** 24 entries, index 0 = current partial hour, USD per hour */
-  hourly: number[];
+  /** 96 entries (24 h), index 0 = current partial 15 minutes, USD per 15 minutes */
+  quarterHours: number[];
   unpricedReplies: number;
   scannedAt: number | null;
   backfilling: boolean;

@@ -11,6 +11,7 @@ import {
   SPEND_BAND_TONE,
   spendBand,
   spendRateTitle,
+  targetPer15m,
 } from "@/lib/pace";
 import type { PeakInfo } from "@/lib/peak";
 import { isAccountExhausted, isExhaustedWindow, isPassed, isUnknownWindow } from "@/lib/ranking";
@@ -537,10 +538,10 @@ export function ClaudeCard({
   const exhausted =
     !!c && [c.fiveHour, c.weekly].some((w) => !windowUnknown(w) && (w.percent ?? 0) >= 100);
   const rate = headerRate(pace);
-  const target = settings.claudeHourlyTarget;
-  const rate60m = pace?.spend.rate60m ?? 0;
-  const rateTone = SPEND_BAND_TONE[spendBand(rate60m, target)];
-  const rateTitle = spendRateTitle(rate60m, target);
+  const target = targetPer15m(settings.claudeHourlyTarget);
+  const last15m = pace?.spend.last15m ?? 0;
+  const rateTone = SPEND_BAND_TONE[spendBand(last15m, target)];
+  const rateTitle = spendRateTitle(last15m, target);
   return (
     <Card
       extras={extras}
