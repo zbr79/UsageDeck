@@ -155,7 +155,7 @@ export function AppearancePage({ settings, update }: Props) {
   );
 }
 
-/** Provider order (drag the grip, or Move up / Move down) and each provider's widget switch. */
+/** Provider order (drag a row; arrow keys on its grip) and each provider's widget switch. */
 export function WidgetPage({ settings, update }: Props) {
   const light = usePanelTheme() === "light";
   const order = settings.providerOrder;
@@ -173,19 +173,20 @@ export function WidgetPage({ settings, update }: Props) {
     }
     return order.length - 1;
   };
-  const onPointerDown = (e: PointerEvent<HTMLSpanElement>, id: WidgetProvider) => {
-    if (e.button !== 0) return;
+  const onPointerDown = (e: PointerEvent<HTMLLIElement>, id: WidgetProvider) => {
+    // The whole row drags, except its switch.
+    if (e.button !== 0 || (e.target as HTMLElement).closest("button")) return;
     drag.current = { id, pointerId: e.pointerId };
     e.currentTarget.setPointerCapture(e.pointerId);
     setDragging({ id, to: order.indexOf(id) });
   };
-  const onPointerMove = (e: PointerEvent<HTMLSpanElement>) => {
+  const onPointerMove = (e: PointerEvent<HTMLLIElement>) => {
     const d = drag.current;
     if (!d || d.pointerId !== e.pointerId) return;
     const to = dropIndex(e.clientY);
     setDragging((prev) => (prev && prev.to !== to ? { ...prev, to } : prev));
   };
-  const onPointerUp = (e: PointerEvent<HTMLSpanElement>) => {
+  const onPointerUp = (e: PointerEvent<HTMLLIElement>) => {
     const d = drag.current;
     if (!d || d.pointerId !== e.pointerId) return;
     drag.current = null;
@@ -197,8 +198,7 @@ export function WidgetPage({ settings, update }: Props) {
     <Page title="Widget">
       <Section title="Providers">
         <p className="mb-2 text-xs text-(--p-muted)">
-          Cards appear on the widget in this order. Drag a provider by its grip, or use Move up and
-          Move down.
+          Drag to reorder. The switch shows or hides the card.
         </p>
         <ol className="flex flex-col gap-1">
           {order.map((id, i) => {
@@ -211,21 +211,30 @@ export function WidgetPage({ settings, update }: Props) {
                 ref={(el) => {
                   rows.current[i] = el;
                 }}
-                className={`ud-row flex min-h-[60px] items-center gap-3 rounded border bg-(--s-card) px-3 py-2 ${
+                onPointerDown={(e) => onPointerDown(e, id)}
+                onPointerMove={onPointerMove}
+                onPointerUp={onPointerUp}
+                onPointerCancel={() => {
+                  drag.current = null;
+                  setDragging(null);
+                }}
+                className={`ud-row flex min-h-[52px] cursor-grab touch-none select-none items-center gap-3 rounded border bg-(--s-card) px-3 py-2 active:cursor-grabbing ${
                   target ? "border-(--p-focus)" : "border-(--s-cardBorder)"
                 } ${dragging?.id === id ? "opacity-60" : ""}`}
               >
                 <span
-                  aria-hidden="true"
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`Reorder ${name}, position ${i + 1} of ${order.length}`}
+                  aria-keyshortcuts="ArrowUp ArrowDown"
                   title="Drag to reorder"
-                  onPointerDown={(e) => onPointerDown(e, id)}
-                  onPointerMove={onPointerMove}
-                  onPointerUp={onPointerUp}
-                  onPointerCancel={() => {
-                    drag.current = null;
-                    setDragging(null);
+                  onKeyDown={(e) => {
+                    const to = e.key === "ArrowUp" ? i - 1 : e.key === "ArrowDown" ? i + 1 : -1;
+                    if (to < 0 || to >= order.length) return;
+                    e.preventDefault();
+                    reorder(i, to);
                   }}
-                  className="flex h-8 w-6 cursor-grab touch-none items-center justify-center text-(--p-muted) active:cursor-grabbing"
+                  className="flex h-8 w-6 items-center justify-center rounded text-(--p-muted)"
                 >
                   <svg width="10" height="16" viewBox="0 0 10 16" fill="currentColor">
                     {[2, 8, 14].map((y) => (
@@ -243,39 +252,16 @@ export function WidgetPage({ settings, update }: Props) {
                   className={`size-5 rounded ${id === "codex" && light ? "invert" : ""}`}
                 />
                 <span className="min-w-0 flex-1 text-sm">{name}</span>
-                <button
-                  type="button"
-                  aria-disabled={i === 0}
-                  onClick={() => i > 0 && reorder(i, i - 1)}
-                  aria-label={`Move ${name} up`}
-                  title="Move up"
-                  className={`${secondaryButton} min-w-0 aria-disabled:opacity-50`}
-                >
-                  Move up
-                </button>
-                <button
-                  type="button"
-                  aria-disabled={i === order.length - 1}
-                  onClick={() => i < order.length - 1 && reorder(i, i + 1)}
-                  aria-label={`Move ${name} down`}
-                  title="Move down"
-                  className={`${secondaryButton} min-w-0 aria-disabled:opacity-50`}
-                >
-                  Move down
-                </button>
-                <span className="ml-2 flex items-center gap-2">
-                  <span className="text-xs text-(--p-muted)">Show on widget</span>
-                  <Toggle
-                    label={`Show ${name} on the widget`}
-                    checked={settings[key]}
-                    onChange={(next) =>
-                      void update(
-                        { [key]: next },
-                        `${name} ${next ? "shown on" : "hidden from"} widget`,
-                      )
-                    }
-                  />
-                </span>
+                <Toggle
+                  label={`Show ${name} on the widget`}
+                  checked={settings[key]}
+                  onChange={(next) =>
+                    void update(
+                      { [key]: next },
+                      `${name} ${next ? "shown on" : "hidden from"} widget`,
+                    )
+                  }
+                />
               </li>
             );
           })}
