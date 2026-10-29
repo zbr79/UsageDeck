@@ -9,6 +9,9 @@
 //! the same account (desktop `lastKnownAccountUuid` == `~/.claude.json` `oauthAccount.accountUuid`),
 //! or when Claude Code was signed into that account earlier (`claude-identities.json` remembers
 //! each account id Claude Code has shown with its email).
+//!
+//! Over that local guess, the live token is filed under the account its `oauth/profile` reply
+//! names, with that reply's plan, and nameless "Claude desktop" rows are dropped.
 
 use super::{
     collect_accounts, CachedProvider, FetchError, LiveAccount, ProviderError, TrackedAccount,
@@ -21,10 +24,10 @@ use crate::Core;
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const SECTION: &str = "claude";
@@ -334,6 +337,26 @@ pub fn account_of(claude_json: &Value) -> ClaudeAccount {
     }
 }
 
+/// The account a token belongs to, from the `oauth/profile` reply. None when the reply names no
+/// account. This is the only identity that always matches the token: on this PC
+/// (2026-10-28) `~/.claude.json` named one account while `.credentials.json` held another's token.
+pub fn profile_account_of(reply: &Value) -> Option<ClaudeAccount> {
+    let a = reply.get("account")?;
+    let o = reply.get("organization");
+    let get = |k: &str| str_of(o.and_then(|o| o.get(k))).filter(|s| !s.is_empty());
+    let email = str_of(a.get("email")).filter(|s| !s.trim().is_empty())?;
+    Some(ClaudeAccount {
+        email: Some(email),
+        display_name: str_of(a.get("display_name")).or_else(|| str_of(a.get("full_name"))),
+        billing_type: get("billing_type"),
+        organization_type: get("organization_type"),
+        seat_tier: get("seat_tier"),
+        org_uuid: get("uuid"),
+        account_uuid: str_of(a.get("uuid")),
+        rate_limit_tier: get("rate_limit_tier"),
+    })
+}
+
 fn read_cli_account() -> ClaudeAccount {
     read_json(&home().join(".claude.json"))
         .map(|v| account_of(&v))
@@ -529,24 +552,45 @@ fn live_with(account: ClaudeAccount, token: Option<ClaudeToken>) -> LiveClaude {
     }
 }
 
-/// The signed-in account, and the "Claude desktop" ids that now have a known email (so their
-/// old rows can be dropped). Learns Claude Code's current account into `identities_file`.
-fn read_live_claude(identities_file: &Path) -> (Option<LiveClaude>, Vec<String>) {
-    let account = read_cli_account();
+/// Learn `account` into `identities_file` (account id -> email).
+fn save_identity(identities_file: &Path, account: &ClaudeAccount) {
     let mut known = identities_of(read_json(identities_file).as_ref());
-    if learn_identity(&mut known, &account) {
+    if learn_identity(&mut known, account) {
         if let Err(e) = crate::store::write_json_atomic(identities_file, &known) {
             log::warn!("could not save Claude identities: {e}");
         }
     }
+}
+
+/// The signed-in account as the local files tell it. Learns Claude Code's current account into
+/// `identities_file`.
+fn read_live_claude(identities_file: &Path) -> Option<LiveClaude> {
+    let account = read_cli_account();
+    save_identity(identities_file, &account);
+    let known = identities_of(read_json(identities_file).as_ref());
     let desktop = read_desktop_token();
     let cli = if desktop.as_ref().is_some_and(|d| !d.token.expired) {
         None
     } else {
         read_cli_token()
     };
-    let resolved = known.keys().map(|uuid| desktop_id(uuid)).collect();
-    (resolve_live(account, desktop, cli, &known), resolved)
+    resolve_live(account, desktop, cli, &known)
+}
+
+/// A row id that names no email: a Claude desktop sign-in whose account was unknown.
+fn is_nameless_id(id: &str) -> bool {
+    id == "claude-desktop" || id.starts_with("desktop-")
+}
+
+/// Remembered rows to drop: every nameless "Claude desktop" row except the live one. Such a row
+/// can never be fetched again (Claude keeps one token) and duplicates the email row its account
+/// gets the next time it is signed in.
+pub fn nameless_rows(remembered: &[super::SeenAccount], live_id: Option<&str>) -> Vec<String> {
+    remembered
+        .iter()
+        .filter(|s| is_nameless_id(&s.id) && Some(s.id.as_str()) != live_id)
+        .map(|s| s.id.clone())
+        .collect()
 }
 
 // ---- fetch ----------------------------------------------------------------------------------
@@ -583,6 +627,70 @@ pub async fn fetch_reply(
         .map_err(|_| ProviderError::Network)?
         .to_vec();
     Ok((parse_usage_reply(&bytes)?, bytes))
+}
+
+pub const PROFILE_URL: &str = "https://api.anthropic.com/api/oauth/profile";
+
+/// Profiles by token; a plan or account change comes with a new token or within the hour.
+static PROFILES: LazyLock<std::sync::Mutex<HashMap<String, (Instant, ClaudeAccount)>>> =
+    LazyLock::new(Default::default);
+const PROFILE_TTL: Duration = Duration::from_secs(60 * 60);
+
+/// GET the account a token belongs to (cached per token for an hour).
+async fn fetch_profile(http: &reqwest::Client, token: &str) -> Option<ClaudeAccount> {
+    let cached = PROFILES.lock().ok().and_then(|m| {
+        m.get(token)
+            .filter(|(at, _)| at.elapsed() < PROFILE_TTL)
+            .map(|(_, a)| a.clone())
+    });
+    if cached.is_some() {
+        return cached;
+    }
+    let resp = http
+        .get(PROFILE_URL)
+        .bearer_auth(token)
+        .header("anthropic-beta", "oauth-2025-04-20")
+        .header("anthropic-version", "2023-06-01")
+        .header("User-Agent", "claude-cli/2.1.293")
+        .header("Accept", "application/json")
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| log::warn!("claude profile request failed: {}", e.without_url()))
+        .ok()?;
+    if !resp.status().is_success() {
+        log::warn!("claude profile request returned {}", resp.status().as_u16());
+        return None;
+    }
+    let bytes = resp.bytes().await.ok()?;
+    let account = serde_json::from_slice::<Value>(&bytes)
+        .ok()
+        .as_ref()
+        .and_then(profile_account_of);
+    if account.is_none() {
+        log::warn!("claude profile reply names no account");
+    }
+    let account = account?;
+    if let Ok(mut m) = PROFILES.lock() {
+        m.retain(|_, (at, _)| at.elapsed() < PROFILE_TTL);
+        m.insert(token.to_string(), (Instant::now(), account.clone()));
+    }
+    Some(account)
+}
+
+/// File the live token under the account Claude's profile reply names, with its current plan.
+/// Keeps the local guess when the profile cannot be read.
+async fn identify(http: &reqwest::Client, live: LiveClaude, identities_file: &Path) -> LiveClaude {
+    let Some(token) = live.token.clone().filter(|t| !t.expired) else {
+        return live;
+    };
+    let Some(account) = fetch_profile(http, &token.token).await else {
+        return live;
+    };
+    let file = identities_file.to_path_buf();
+    let learned = account.clone();
+    let _ = tokio::task::spawn_blocking(move || save_identity(&file, &learned)).await;
+    live_with(account, Some(token))
 }
 
 async fn fetch(
@@ -633,10 +741,19 @@ pub fn history_reading(account_id: &str, usage: &ClaudeUsage, now: i64) -> Optio
 pub async fn accounts(core: &Core) -> Vec<Value> {
     let history_file = core.store.file(HISTORY_FILE);
     let identities_file = core.store.file(IDENTITIES_FILE);
-    let (live, resolved) = tokio::task::spawn_blocking(move || read_live_claude(&identities_file))
+    let local_file = identities_file.clone();
+    let live = tokio::task::spawn_blocking(move || read_live_claude(&local_file))
         .await
         .unwrap_or_default();
-    core.seen.forget(PROVIDER, &resolved).await;
+    let live = match live {
+        Some(live) => Some(identify(&core.http, live, &identities_file).await),
+        None => None,
+    };
+    let stale = nameless_rows(
+        &core.seen.remembered(PROVIDER),
+        live.as_ref().map(|l| l.id.as_str()),
+    );
+    core.seen.forget(PROVIDER, &stale).await;
     let rows: Vec<LiveAccount<'_, ClaudeUsage>> = live
         .into_iter()
         .map(|live| {
@@ -941,26 +1058,105 @@ mod tests {
         );
     }
 
+    #[test]
+    fn profile_reply_names_the_tokens_account_and_current_plan() {
+        // shape of a real reply (2026-10-28), values replaced
+        let reply = json!({
+            "account": { "uuid": "acc-1", "full_name": "Full", "display_name": "Disp",
+                "email": "w@example.com", "has_claude_max": true },
+            "organization": { "uuid": "org-1", "organization_type": "claude_max",
+                "billing_type": "stripe_subscription", "rate_limit_tier": "default_claude_max_20x",
+                "seat_tier": null },
+            "application": { "uuid": "app-1", "name": "Claude Code" }
+        });
+        let account = profile_account_of(&reply).unwrap();
+        assert_eq!(account.email.as_deref(), Some("w@example.com"));
+        assert_eq!(account.account_uuid.as_deref(), Some("acc-1"));
+        assert_eq!(account.org_uuid.as_deref(), Some("org-1"));
+        assert_eq!(account.seat_tier, None);
+        // a token saved on Max 5x shows the plan the profile names
+        let stale = ClaudeToken {
+            rate_limit_tier: Some("default_claude_max_5x".into()),
+            ..token("desktop")
+        };
+        let live = live_with(account, Some(stale));
+        assert_eq!(live.id, "w@example.com");
+        let usage = build_usage(&live.account, live.token.as_ref(), None);
+        assert_eq!(usage.plan_name.as_deref(), Some("Max 20X"));
+        assert_eq!(usage.email.as_deref(), Some("w@example.com"));
+
+        assert_eq!(
+            profile_account_of(&json!({ "account": { "uuid": "a" } })),
+            None
+        );
+        assert_eq!(profile_account_of(&json!({ "error": "x" })), None);
+    }
+
+    #[test]
+    fn nameless_desktop_rows_are_dropped_except_the_live_one() {
+        let seen = |id: &str| crate::providers::SeenAccount {
+            id: id.into(),
+            label: Some("Claude desktop".into()),
+        };
+        let remembered = [
+            seen("a@example.com"),
+            seen("desktop-189f"),
+            seen("desktop-1eb9"),
+            seen("claude-desktop"),
+        ];
+        assert_eq!(
+            nameless_rows(&remembered, Some("a@example.com")),
+            ["desktop-189f", "desktop-1eb9", "claude-desktop"]
+        );
+        assert_eq!(
+            nameless_rows(&remembered, Some("desktop-1eb9")),
+            ["desktop-189f", "claude-desktop"]
+        );
+        assert!(nameless_rows(&remembered[..1], None).is_empty());
+    }
+
+    /// Live check of the whole Claude list: USAGEDECK_LIVE_DIR is a scratch data folder holding
+    /// a copy of `seen-accounts.json`. Prints each row's label, plan and 5-hour percent.
+    #[tokio::test]
+    #[ignore]
+    async fn live_claude_rows() {
+        let dir =
+            PathBuf::from(std::env::var_os("USAGEDECK_LIVE_DIR").expect("USAGEDECK_LIVE_DIR"));
+        let core = Core::new(crate::store::Store::new(
+            dir,
+            Box::new(crate::store::MemoryVault::default()),
+        ));
+        for row in accounts(&core).await {
+            println!(
+                "{} | active={} | plan={} | 5h={}",
+                row["label"],
+                row["active"],
+                row["usage"]["planName"],
+                row["usage"]["fiveHour"]["percent"]
+            );
+        }
+    }
+
     /// Live check against the user's own sign-in. Prints only the parsed summary. Set
     /// USAGEDECK_FIXTURE_OUT to a scratch path to save the raw reply for redaction.
     #[tokio::test]
     #[ignore]
     async fn live_claude() {
         let file = std::env::temp_dir().join("usagedeck-live-claude-identities.json");
-        let live = read_live_claude(&file).0.expect("a local Claude sign-in");
+        let http = reqwest::Client::new();
+        let local = read_live_claude(&file).expect("a local Claude sign-in");
+        let live = identify(&http, local.clone(), &file).await;
         let token = live.token.clone().expect("a token");
+        let _ = std::fs::remove_file(&file);
+        // USAGEDECK_LIVE_SHOW_IDS=1 prints the row ids (emails) too
+        let show = std::env::var_os("USAGEDECK_LIVE_SHOW_IDS").is_some();
         println!(
-            "identity: {} (desktop/cli by id), token expired: {}",
-            if live.account.email.is_some() {
-                "email"
-            } else {
-                "none"
-            },
+            "local guess: {} | profile: {} | token expired: {}",
+            if show { local.id.as_str() } else { "(hidden)" },
+            if show { live.id.as_str() } else { "(hidden)" },
             token.expired
         );
-        let (reply, raw) = fetch_reply(&reqwest::Client::new(), &token.token)
-            .await
-            .expect("live reply");
+        let (reply, raw) = fetch_reply(&http, &token.token).await.expect("live reply");
         if let Some(out) = std::env::var_os("USAGEDECK_FIXTURE_OUT") {
             std::fs::write(out, raw).unwrap();
         }
