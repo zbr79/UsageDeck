@@ -9,7 +9,7 @@
 use crate::store::PanelTheme;
 use crate::{Core, EVENT_SETTINGS_CHANGED, SETTINGS, WIDGET};
 use serde_json::{json, Value};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use tauri::window::Color;
 use tauri::{
@@ -27,6 +27,9 @@ const REPO_URL: &str = "https://github.com/zbr79/UsageDeck";
 
 /// Bumped on every move / resize; only the last one within the debounce window is saved.
 static SAVE_GENERATION: AtomicU64 = AtomicU64::new(0);
+/// True while a settings window is being built. Building runs off the main thread and takes a
+/// moment, so a second open request in that gap would otherwise build a second window.
+static BUILDING: AtomicBool = AtomicBool::new(false);
 
 /// A window or work-area rectangle in physical pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -311,8 +314,14 @@ pub fn show_settings(app: &AppHandle) {
     }
     // Building a window waits on the event loop: never do it on the main thread (tray, menu and
     // single-instance callbacks and sync commands run there), or it deadlocks on Windows.
+    if BUILDING.swap(true, Ordering::SeqCst) {
+        return;
+    }
     let app = app.clone();
-    tauri::async_runtime::spawn(async move { build(&app) });
+    tauri::async_runtime::spawn(async move {
+        build(&app);
+        BUILDING.store(false, Ordering::SeqCst);
+    });
 }
 
 /// Close the settings window (page close paths: Esc, Ctrl+W) and tell the widget to reload.

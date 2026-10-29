@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isOpenSettingsKey, menuNavIndex } from "@/widget/_lib/menu-nav";
+import { menuNavIndex } from "@/widget/_lib/menu-nav";
 
 describe("menuNavIndex", () => {
   it("moves down and wraps from the last item to the first", () => {
@@ -26,26 +26,5 @@ describe("menuNavIndex", () => {
     expect(menuNavIndex("Enter", 1, 4)).toBeNull();
     expect(menuNavIndex("a", 1, 4)).toBeNull();
     expect(menuNavIndex("ArrowDown", 0, 0)).toBeNull();
-  });
-});
-
-describe("isOpenSettingsKey", () => {
-  type Mods = Partial<Record<"ctrlKey" | "altKey" | "shiftKey" | "metaKey", boolean>>;
-  const key = (k: string, mods: Mods = {}) => ({
-    key: k,
-    ctrlKey: false,
-    altKey: false,
-    shiftKey: false,
-    metaKey: false,
-    ...mods,
-  });
-
-  it("matches Ctrl+, only", () => {
-    expect(isOpenSettingsKey(key(",", { ctrlKey: true }))).toBe(true);
-    expect(isOpenSettingsKey(key(","))).toBe(false);
-    expect(isOpenSettingsKey(key(".", { ctrlKey: true }))).toBe(false);
-    expect(isOpenSettingsKey(key(",", { ctrlKey: true, shiftKey: true }))).toBe(false);
-    expect(isOpenSettingsKey(key(",", { ctrlKey: true, altKey: true }))).toBe(false);
-    expect(isOpenSettingsKey(key(",", { ctrlKey: true, metaKey: true }))).toBe(false);
   });
 });

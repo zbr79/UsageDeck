@@ -20,17 +20,3 @@ export function menuNavIndex(key: string, current: number, count: number): numbe
       return null;
   }
 }
-
-/** The keys of a keydown event that matter to the widget's shortcuts. */
-export interface ShortcutKey {
-  key: string;
-  ctrlKey: boolean;
-  altKey: boolean;
-  shiftKey: boolean;
-  metaKey: boolean;
-}
-
-/** Ctrl+, opens Settings (the common Windows app shortcut, also named in the right-click menu). */
-export function isOpenSettingsKey(e: ShortcutKey): boolean {
-  return e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey && e.key === ",";
-}

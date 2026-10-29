@@ -1,6 +1,7 @@
 import {
   Fragment,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -26,14 +27,15 @@ import { DEFAULT_SETTINGS } from "@/lib/settings-schema";
 import type { ProviderId, TrackedAccount, WidgetProvider } from "@/lib/types";
 import { ClaudeCard, CodexCard, CursorCard, GrokCard, OpenCodeCard } from "./_components/cards";
 import { nextBrightness, resolveWidgetTheme } from "./_lib/theme";
-import { isOpenSettingsKey, menuNavIndex } from "./_lib/menu-nav";
+import { menuNavIndex } from "./_lib/menu-nav";
 import { slotFromAccount, useWidgetData, type AccountList } from "./_lib/useWidgetData";
 
 const WIDTH = 238;
-/** Wide enough for the Settings item's Ctrl+, hint. */
 const MENU_WIDTH = 144;
-const MENU_HEIGHT = 136;
-const COMPACT_MENU_HEIGHT = 104;
+/** Gap between the right-click menu and the window edge. */
+const MENU_MARGIN = 4;
+/** +6px below the content leaves room for the bottom card's glow. */
+const GLOW = 6;
 /** Reset text is minute-resolution, so the whole panel does not re-render every second. */
 const CLOCK_MS = 60_000;
 type MenuAction = "expand" | "collapse" | "refresh" | "settings" | "quit";
@@ -50,9 +52,13 @@ export default function WidgetPage() {
   const [brightness, setBrightness] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [menuOpen, setMenuOpen] = useState(false);
-  const [menuPosition, setMenuPosition] = useState({ x: 8, y: 8 });
+  /** Where the menu was asked for (the right-click point); its top is settled once it is measured. */
+  const [menuAnchor, setMenuAnchor] = useState({ x: 8, y: 8 });
   const rootRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  /** Window height the open menu needs (0 when closed): a one-card widget is shorter than the menu. */
+  const menuBottom = useRef(0);
+  const sendSize = useRef<() => void>(() => {});
 
   const settings = data.settings ?? DEFAULT_SETTINGS;
   const theme = resolveWidgetTheme(settings.themeMode, brightness);
@@ -74,13 +80,8 @@ export default function WidgetPage() {
     const offExpand = onToggleExpand(() => setExpanded((e) => !e));
     const onContextMenu = (e: globalThis.MouseEvent) => {
       e.preventDefault();
-      const x = Math.max(4, Math.min(e.clientX, WIDTH - MENU_WIDTH - 4));
-      const menuHeight = canToggleExpand ? MENU_HEIGHT : COMPACT_MENU_HEIGHT;
-      const y =
-        e.clientY + menuHeight <= window.innerHeight - 4
-          ? e.clientY
-          : Math.max(4, e.clientY - menuHeight);
-      setMenuPosition({ x, y });
+      const x = Math.max(MENU_MARGIN, Math.min(e.clientX, WIDTH - MENU_WIDTH - MENU_MARGIN));
+      setMenuAnchor({ x, y: e.clientY });
       setMenuOpen(true);
     };
     const onKey = (e: globalThis.KeyboardEvent) => {
@@ -89,10 +90,6 @@ export default function WidgetPage() {
         setMenuOpen(true);
       } else if (e.key === "Escape") {
         setMenuOpen(false);
-      } else if (isOpenSettingsKey(e)) {
-        e.preventDefault();
-        setMenuOpen(false);
-        if (!e.repeat) bridgeMenuAction("settings");
       }
     };
     document.addEventListener("contextmenu", onContextMenu);
@@ -103,7 +100,31 @@ export default function WidgetPage() {
       document.removeEventListener("contextmenu", onContextMenu);
       window.removeEventListener("keydown", onKey);
     };
-  }, [canToggleExpand]);
+  }, []);
+
+  // Place the open menu below the anchor when it fits, else above it; when neither fits (one
+  // short card), keep it below and grow the window to hold it instead of showing scroll bars.
+  useLayoutEffect(() => {
+    const menu = menuRef.current;
+    if (!menuOpen || !menu) {
+      if (menuBottom.current === 0) return;
+      menuBottom.current = 0;
+      sendSize.current();
+      return;
+    }
+    const h = menu.offsetHeight;
+    const contentHeight = (rootRef.current?.offsetHeight ?? 0) + GLOW;
+    const { y } = menuAnchor;
+    const top =
+      y + h + MENU_MARGIN <= contentHeight
+        ? y
+        : y - h >= MENU_MARGIN
+          ? y - h
+          : Math.max(MENU_MARGIN, Math.min(y, contentHeight - h - MENU_MARGIN));
+    menu.style.top = `${top}px`;
+    menuBottom.current = top + h + MENU_MARGIN;
+    sendSize.current();
+  }, [menuOpen, menuAnchor, canToggleExpand, expanded]);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -151,9 +172,9 @@ export default function WidgetPage() {
     if (!el) return;
     const send = () => {
       const h = Math.ceil(el.getBoundingClientRect().height);
-      // +6px leaves room for the bottom card's glow.
-      if (h > 0) resizeWidget(h + 6);
+      if (h > 0) resizeWidget(Math.max(h + GLOW, menuBottom.current));
     };
+    sendSize.current = send;
     const ro = new ResizeObserver(send);
     ro.observe(el);
     return () => ro.disconnect();
@@ -356,11 +377,7 @@ export default function WidgetPage() {
           data-widget-menu
           role="menu"
           aria-label="Widget menu"
-          style={{
-            left: menuPosition.x,
-            top: menuPosition.y,
-            width: MENU_WIDTH,
-          }}
+          style={{ left: menuAnchor.x, top: menuAnchor.y, width: MENU_WIDTH }}
           className="absolute z-50 rounded-lg border border-(--w-cardBorder) bg-(--w-card) p-1 shadow-xl text-(--w-text)"
           onContextMenu={(e) => e.preventDefault()}
           onKeyDown={onMenuKeyDown}
@@ -392,14 +409,10 @@ export default function WidgetPage() {
             role="menuitem"
             tabIndex={-1}
             onClick={() => menuAction("settings")}
-            aria-keyshortcuts="Control+Comma"
             className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] hover:bg-(--w-hover) focus-visible:bg-(--w-hover)"
           >
             <GearIcon size={14} />
             Settings
-            <span aria-hidden="true" className="ml-auto text-(--w-muted)">
-              Ctrl+,
-            </span>
           </button>
           <div role="separator" className="my-1 border-t border-(--w-cardBorder)" />
           <button
