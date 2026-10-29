@@ -59,6 +59,8 @@ export default function WidgetPage() {
   /** Window height the open menu needs (0 when closed): a one-card widget is shorter than the menu. */
   const menuBottom = useRef(0);
   const sendSize = useRef<() => void>(() => {});
+  /** Opened with the Menu key or Shift+F10 (focus the first item) rather than a right-click. */
+  const menuByKeyboard = useRef(false);
 
   const settings = data.settings ?? DEFAULT_SETTINGS;
   const theme = resolveWidgetTheme(settings.themeMode, brightness);
@@ -82,11 +84,13 @@ export default function WidgetPage() {
       e.preventDefault();
       const x = Math.max(MENU_MARGIN, Math.min(e.clientX, WIDTH - MENU_WIDTH - MENU_MARGIN));
       setMenuAnchor({ x, y: e.clientY });
+      menuByKeyboard.current = false;
       setMenuOpen(true);
     };
     const onKey = (e: globalThis.KeyboardEvent) => {
       if (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) {
         e.preventDefault();
+        menuByKeyboard.current = true;
         setMenuOpen(true);
       } else if (e.key === "Escape") {
         setMenuOpen(false);
@@ -135,11 +139,14 @@ export default function WidgetPage() {
     return () => document.removeEventListener("pointerdown", close);
   }, [menuOpen]);
 
-  // Menu focus: the first item on open, back to where it was on close.
+  // Menu focus, back to where it was on close. From the keyboard: the first item, with its ring.
+  // From a right-click: the menu itself, so no item shows a focus ring (Down / Up still enter it).
   useEffect(() => {
     if (!menuOpen) return;
     const previous = document.activeElement;
-    menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+    const menu = menuRef.current;
+    if (menuByKeyboard.current) menu?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+    else menu?.focus();
     return () => {
       if (previous instanceof HTMLElement && previous !== document.body && previous.isConnected) {
         previous.focus();
@@ -377,7 +384,9 @@ export default function WidgetPage() {
           data-widget-menu
           role="menu"
           aria-label="Widget menu"
-          style={{ left: menuAnchor.x, top: menuAnchor.y, width: MENU_WIDTH }}
+          tabIndex={-1}
+          // inline: the global :focus-visible ring is unlayered and beats a utility class
+          style={{ left: menuAnchor.x, top: menuAnchor.y, width: MENU_WIDTH, outline: "none" }}
           className="absolute z-50 rounded-lg border border-(--w-cardBorder) bg-(--w-card) p-1 shadow-xl text-(--w-text)"
           onContextMenu={(e) => e.preventDefault()}
           onKeyDown={onMenuKeyDown}
