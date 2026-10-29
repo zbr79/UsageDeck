@@ -6,7 +6,9 @@
 //!
 //! Fixed against the old code: the identity (email) comes from the same app as the token. A
 //! Claude desktop token is filed under Claude Code's email only when both apps are signed into
-//! the same account (desktop `lastKnownAccountUuid` == `~/.claude.json` `oauthAccount.accountUuid`).
+//! the same account (desktop `lastKnownAccountUuid` == `~/.claude.json` `oauthAccount.accountUuid`),
+//! or when Claude Code was signed into that account earlier (`claude-identities.json` remembers
+//! each account id Claude Code has shown with its email).
 
 use super::{
     collect_accounts, CachedProvider, FetchError, LiveAccount, ProviderError, TrackedAccount,
@@ -27,6 +29,8 @@ use std::time::Duration;
 pub const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const SECTION: &str = "claude";
 const PROVIDER: &str = "claude";
+/// Account id -> email, learned from `~/.claude.json` whenever Claude Code is signed in.
+const IDENTITIES_FILE: &str = "claude-identities.json";
 
 /// This endpoint rate-limits hard: a good value is reused for 60 s, a failure for 120 s.
 static CACHE: LazyLock<CachedProvider<ClaudeUsage>> = LazyLock::new(|| {
@@ -310,6 +314,9 @@ pub struct ClaudeAccount {
     pub seat_tier: Option<String>,
     pub org_uuid: Option<String>,
     pub account_uuid: Option<String>,
+    /// The plan's rate-limit tier as Claude Code last fetched it from the profile; fresher than
+    /// the tier saved with a token, which is fixed at sign-in and misses a later plan change.
+    pub rate_limit_tier: Option<String>,
 }
 
 pub fn account_of(claude_json: &Value) -> ClaudeAccount {
@@ -323,6 +330,7 @@ pub fn account_of(claude_json: &Value) -> ClaudeAccount {
         seat_tier: get("seatTier"),
         org_uuid: get("organizationUuid"),
         account_uuid: get("accountUuid"),
+        rate_limit_tier: get("organizationRateLimitTier").or_else(|| get("userRateLimitTier")),
     }
 }
 
@@ -370,7 +378,10 @@ pub fn build_usage(
     reply: Option<&UsageReply>,
 ) -> ClaudeUsage {
     let subscription_type = token.and_then(|t| t.subscription_type.clone());
-    let rate_limit_tier = token.and_then(|t| t.rate_limit_tier.clone());
+    let rate_limit_tier = account
+        .rate_limit_tier
+        .clone()
+        .or_else(|| token.and_then(|t| t.rate_limit_tier.clone()));
     ClaudeUsage {
         email: account.email.clone(),
         display_name: account.display_name.clone(),
@@ -409,12 +420,53 @@ pub struct LiveClaude {
     pub token: Option<ClaudeToken>,
 }
 
+/// Account ids (trimmed, lower case) and the email Claude Code showed for each.
+pub type Identities = BTreeMap<String, String>;
+
+fn uuid_key(uuid: &str) -> String {
+    uuid.trim().to_lowercase()
+}
+
+/// The id a Claude desktop sign-in gets when its email is unknown.
+fn desktop_id(uuid: &str) -> String {
+    format!("desktop-{}", uuid_key(uuid))
+}
+
+pub fn identities_of(v: Option<&Value>) -> Identities {
+    v.and_then(Value::as_object)
+        .map(|o| {
+            o.iter()
+                .filter_map(|(k, v)| {
+                    let email = v.as_str()?.trim();
+                    (!k.trim().is_empty() && !email.is_empty())
+                        .then(|| (uuid_key(k), email.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Add Claude Code's current account to `known`; true when that changed it.
+pub fn learn_identity(known: &mut Identities, account: &ClaudeAccount) -> bool {
+    let (Some(uuid), Some(email)) = (&account.account_uuid, &account.email) else {
+        return false;
+    };
+    let (uuid, email) = (uuid_key(uuid), email.trim().to_string());
+    if uuid.is_empty() || email.is_empty() || known.get(&uuid) == Some(&email) {
+        return false;
+    }
+    known.insert(uuid, email);
+    true
+}
+
 /// Choose the token as the old code did (live desktop > live CLI > expired desktop > expired
-/// CLI), then take the identity from the same app as that token.
+/// CLI), then take the identity from the same app as that token. A desktop sign-in into another
+/// account is filed under that account's email when Claude Code has shown it before (`known`).
 pub fn resolve_live(
     cli_account: ClaudeAccount,
     desktop: Option<DesktopToken>,
     cli: Option<ClaudeToken>,
+    known: &Identities,
 ) -> Option<LiveClaude> {
     let desktop_live = desktop.as_ref().is_some_and(|d| !d.token.expired);
     let cli_live = cli.as_ref().is_some_and(|t| !t.expired);
@@ -426,13 +478,21 @@ pub fn resolve_live(
             (Some(a), Some(b)) if a.trim().eq_ignore_ascii_case(b.trim())
         );
         if !same_account {
+            let uuid = d.account_uuid.as_deref().map(uuid_key).unwrap_or_default();
+            if let Some(email) = known.get(&uuid) {
+                let account = ClaudeAccount {
+                    email: Some(email.clone()),
+                    account_uuid: Some(uuid),
+                    ..ClaudeAccount::default()
+                };
+                return Some(live_with(account, Some(d.token)));
+            }
             // Claude desktop is signed into an account we hold no email for: never borrow
             // Claude Code's identity for it.
-            let id = match &d.account_uuid {
-                Some(uuid) if !uuid.trim().is_empty() => {
-                    format!("desktop-{}", uuid.trim().to_lowercase())
-                }
-                _ => "claude-desktop".to_string(),
+            let id = if uuid.is_empty() {
+                "claude-desktop".to_string()
+            } else {
+                desktop_id(&uuid)
             };
             return Some(LiveClaude {
                 id,
@@ -469,15 +529,24 @@ fn live_with(account: ClaudeAccount, token: Option<ClaudeToken>) -> LiveClaude {
     }
 }
 
-fn read_live_claude() -> Option<LiveClaude> {
+/// The signed-in account, and the "Claude desktop" ids that now have a known email (so their
+/// old rows can be dropped). Learns Claude Code's current account into `identities_file`.
+fn read_live_claude(identities_file: &Path) -> (Option<LiveClaude>, Vec<String>) {
     let account = read_cli_account();
+    let mut known = identities_of(read_json(identities_file).as_ref());
+    if learn_identity(&mut known, &account) {
+        if let Err(e) = crate::store::write_json_atomic(identities_file, &known) {
+            log::warn!("could not save Claude identities: {e}");
+        }
+    }
     let desktop = read_desktop_token();
     let cli = if desktop.as_ref().is_some_and(|d| !d.token.expired) {
         None
     } else {
         read_cli_token()
     };
-    resolve_live(account, desktop, cli)
+    let resolved = known.keys().map(|uuid| desktop_id(uuid)).collect();
+    (resolve_live(account, desktop, cli, &known), resolved)
 }
 
 // ---- fetch ----------------------------------------------------------------------------------
@@ -563,10 +632,11 @@ pub fn history_reading(account_id: &str, usage: &ClaudeUsage, now: i64) -> Optio
 /// Rows for the `accounts` array of the old route's JSON body (`TrackedAccount<ClaudeUsage>` each).
 pub async fn accounts(core: &Core) -> Vec<Value> {
     let history_file = core.store.file(HISTORY_FILE);
-    let live = tokio::task::spawn_blocking(read_live_claude)
+    let identities_file = core.store.file(IDENTITIES_FILE);
+    let (live, resolved) = tokio::task::spawn_blocking(move || read_live_claude(&identities_file))
         .await
-        .ok()
-        .flatten();
+        .unwrap_or_default();
+    core.seen.forget(PROVIDER, &resolved).await;
     let rows: Vec<LiveAccount<'_, ClaudeUsage>> = live
         .into_iter()
         .map(|live| {
@@ -765,10 +835,12 @@ mod tests {
             token: token("desktop"),
             account_uuid: Some("UUID-DESKTOP".into()),
         };
+        let none = Identities::new();
         let live = resolve_live(
             cli_account("uuid-cli"),
             Some(desktop.clone()),
             Some(token("cli")),
+            &none,
         )
         .unwrap();
         assert_eq!(live.token.as_ref().unwrap().token, "desktop");
@@ -785,14 +857,20 @@ mod tests {
             ..desktop.clone()
         };
         assert_eq!(
-            resolve_live(cli_account("uuid-cli"), Some(unknown), None)
+            resolve_live(cli_account("uuid-cli"), Some(unknown), None, &none)
                 .unwrap()
                 .id,
             "claude-desktop"
         );
 
         // same account in both apps: the CLI email is right
-        let same = resolve_live(cli_account("uuid-desktop"), Some(desktop.clone()), None).unwrap();
+        let same = resolve_live(
+            cli_account("uuid-desktop"),
+            Some(desktop.clone()),
+            None,
+            &none,
+        )
+        .unwrap();
         assert_eq!(same.id, "cli@example.com");
         assert_eq!(same.account.email.as_deref(), Some("cli@example.com"));
 
@@ -802,13 +880,65 @@ mod tests {
                 expired: true,
                 ..token("desktop")
             },
-            ..desktop
+            ..desktop.clone()
         };
-        let cli = resolve_live(cli_account("uuid-cli"), Some(expired), Some(token("cli"))).unwrap();
+        let cli = resolve_live(
+            cli_account("uuid-cli"),
+            Some(expired),
+            Some(token("cli")),
+            &none,
+        )
+        .unwrap();
         assert_eq!(cli.token.unwrap().token, "cli");
         assert_eq!(cli.id, "cli@example.com");
 
-        assert_eq!(resolve_live(ClaudeAccount::default(), None, None), None);
+        assert_eq!(
+            resolve_live(ClaudeAccount::default(), None, None, &none),
+            None
+        );
+
+        // Claude Code showed the desktop's account earlier: filed under that email, not "desktop"
+        let mut known = Identities::new();
+        let earlier = ClaudeAccount {
+            email: Some("other@example.com".into()),
+            account_uuid: Some("UUID-desktop ".into()),
+            ..ClaudeAccount::default()
+        };
+        assert!(learn_identity(&mut known, &earlier));
+        assert!(!learn_identity(&mut known, &earlier));
+        let mapped = resolve_live(cli_account("uuid-cli"), Some(desktop), None, &known).unwrap();
+        assert_eq!(mapped.id, "other@example.com");
+        assert_eq!(mapped.label.as_deref(), Some("other@example.com"));
+        assert_eq!(mapped.token.unwrap().token, "desktop");
+        assert_eq!(
+            identities_of(Some(&serde_json::to_value(&known).unwrap())),
+            known
+        );
+    }
+
+    #[test]
+    fn plan_follows_claude_codes_profile_over_the_tier_saved_at_sign_in() {
+        // the desktop token was saved on Max 5x; the plan is now Max 20x (2026-10-28 on this PC)
+        let stale = ClaudeToken {
+            rate_limit_tier: Some("default_claude_max_5x".into()),
+            ..token("desktop")
+        };
+        let mut account = cli_account("u1");
+        assert_eq!(
+            build_usage(&account, Some(&stale), None)
+                .plan_name
+                .as_deref(),
+            Some("Max 5X")
+        );
+        account = account_of(&json!({ "oauthAccount": {
+            "emailAddress": "cli@example.com", "organizationType": "claude_max",
+            "accountUuid": "u1", "organizationRateLimitTier": "default_claude_max_20x" } }));
+        let usage = build_usage(&account, Some(&stale), None);
+        assert_eq!(usage.plan_name.as_deref(), Some("Max 20X"));
+        assert_eq!(
+            usage.rate_limit_tier.as_deref(),
+            Some("default_claude_max_20x")
+        );
     }
 
     /// Live check against the user's own sign-in. Prints only the parsed summary. Set
@@ -816,7 +946,8 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn live_claude() {
-        let live = read_live_claude().expect("a local Claude sign-in");
+        let file = std::env::temp_dir().join("usagedeck-live-claude-identities.json");
+        let live = read_live_claude(&file).0.expect("a local Claude sign-in");
         let token = live.token.clone().expect("a token");
         println!(
             "identity: {} (desktop/cli by id), token expired: {}",
@@ -841,3 +972,4 @@ mod tests {
         );
     }
 }
+

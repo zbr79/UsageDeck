@@ -648,6 +648,41 @@ impl SeenAccounts {
             .unwrap_or_default()
     }
 
+    /// Drop identities that turned out to be another one (a "Claude desktop" row whose email is
+    /// now known).
+    pub async fn forget(&self, provider: &str, ids: &[String]) {
+        let ids: HashSet<String> = ids.iter().map(|id| normalize_id(id)).collect();
+        if ids.is_empty() {
+            return;
+        }
+        let _guard = self.lock.lock().await;
+        let mut roster = self.roster();
+        let Some((_, list)) = roster.iter_mut().find(|(p, _)| p == provider) else {
+            return;
+        };
+        let before = list.len();
+        list.retain(|a| !ids.contains(&a.id));
+        if list.len() == before {
+            return;
+        }
+        self.write(roster);
+    }
+
+    fn write(&self, roster: Vec<(String, Vec<SeenAccount>)>) {
+        let out: Map<String, Value> = roster
+            .into_iter()
+            .map(|(p, list)| {
+                (
+                    p,
+                    serde_json::to_value(list).unwrap_or(Value::Array(Vec::new())),
+                )
+            })
+            .collect();
+        if let Err(e) = write_json_atomic(&self.file, &out) {
+            log::warn!("seen-accounts write failed: {e}");
+        }
+    }
+
     /// Add identities. Labels fill in when learned; an existing label is kept if the new one is empty.
     pub async fn remember(&self, provider: &str, accounts: &[SeenAccount]) {
         let incoming: Vec<SeenAccount> = accounts
@@ -692,18 +727,7 @@ impl SeenAccounts {
         }
         // The old code kept the oldest 50 (`slice(0, 50)`); keep the newest instead.
         *list = keep_newest(std::mem::take(list));
-        let out: Map<String, Value> = roster
-            .into_iter()
-            .map(|(p, list)| {
-                (
-                    p,
-                    serde_json::to_value(list).unwrap_or(Value::Array(Vec::new())),
-                )
-            })
-            .collect();
-        if let Err(e) = write_json_atomic(&self.file, &out) {
-            log::warn!("seen-accounts write failed: {e}");
-        }
+        self.write(roster);
     }
 }
 
@@ -974,6 +998,15 @@ mod tests {
             Some("Name")
         );
         assert!(seen.remembered("grok").is_empty());
+
+        // forget drops only the named ids, of that provider only
+        seen.forget("cursor", &["USER59@x.com".into(), "nobody".into()])
+            .await;
+        let list = seen.remembered("cursor");
+        assert_eq!(list.len(), 49);
+        assert_eq!(list.last().unwrap().id, "user58@x.com");
+        seen.forget("grok", &["user58@x.com".into()]).await;
+        assert_eq!(seen.remembered("cursor").len(), 49);
         let _ = std::fs::remove_dir_all(dir);
     }
 
