@@ -184,7 +184,7 @@ const providers: Record<string, unknown> = {
       signedIn: true,
       subscribed: true,
       subscriptionType: "max",
-      planName: "Max 20x",
+      planName: "Ultra",
       fiveHour: { percent: 92, resetsAt: iso(-H) },
       weekly: { percent: 47, resetsAt: iso(3 * 24 * H) },
       weeklyOpus: null,

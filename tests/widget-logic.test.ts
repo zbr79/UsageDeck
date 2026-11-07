@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  claudePlanLabel,
   formatAgo,
   formatDuration,
   formatPercent,
@@ -14,6 +15,19 @@ import { nextBrightness, resolveWidgetTheme } from "@/widget/_lib/theme";
 const M = 60_000;
 const H = 60 * M;
 const D = 24 * H;
+
+describe("claudePlanLabel", () => {
+  it("shows the old saved plan names under Claude's new ones", () => {
+    expect(claudePlanLabel("Max 20X")).toBe("Ultra");
+    expect(claudePlanLabel("Max 20x")).toBe("Ultra");
+    expect(claudePlanLabel("Max 5X")).toBe("Max");
+  });
+  it("leaves every other name alone", () => {
+    for (const plan of ["Ultra", "Max", "Pro", "Free", "signed out"]) {
+      expect(claudePlanLabel(plan)).toBe(plan);
+    }
+  });
+});
 
 describe("formatDuration", () => {
   it("starts at the largest unit and caps the unit count", () => {

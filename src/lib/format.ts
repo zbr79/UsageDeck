@@ -74,3 +74,11 @@ export function formatAgo(at: number, now: number): string {
 export function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
+
+/** Claude's current plan name, also for last-known data saved under the old names. */
+export function claudePlanLabel(plan: string): string {
+  const normalized = plan.trim().toLowerCase();
+  if (normalized === "max 20x") return "Ultra";
+  if (normalized === "max 5x") return "Max";
+  return plan;
+}

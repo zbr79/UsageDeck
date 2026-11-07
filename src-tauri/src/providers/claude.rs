@@ -395,9 +395,11 @@ pub fn plan_name_of(
     if raw.is_empty() {
         return None;
     }
+    // Claude renamed its plans: Max 20x is now Ultra, Max 5x is now Max. The local tier names may
+    // still say max_20x / max_5x, so "20x" must be checked before "max".
     let named = [
-        ("20x", "Max 20X"),
-        ("5x", "Max 5X"),
+        ("ultra", "Ultra"),
+        ("20x", "Ultra"),
         ("max", "Max"),
         ("pro", "Pro"),
         ("free", "Free"),
@@ -867,7 +869,7 @@ mod tests {
         let reply = parse_usage_reply(OK).expect("ok.json parses");
         let usage = build_usage(&cli_account("u1"), Some(&token("t")), Some(&reply));
         assert_eq!(usage.email.as_deref(), Some("cli@example.com"));
-        assert_eq!(usage.plan_name.as_deref(), Some("Max 20X"));
+        assert_eq!(usage.plan_name.as_deref(), Some("Ultra"));
         assert!(usage.signed_in && usage.subscribed);
         assert_eq!(usage.five_hour.percent, Some(68.0));
         assert_eq!(
@@ -1078,6 +1080,21 @@ mod tests {
     }
 
     #[test]
+    fn plans_use_claudes_new_names() {
+        let name = |sub, tier| plan_name_of(sub, None, tier);
+        assert_eq!(
+            name(Some("max"), Some("default_claude_max_20x")).as_deref(),
+            Some("Ultra")
+        );
+        assert_eq!(
+            name(Some("max"), Some("default_claude_max_5x")).as_deref(),
+            Some("Max")
+        );
+        assert_eq!(name(Some("ultra"), None).as_deref(), Some("Ultra"));
+        assert_eq!(name(Some("max"), None).as_deref(), Some("Max"));
+    }
+
+    #[test]
     fn plan_follows_claude_codes_profile_over_the_tier_saved_at_sign_in() {
         // the desktop token was saved on Max 5x; the plan is now Max 20x (2026-10-28 on this PC)
         let stale = ClaudeToken {
@@ -1089,13 +1106,13 @@ mod tests {
             build_usage(&account, Some(&stale), None)
                 .plan_name
                 .as_deref(),
-            Some("Max 5X")
+            Some("Max")
         );
         account = account_of(&json!({ "oauthAccount": {
             "emailAddress": "cli@example.com", "organizationType": "claude_max",
             "accountUuid": "u1", "organizationRateLimitTier": "default_claude_max_20x" } }));
         let usage = build_usage(&account, Some(&stale), None);
-        assert_eq!(usage.plan_name.as_deref(), Some("Max 20X"));
+        assert_eq!(usage.plan_name.as_deref(), Some("Ultra"));
         assert_eq!(
             usage.rate_limit_tier.as_deref(),
             Some("default_claude_max_20x")
@@ -1126,7 +1143,7 @@ mod tests {
         let live = live_with(account, Some(stale));
         assert_eq!(live.id, "w@example.com");
         let usage = build_usage(&live.account, live.token.as_ref(), None);
-        assert_eq!(usage.plan_name.as_deref(), Some("Max 20X"));
+        assert_eq!(usage.plan_name.as_deref(), Some("Ultra"));
         assert_eq!(usage.email.as_deref(), Some("w@example.com"));
 
         assert_eq!(
