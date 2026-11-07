@@ -109,8 +109,8 @@ uninstaller to also remove settings, logs and the stored OpenCode keys (details 
 - Claude page: a "Spend & pace" section with the API-equivalent spend of Claude Code on this PC
   (last hour, 5 h, today, 7 days, $/h), a 24-hour bar chart, spend per model, each window's
   speed, even pace and projected limit time, and what 1% of the weekly limit is worth in dollars.
-  The widget's Claude card shows the same in one line: `$71/h · 5h +9%/h · lasts` (amber when a
-  limit will be hit before it resets, red under 30 minutes)
+  The widget's Claude card shows the spend rate after its name (`$71/h`); its meter colours follow
+  the percentage only (amber from 80%, red from 100%), and pace stays in the meter tooltip
 - About: version, log folder and the repository
 - Fully keyboard accessible: modal dialogs trap focus and Esc closes the topmost one first; menus
   use the arrow keys, Home and End; forced-colors (high contrast) is supported

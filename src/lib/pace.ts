@@ -1,5 +1,5 @@
-// Pure helpers for Claude spend and pace: the widget card (header rate, even-pace tick, meter colour
-// and tooltip) and the settings section.
+// Pure helpers for Claude spend and pace: the widget card (header rate, even-pace tick and meter
+// tooltip) and the settings section.
 // Data comes from GET /api/claude/pace; see docs/plans/claude-spend-and-pace.md.
 import type { ClaudePace, PaceWindow } from "./types";
 
@@ -161,22 +161,10 @@ export function evenPacePct(
 }
 
 export type MeterSeverity = "ok" | "warn" | "danger";
-const RANK: Record<MeterSeverity, number> = { ok: 0, warn: 1, danger: 2 };
 
-/** The meter's usage colours: warn from 80%, danger from 100%. */
+/** Every meter's colour follows its percentage only: warn from 80%, danger from 100%. */
 export function usageSeverity(percent: number): MeterSeverity {
   return percent >= 100 ? "danger" : percent >= 80 ? "warn" : "ok";
-}
-
-/**
- * A Claude meter's fill: the more severe of its usage colour and its pace (amber when heading for
- * the limit more than 30 minutes away, red at 30 minutes or less).
- */
-export function meterSeverity(percent: number, w: PaceWindow | null, now: number): MeterSeverity {
-  const tone = paceTone(w, now);
-  const pace: MeterSeverity = tone === "red" ? "danger" : tone === "amber" ? "warn" : "ok";
-  const usage = usageSeverity(percent);
-  return RANK[pace] > RANK[usage] ? pace : usage;
 }
 
 /**

@@ -15,7 +15,6 @@ import {
   hourlyOldestFirst,
   hourlySummary,
   meterPaceText,
-  meterSeverity,
   modelShares,
   paceTone,
   paceVsEven,
@@ -170,27 +169,13 @@ describe("evenPacePct", () => {
   });
 });
 
-describe("meterSeverity", () => {
-  it("keeps the usage colours by default", () => {
-    expect(usageSeverity(10)).toBe("ok");
+describe("usageSeverity", () => {
+  it("follows the percentage only: green, amber from 80%, red from 100%", () => {
+    expect(usageSeverity(1)).toBe("ok");
+    expect(usageSeverity(79.9)).toBe("ok");
     expect(usageSeverity(80)).toBe("warn");
+    expect(usageSeverity(99.9)).toBe("warn");
     expect(usageSeverity(100)).toBe("danger");
-    expect(meterSeverity(41, win(), NOW)).toBe("ok");
-    expect(meterSeverity(85, null, NOW)).toBe("warn");
-  });
-  it("goes amber when the limit is more than 30 minutes away, red at 30 or less", () => {
-    expect(meterSeverity(41, win({ state: "limit", etaToLimit: NOW + 31 * MIN }), NOW)).toBe(
-      "warn",
-    );
-    expect(meterSeverity(41, win({ state: "limit", etaToLimit: NOW + 30 * MIN }), NOW)).toBe(
-      "danger",
-    );
-  });
-  it("takes the more severe of usage and pace", () => {
-    const far = win({ state: "limit", etaToLimit: NOW + 5 * H });
-    expect(meterSeverity(100, far, NOW)).toBe("danger");
-    const near = win({ state: "limit", etaToLimit: NOW + 10 * MIN });
-    expect(meterSeverity(85, near, NOW)).toBe("danger");
   });
 });
 
@@ -257,11 +242,10 @@ describe("settings helpers", () => {
 
 describe("mock scenarios", () => {
   it("cover every state the card can show", () => {
-    const sev = (p: ClaudePace, key: "fiveHour" | "weekly") =>
-      meterSeverity(p.windows[key]!.pct, p.windows[key], NOW);
-    expect(sev(paceScenario("lasts", NOW), "fiveHour")).toBe("ok");
-    expect(sev(paceScenario("limit", NOW), "fiveHour")).toBe("danger");
-    expect(sev(paceScenario("weekly", NOW), "weekly")).toBe("warn");
+    const tone = (p: ClaudePace, key: "fiveHour" | "weekly") => paceTone(p.windows[key], NOW);
+    expect(tone(paceScenario("lasts", NOW), "fiveHour")).toBe("muted");
+    expect(tone(paceScenario("limit", NOW), "fiveHour")).toBe("red");
+    expect(tone(paceScenario("weekly", NOW), "weekly")).toBe("amber");
     const m = paceScenario("measuring", NOW).windows.fiveHour!;
     expect(meterPaceText(m.pct, m.evenPacePct, m, NOW)).toContain("measuring speed…");
     expect(headerRate(paceScenario("backfill", NOW))).toBeNull();

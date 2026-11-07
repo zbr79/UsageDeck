@@ -75,6 +75,7 @@ These are "what this would cost on the API" figures. They are not the subscripti
   - normal: muted text;
   - on track to hit a limit before it resets: amber;
   - under 30 minutes left: red.
+  - Superseded 2026-11-06 at the owner's request: the meter bars follow the percentage only; the forecast stays in the tooltip and the Settings text.
 - Tooltip: the 15-minute rate, both windows' speeds, and "Claude Code on this PC".
 
 ### Settings → Claude: a "Spend & pace" section
