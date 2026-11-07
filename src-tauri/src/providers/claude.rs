@@ -228,11 +228,28 @@ fn home() -> PathBuf {
         .unwrap_or_default()
 }
 
-/// Claude desktop config dirs: the MSIX package's virtualised Roaming dir, then %APPDATA%\Claude.
 fn desktop_config_dirs() -> Vec<PathBuf> {
+    desktop_config_dirs_in(
+        std::env::var_os("LOCALAPPDATA").map(PathBuf::from),
+        std::env::var_os("APPDATA").map(PathBuf::from),
+    )
+}
+
+/// Claude desktop config dirs, newest location first: each folder under
+/// %LOCALAPPDATA%\Claude-Data (where Claude keeps its data since 2026-11), the MSIX package's
+/// virtualised Roaming dir, then %APPDATA%\Claude. The older two can hold a long-expired sign-in
+/// left behind by the move, so they must come last: the first dir with a token wins.
+fn desktop_config_dirs_in(local: Option<PathBuf>, roaming: Option<PathBuf>) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
-    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-        if let Ok(entries) = std::fs::read_dir(PathBuf::from(local).join("Packages")) {
+    if let Some(local) = local {
+        if let Ok(entries) = std::fs::read_dir(local.join("Claude-Data")) {
+            for entry in entries.flatten() {
+                if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                    dirs.push(entry.path());
+                }
+            }
+        }
+        if let Ok(entries) = std::fs::read_dir(local.join("Packages")) {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_lowercase();
                 if entry.file_type().is_ok_and(|t| t.is_dir()) && name.starts_with("claude_") {
@@ -247,8 +264,8 @@ fn desktop_config_dirs() -> Vec<PathBuf> {
             }
         }
     }
-    if let Some(roaming) = std::env::var_os("APPDATA") {
-        dirs.push(PathBuf::from(roaming).join("Claude"));
+    if let Some(roaming) = roaming {
+        dirs.push(roaming.join("Claude"));
     }
     dirs
 }
@@ -816,6 +833,33 @@ mod tests {
         account_of(&json!({ "oauthAccount": {
             "emailAddress": "cli@example.com", "displayName": "CLI", "billingType": "stripe_subscription",
             "organizationType": "claude_max", "organizationUuid": "org-1", "accountUuid": uuid } }))
+    }
+
+    #[test]
+    fn desktop_dirs_look_in_claude_data_before_the_old_folders() {
+        let base =
+            std::env::temp_dir().join(format!("usagedeck-claude-dirs-{}", std::process::id()));
+        let local = base.join("Local");
+        let roaming = base.join("Roaming");
+        let new_dir = local.join("Claude-Data").join("claude_abc");
+        let package = local.join("Packages").join("Claude_abc");
+        std::fs::create_dir_all(&new_dir).unwrap();
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::create_dir_all(local.join("Packages").join("Other_abc")).unwrap();
+        // Claude leaves a README next to the data folder: not a config dir.
+        std::fs::write(local.join("Claude-Data").join("README.txt"), "x").unwrap();
+
+        let dirs = desktop_config_dirs_in(Some(local.clone()), Some(roaming.clone()));
+        let _ = std::fs::remove_dir_all(&base);
+
+        assert_eq!(
+            dirs,
+            vec![
+                new_dir,
+                package.join("LocalCache").join("Roaming").join("Claude"),
+                roaming.join("Claude"),
+            ]
+        );
     }
 
     #[test]
