@@ -36,6 +36,8 @@ const MENU_WIDTH = 144;
 const MENU_MARGIN = 4;
 /** +6px below the content leaves room for the bottom card's glow. */
 const GLOW = 6;
+/** Longest the menu waits for the window to grow before showing anyway. */
+const MENU_REVEAL_MAX_MS = 150;
 /** Reset text is minute-resolution, so the whole panel does not re-render every second. */
 const CLOCK_MS = 60_000;
 type MenuAction = "expand" | "collapse" | "refresh" | "settings" | "quit";
@@ -125,9 +127,29 @@ export default function WidgetPage() {
         : y - h >= MENU_MARGIN
           ? y - h
           : Math.max(MENU_MARGIN, Math.min(y, contentHeight - h - MENU_MARGIN));
+    const bottom = top + h + MENU_MARGIN;
     menu.style.top = `${top}px`;
-    menuBottom.current = top + h + MENU_MARGIN;
+    menuBottom.current = bottom;
     sendSize.current();
+    // The window grows a moment later, over IPC. Hold the menu back until it fits, so it never
+    // shows cut off; opacity rather than visibility, because the menu takes focus while hidden.
+    if (bottom <= window.innerHeight) {
+      menu.style.opacity = "";
+      return;
+    }
+    menu.style.opacity = "0";
+    const show = () => {
+      menu.style.opacity = "";
+      window.removeEventListener("resize", onResize);
+      clearTimeout(timer);
+    };
+    const onResize = () => {
+      if (window.innerHeight >= bottom) show();
+    };
+    window.addEventListener("resize", onResize);
+    // The window stops growing at the screen's height: show the menu anyway.
+    const timer = setTimeout(show, MENU_REVEAL_MAX_MS);
+    return show;
   }, [menuOpen, menuAnchor, canToggleExpand, expanded]);
 
   useEffect(() => {
