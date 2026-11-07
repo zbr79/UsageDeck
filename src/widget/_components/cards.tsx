@@ -556,17 +556,15 @@ export function ClaudeCard({
             title={rateTitle}
             className="shrink-0 whitespace-nowrap text-[12px] leading-4 tabular-nums text-(--w-muted) transition-colors duration-700"
           >
-            <span aria-hidden="true">
-              <span className="text-[11px]">spend </span>
-              <span
-                style={
-                  rateTone === "muted"
-                    ? undefined
-                    : { color: `var(--w-${WIDGET_SPEND_TONE[rateTone]})` }
-                }
-              >
-                {rate}
-              </span>
+            <span
+              aria-hidden="true"
+              style={
+                rateTone === "muted"
+                  ? undefined
+                  : { color: `var(--w-${WIDGET_SPEND_TONE[rateTone]})` }
+              }
+            >
+              {rate}
             </span>
             <span className="sr-only">{`${rate}: ${rateTitle}`}</span>
           </span>
