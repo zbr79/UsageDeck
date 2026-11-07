@@ -531,13 +531,12 @@ impl SpendEngine {
             .map_or(now - now.rem_euclid(history::DAY_MS), |d| {
                 d.timestamp_millis()
             });
-        // start of the current clock quarter (:00, :15, :30, :45)
-        let slot0 = now
-            - i64::from(local.minute() % 15) * MINUTE_MS
+        let hour0 = now
+            - i64::from(local.minute()) * MINUTE_MS
             - i64::from(local.second()) * 1000
             - i64::from(local.timestamp_subsec_millis());
         let s = self.lock_shared();
-        summarize(&s.buckets, now, midnight, slot0, s.scanned_at)
+        summarize(&s.buckets, now, midnight, hour0, s.scanned_at)
     }
 }
 
@@ -576,14 +575,14 @@ pub struct ModelSpend {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Spend {
-    pub last15m: f64,
     pub last_hour: f64,
     pub last5h: f64,
     pub today: f64,
     pub last7d: f64,
+    pub rate60m: f64,
+    pub rate15m: f64,
     pub by_model: Vec<ModelSpend>,
-    /// spend per 15-minute clock slot over 24 h, index 0 = the current partial slot
-    pub quarter_hours: Vec<f64>,
+    pub hourly: Vec<f64>,
     pub unpriced_replies: u64,
     pub scanned_at: Option<i64>,
     pub backfilling: bool,
@@ -592,31 +591,29 @@ pub struct Spend {
     pub last24h: f64,
 }
 
-/// The chart's slot length and count: 15 minutes over 24 hours.
-const SLOT_MS: i64 = 15 * MINUTE_MS;
-const SLOTS: usize = 96;
-
 fn summarize(
     buckets: &Buckets,
     now: i64,
     midnight: i64,
-    slot0: i64,
+    hour0: i64,
     scanned_at: Option<i64>,
 ) -> Spend {
     let mut out = Spend {
-        last15m: 0.0,
         last_hour: 0.0,
         last5h: 0.0,
         today: 0.0,
         last7d: 0.0,
+        rate60m: 0.0,
+        rate15m: 0.0,
         by_model: Vec::new(),
-        quarter_hours: vec![0.0; SLOTS],
+        hourly: vec![0.0; 24],
         unpriced_replies: 0,
         scanned_at,
         backfilling: scanned_at.is_none(),
         last24h: 0.0,
     };
     let mut by_model: BTreeMap<&str, f64> = BTreeMap::new();
+    let mut last15 = 0.0;
     let since = |hours: i64, m: i64| m > now - hours * HOUR_MS && m <= now + MINUTE_MS;
     for (minute, models) in buckets.range((now - 7 * history::DAY_MS) / MINUTE_MS - 1..) {
         let m = mid(*minute);
@@ -641,22 +638,24 @@ fn summarize(
                 out.last_hour += usd;
             }
             if m > now - 15 * MINUTE_MS && m <= now + MINUTE_MS {
-                out.last15m += usd;
+                last15 += usd;
             }
             if m >= midnight {
                 out.today += usd;
             }
             let start = minute * MINUTE_MS;
-            let slot = if start >= slot0 {
+            let h = if start >= hour0 {
                 0
             } else {
-                (slot0 - start - 1) / SLOT_MS + 1
+                (hour0 - start - 1) / HOUR_MS + 1
             };
-            if (0..SLOTS as i64).contains(&slot) {
-                out.quarter_hours[slot as usize] += usd;
+            if (0..24).contains(&h) {
+                out.hourly[h as usize] += usd;
             }
         }
     }
+    out.rate60m = out.last_hour;
+    out.rate15m = last15 * 4.0;
     out.by_model = by_model
         .into_iter()
         .map(|(model, usd24h)| ModelSpend {
@@ -804,8 +803,8 @@ mod tests {
         assert_eq!(spend.unpriced_replies, 1);
         let models: Vec<&str> = spend.by_model.iter().map(|m| m.model.as_str()).collect();
         assert_eq!(models, ["claude-opus-5-5", "claude-sonnet-5-5"]);
-        assert_eq!(spend.quarter_hours.len(), 96);
-        assert!(close(spend.quarter_hours.iter().sum::<f64>(), MSG1 + MSG2));
+        assert_eq!(spend.hourly.len(), 24);
+        assert!(close(spend.hourly.iter().sum::<f64>(), MSG1 + MSG2));
 
         // nothing new: nothing read
         let s = engine.scan_once(NOW);
@@ -869,16 +868,15 @@ mod tests {
         add(&mut b, 120, 100_000); // $2
         add(&mut b, 26 * 60, 50_000); // $1
         add(&mut b, 9 * 24 * 60, 50_000); // outside 7 days
-        let slot0 = NOW; // 10:30
+        let hour0 = NOW - 30 * MINUTE_MS; // 10:00
         let midnight = NOW - 10 * HOUR_MS - 30 * MINUTE_MS;
-        let s = summarize(&b, NOW, midnight, slot0, Some(NOW));
-        assert!(close(s.last15m, 1.0) && close(s.last_hour, 2.0));
+        let s = summarize(&b, NOW, midnight, hour0, Some(NOW));
+        assert!(close(s.last_hour, 2.0) && close(s.rate60m, 2.0));
+        assert!(close(s.rate15m, 4.0));
         assert!(close(s.last5h, 4.0) && close(s.today, 4.0));
         assert!(close(s.last24h, 4.0) && close(s.last7d, 5.0));
-        // 5 min ago is 10:25 (10:15 slot, index 1), 30 min ago 10:00 (index 2), 120 min ago 08:30 (index 8)
-        assert_eq!(s.quarter_hours.len(), 96);
-        assert!(close(s.quarter_hours[0], 0.0) && close(s.quarter_hours[1], 1.0));
-        assert!(close(s.quarter_hours[2], 1.0) && close(s.quarter_hours[8], 2.0));
+        // 5 and 30 min ago are in the current hour (10:00-10:30); 120 min ago is 08:30 -> index 2
+        assert!(close(s.hourly[0], 2.0) && close(s.hourly[2], 2.0));
         assert!(close(s.by_model[0].usd24h, 4.0));
     }
 }

@@ -31,23 +31,9 @@ export function formatUsd(v: number): string {
   return `${sign}$${Math.round(abs).toLocaleString("en-US")}`;
 }
 
-/** Spend is shown per 15 minutes; the target setting is stored per hour. */
-const SLOT_MS = 15 * 60_000;
-const SLOTS_PER_HOUR = H / SLOT_MS;
-
-/** "$18/15m"; "$—/15m" when the number is not known yet. */
+/** "$71/h"; "$—/h" when the number is not known yet. */
 export function formatUsdRate(v: number | null): string {
-  return v == null ? "$—/15m" : `${formatUsd(v)}/15m`;
-}
-
-/** The stored hourly target in dollars per 15 minutes; null when off. */
-export function targetPer15m(hourly: number | null): number | null {
-  return hourly == null ? null : hourly / SLOTS_PER_HOUR;
-}
-
-/** A target typed per 15 minutes, as the hourly value the setting stores. */
-export function hourlyFromPer15m(per15m: number): number {
-  return per15m * SLOTS_PER_HOUR;
+  return v == null ? "$—/h" : `${formatUsd(v)}/h`;
 }
 
 /** Signed percent per hour: "+9%/h", "+0.4%/h", "-2%/h". */
@@ -98,12 +84,12 @@ export function windowForecast(w: PaceWindow, now: number, untilReset = false): 
   return untilReset ? "lasts until reset" : "lasts";
 }
 
-/** The card header's rate, "$18/15m"; null while backfilling or without pace (the call failed). */
+/** The card header's rate, "$28/h"; null while backfilling or without pace (the call failed). */
 export function headerRate(pace: ClaudePace | null): string | null {
-  return !pace || pace.spend.backfilling ? null : formatUsdRate(pace.spend.last15m);
+  return !pace || pace.spend.backfilling ? null : formatUsdRate(pace.spend.rate60m);
 }
 
-/** Where the 15-minute spend falls against the owner's target (both per 15 minutes). */
+/** Where the hourly spend falls against the owner's target. */
 export type SpendBand = "none" | "idle" | "below" | "on" | "above";
 /** Text colour token per band; the caller maps it to its own palette (widget or settings). */
 export type SpendTone = "muted" | "warning" | "success" | "danger";
@@ -129,9 +115,9 @@ export function spendBand(rate: number, target: number | null): SpendBand {
   return "on";
 }
 
-/** "Green between $20 and $30 per 15 minutes". */
+/** "Green between $80 and $120 per hour". */
 export function targetBandText(target: number): string {
-  return `Green between ${formatUsd(target * TARGET_LOW)} and ${formatUsd(target * TARGET_HIGH)} per 15 minutes`;
+  return `Green between ${formatUsd(target * TARGET_LOW)} and ${formatUsd(target * TARGET_HIGH)} per hour`;
 }
 
 const BAND_WORDS: Record<SpendBand, string> = {
@@ -144,10 +130,10 @@ const BAND_WORDS: Record<SpendBand, string> = {
 
 /** The header rate's tooltip and accessible name; with a target it names the band, so colour is not the only cue. */
 export function spendRateTitle(rate: number, target: number | null): string {
-  const base = "Claude Code spend over the last 15 minutes (API-equivalent, this PC)";
+  const base = "Claude Code spend over the last hour (API-equivalent, this PC)";
   const band = spendBand(rate, target);
   if (band === "none" || target == null) return base;
-  const green = `green ${formatUsd(target * TARGET_LOW)}–${formatUsd(target * TARGET_HIGH)}/15m`;
+  const green = `green ${formatUsd(target * TARGET_LOW)}–${formatUsd(target * TARGET_HIGH)}/h`;
   const where = band === "idle" ? BAND_WORDS.idle : `${BAND_WORDS[band]} (${green})`;
   return `${base} · target ${formatUsdRate(target)} · ${where}`;
 }
@@ -229,31 +215,21 @@ export function paceVsEven(w: PaceWindow): string | null {
   return `${diff > 0 ? "ahead of" : "behind"} even pace by ${Math.abs(diff)} pts`;
 }
 
-/** Bars oldest first: the API sends index 0 = the current partial 15 minutes. */
-export function slotsOldestFirst(slots: number[]): number[] {
-  return [...slots].reverse();
+/** Bars oldest first: the API sends index 0 = the current partial hour. */
+export function hourlyOldestFirst(hourly: number[]): number[] {
+  return [...hourly].reverse();
 }
 
-/** How long ago a 15-minute slot started: "15 min ago", "1 h ago", "2 h 15 min ago". */
-export function slotAgo(index: number): string {
-  const mins = index * 15;
-  const h = Math.floor(mins / 60);
-  const m = mins % 60;
-  if (h === 0) return `${m} min ago`;
-  return m === 0 ? `${h} h ago` : `${h} h ${m} min ago`;
-}
-
-/** The chart's accessible summary: the peak 15 minutes and the current 15 minutes. */
-export function slotsSummary(slots: number[]): string {
-  if (slots.length === 0) return "Spend per 15 minutes: no data yet";
+/** The chart's accessible summary: the peak hour and the current hour. */
+export function hourlySummary(hourly: number[]): string {
+  if (hourly.length === 0) return "Spend per hour: no data yet";
   let peak = 0;
-  for (let i = 1; i < slots.length; i++) if (slots[i] > slots[peak]) peak = i;
-  const hours = (slots.length * SLOT_MS) / H;
-  const span = hours === 1 ? "hour" : `${hours} hours`;
+  for (let i = 1; i < hourly.length; i++) if (hourly[i] > hourly[peak]) peak = i;
+  const ago = peak === 0 ? "this hour" : `${peak} ${peak === 1 ? "hour" : "hours"} ago`;
   return (
-    `Spend per 15 minutes over the last ${span}. ` +
-    `Peak ${formatUsdRate(slots[peak])}, ${peak === 0 ? "now" : slotAgo(peak)}. ` +
-    `Current 15 minutes so far ${formatUsd(slots[0])}.`
+    `Spend per hour over the last ${hourly.length} hours. ` +
+    `Peak ${formatUsdRate(hourly[peak])}, ${ago}. ` +
+    `Current hour so far ${formatUsd(hourly[0])}.`
   );
 }
 

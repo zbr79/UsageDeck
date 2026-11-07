@@ -12,10 +12,8 @@ import {
   spendBand,
   spendRateTitle,
   targetBandText,
-  slotsOldestFirst,
-  slotsSummary,
-  targetPer15m,
-  hourlyFromPer15m,
+  hourlyOldestFirst,
+  hourlySummary,
   meterPaceText,
   meterSeverity,
   modelShares,
@@ -46,13 +44,14 @@ const win = (over: Partial<PaceWindow> = {}): PaceWindow => ({
 const pace = (over: Partial<ClaudePace["spend"]> = {}, windows?: ClaudePace["windows"]) =>
   ({
     spend: {
-      last15m: 18,
       lastHour: 71,
       last5h: 353,
       today: 600,
       last7d: 8723,
+      rate60m: 71,
+      rate15m: 64,
       byModel: [],
-      quarterHours: [],
+      hourly: [],
       unpricedReplies: 0,
       scannedAt: NOW,
       backfilling: false,
@@ -70,8 +69,8 @@ describe("formatting", () => {
     expect(formatUsd(9.97)).toBe("$10");
     expect(formatUsd(71.4)).toBe("$71");
     expect(formatUsd(1293.2)).toBe("$1,293");
-    expect(formatUsdRate(17.6)).toBe("$18/15m");
-    expect(formatUsdRate(null)).toBe("$—/15m");
+    expect(formatUsdRate(71.4)).toBe("$71/h");
+    expect(formatUsdRate(null)).toBe("$—/h");
   });
 
   it("signs the percent speed", () => {
@@ -100,10 +99,10 @@ describe("paceTone", () => {
 });
 
 describe("headerRate", () => {
-  it("shows the last 15 minutes' spend with the usual rounding", () => {
-    expect(headerRate(pace())).toBe("$18/15m");
-    expect(headerRate(pace({ last15m: 7.44 }))).toBe("$7.4/15m");
-    expect(headerRate(pace({ last15m: 28.4 }))).toBe("$28/15m");
+  it("shows the hourly rate with the usual rounding", () => {
+    expect(headerRate(pace())).toBe("$71/h");
+    expect(headerRate(pace({ rate60m: 7.44 }))).toBe("$7.4/h");
+    expect(headerRate(pace({ rate60m: 28.4 }))).toBe("$28/h");
   });
   it("shows nothing while backfilling or without pace", () => {
     expect(headerRate(pace({ backfilling: true }))).toBeNull();
@@ -135,18 +134,18 @@ describe("spendBand", () => {
 
 describe("spend target text", () => {
   it("states the green band", () => {
-    expect(targetBandText(25)).toBe("Green between $20 and $30 per 15 minutes");
-    expect(targetBandText(5)).toBe("Green between $4.0 and $6.0 per 15 minutes");
+    expect(targetBandText(100)).toBe("Green between $80 and $120 per hour");
+    expect(targetBandText(5)).toBe("Green between $4.0 and $6.0 per hour");
   });
   it("tooltip says what the number is, the target, the band and where the rate falls", () => {
-    const base = "Claude Code spend over the last 15 minutes (API-equivalent, this PC)";
+    const base = "Claude Code spend over the last hour (API-equivalent, this PC)";
     expect(spendRateTitle(35, null)).toBe(base);
-    expect(spendRateTitle(15, 25)).toBe(
-      `${base} · target $25/15m · below target (green $20–$30/15m)`,
+    expect(spendRateTitle(35, 100)).toBe(
+      `${base} · target $100/h · below target (green $80–$120/h)`,
     );
-    expect(spendRateTitle(25, 25)).toContain("· on target (green $20–$30/15m)");
-    expect(spendRateTitle(32, 25)).toContain("· above target");
-    expect(spendRateTitle(0, 25)).toBe(`${base} · target $25/15m · idle`);
+    expect(spendRateTitle(100, 100)).toContain("· on target (green $80–$120/h)");
+    expect(spendRateTitle(128, 100)).toContain("· above target");
+    expect(spendRateTitle(0, 100)).toBe(`${base} · target $100/h · idle`);
   });
 });
 
@@ -234,21 +233,10 @@ describe("settings helpers", () => {
     expect(windowForecast(win(), NOW, true)).toBe("lasts until reset");
   });
   it("orders bars oldest first and summarises peak and current", () => {
-    expect(slotsOldestFirst([3, 2, 1])).toEqual([1, 2, 3]);
-    expect(slotsSummary([8, 17, 30, 1])).toBe(
-      "Spend per 15 minutes over the last hour. Peak $30/15m, 30 min ago. Current 15 minutes so far $8.0.",
+    expect(hourlyOldestFirst([3, 2, 1])).toEqual([1, 2, 3]);
+    expect(hourlySummary([33, 69, 119, 5])).toBe(
+      "Spend per hour over the last 4 hours. Peak $119/h, 2 hours ago. Current hour so far $33.",
     );
-    const day = new Array(96).fill(0);
-    day[9] = 40;
-    expect(slotsSummary(day)).toBe(
-      "Spend per 15 minutes over the last 24 hours. Peak $40/15m, 2 h 15 min ago. Current 15 minutes so far $0.0.",
-    );
-  });
-  it("converts the stored hourly target to 15 minutes and back", () => {
-    expect(targetPer15m(100)).toBe(25);
-    expect(targetPer15m(50)).toBe(12.5);
-    expect(targetPer15m(null)).toBeNull();
-    expect(hourlyFromPer15m(25)).toBe(100);
   });
   it("splits spend by model with shares", () => {
     const rows = modelShares([
@@ -278,6 +266,6 @@ describe("mock scenarios", () => {
     expect(meterPaceText(m.pct, m.evenPacePct, m, NOW)).toContain("measuring speed…");
     expect(headerRate(paceScenario("backfill", NOW))).toBeNull();
     expect(paceScenario("unpriced", NOW).spend.unpricedReplies).toBeGreaterThan(0);
-    expect(paceScenario("lasts", NOW).spend.quarterHours).toHaveLength(96);
+    expect(paceScenario("lasts", NOW).spend.hourly).toHaveLength(24);
   });
 });

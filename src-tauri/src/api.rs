@@ -416,10 +416,7 @@ mod tests {
         let r = dispatch(&core, "GET", "/api/claude/pace", None).await;
         assert_eq!(r.status, 200);
         assert_eq!(r.body["coverage"], "claude-code-this-pc");
-        assert_eq!(
-            r.body["spend"]["quarterHours"].as_array().map(Vec::len),
-            Some(96)
-        );
+        assert_eq!(r.body["spend"]["hourly"].as_array().map(Vec::len), Some(24));
         assert_eq!(r.body["spend"]["backfilling"], true);
         assert!(r.body["windows"]["fiveHour"].is_null());
         assert!(r.body["calibration"]["usdPerWeeklyPct"].is_null());

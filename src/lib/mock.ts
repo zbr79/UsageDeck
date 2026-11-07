@@ -264,9 +264,6 @@ const PACE_SCENARIOS: PaceScenario[] = [
 const PROBE_HOURLY = [
   33, 69, 81, 86, 84, 88, 119, 61, 26, 5, 6, 64, 72, 58, 40, 12, 0, 0, 0, 3, 18, 44, 57, 66,
 ];
-// The same probe in 15-minute slots: each hour spread over its four quarters, with some shape.
-const QUARTER_SHAPE = [0.2, 0.3, 0.15, 0.35];
-const PROBE_QUARTERS = PROBE_HOURLY.flatMap((usd) => QUARTER_SHAPE.map((f) => usd * f));
 
 /**
  * A realistic /api/claude/pace reply for one scenario: "lasts" (normal), "limit" (5-hour limit
@@ -277,17 +274,18 @@ export function paceScenario(scenario: PaceScenario, now = NOW): ClaudePace {
   const at = (ms: number) => new Date(now + ms).toISOString();
   const pace: ClaudePace = {
     spend: {
-      last15m: 6.7,
       lastHour: 33.4,
       last5h: 353.1,
       today: 612.8,
       last7d: 8723.4,
+      rate60m: 71.2,
+      rate15m: 64.6,
       byModel: [
         { model: "claude-opus-5-5", usd24h: 1240.3 },
         { model: "claude-sonnet-5-5", usd24h: 48.6 },
         { model: "claude-haiku-5-5", usd24h: 4.2 },
       ],
-      quarterHours: [...PROBE_QUARTERS],
+      hourly: [...PROBE_HOURLY],
       unpricedReplies: 0,
       scannedAt: now - 20_000,
       backfilling: false,
@@ -317,7 +315,7 @@ export function paceScenario(scenario: PaceScenario, now = NOW): ClaudePace {
   const weekly = pace.windows.weekly!;
   switch (scenario) {
     case "limit":
-      Object.assign(pace.spend, { last15m: 37.8, lastHour: 128.4 });
+      Object.assign(pace.spend, { rate60m: 128.4, rate15m: 151.2, lastHour: 128.4 });
       Object.assign(fiveHour, { pct: 88, pctPerHour: 28.8, evenPacePct: 20 });
       Object.assign(fiveHour, { etaToLimit: now + 25 * 60_000, state: "limit" });
       break;
@@ -329,9 +327,9 @@ export function paceScenario(scenario: PaceScenario, now = NOW): ClaudePace {
       Object.assign(fiveHour, { pct: 2, pctPerHour: null, evenPacePct: 1, state: "measuring" });
       break;
     case "backfill":
-      Object.assign(pace.spend, { last15m: 0, lastHour: 0, last5h: 0, today: 0, last7d: 0 });
-      Object.assign(pace.spend, { byModel: [], scannedAt: null, backfilling: true });
-      pace.spend.quarterHours = new Array(96).fill(0);
+      Object.assign(pace.spend, { lastHour: 0, last5h: 0, today: 0, last7d: 0, rate60m: 0 });
+      Object.assign(pace.spend, { rate15m: 0, byModel: [], scannedAt: null, backfilling: true });
+      pace.spend.hourly = new Array(24).fill(0);
       pace.calibration.usdPerWeeklyPct = null;
       break;
     case "unpriced":

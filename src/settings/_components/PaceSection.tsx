@@ -8,17 +8,14 @@ import {
   formatShare,
   formatUsd,
   formatUsdRate,
-  hourlyFromPer15m,
+  hourlyOldestFirst,
+  hourlySummary,
   modelShares,
   paceTone,
   paceVsEven,
-  slotAgo,
-  slotsOldestFirst,
-  slotsSummary,
   SPEND_BAND_TONE,
   spendBand,
   targetBandText,
-  targetPer15m,
   windowForecast,
   WINDOW_LABELS,
   type PaceTone,
@@ -71,9 +68,9 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
-/** 15-minute bars over 24 hours, oldest on the left; plain SVG with an accessible summary. */
-export function SpendChart({ slots }: { slots: number[] }) {
-  const bars = slotsOldestFirst(slots);
+/** 24 hourly bars, oldest on the left; plain SVG with an accessible summary. */
+export function HourlyChart({ hourly }: { hourly: number[] }) {
+  const bars = hourlyOldestFirst(hourly);
   const max = Math.max(1, ...bars);
   const W = 480;
   const H = 96;
@@ -82,7 +79,7 @@ export function SpendChart({ slots }: { slots: number[] }) {
     <div>
       <svg
         role="img"
-        aria-label={slotsSummary(slots)}
+        aria-label={hourlySummary(hourly)}
         viewBox={`0 0 ${W} ${H}`}
         preserveAspectRatio="none"
         className="block h-24 w-full"
@@ -90,20 +87,20 @@ export function SpendChart({ slots }: { slots: number[] }) {
         <line x1={0} x2={W} y1={H - 0.5} y2={H - 0.5} stroke="var(--p-border)" strokeWidth={1} />
         {bars.map((v, i) => {
           const h = v > 0 ? Math.max(1.5, (v / max) * (H - 4)) : 0;
-          const slotsAgo = bars.length - 1 - i;
+          const hoursAgo = bars.length - 1 - i;
           return (
             <rect
               key={i}
-              x={i * step + 0.5}
+              x={i * step + 1.5}
               y={H - h}
-              width={step - 1}
+              width={step - 3}
               height={h}
-              rx={1}
+              rx={1.5}
               fill="var(--p-accent)"
-              opacity={slotsAgo === 0 ? 1 : 0.7}
+              opacity={hoursAgo === 0 ? 1 : 0.7}
             >
               <title>
-                {slotsAgo === 0 ? "These 15 min so far" : slotAgo(slotsAgo)}: {formatUsd(v)}
+                {hoursAgo === 0 ? "This hour so far" : `${hoursAgo} h ago`}: {formatUsd(v)}
               </title>
             </rect>
           );
@@ -162,7 +159,7 @@ function Row({ title, detail, children }: { title: string; detail: string; child
 
 const BAND_WORDS = { below: "below target", on: "on target", above: "above target" } as const;
 
-/** The 15-min spend, coloured like the widget header when a target is set (plus the band in words). */
+/** The 60-min rate, coloured like the widget header when a target is set (plus the band in words). */
 function RateFigure({ rate, target }: { rate: number; target: number | null }) {
   const band = spendBand(rate, target);
   const tone = SPEND_BAND_TONE[band];
@@ -179,10 +176,9 @@ function RateFigure({ rate, target }: { rate: number; target: number | null }) {
   );
 }
 
-/** The input shows the target per 15 minutes; the setting stores it per hour. */
-const draftOf = (target: number | null) => (target == null ? "" : String(targetPer15m(target)));
+const draftOf = (target: number | null) => (target == null ? "" : String(target));
 
-/** "Spend target": $ [ 25 ] /15m, applied on Enter or blur; empty means off. */
+/** "Hourly spend target": $ [ 100 ] /h, applied on Enter or blur; empty means off. */
 function TargetRow({ target, update }: { target: number | null; update: Update }) {
   const [draft, setDraft] = useState(() => draftOf(target));
   useEffect(() => setDraft(draftOf(target)), [target]);
@@ -190,22 +186,22 @@ function TargetRow({ target, update }: { target: number | null; update: Update }
     if (next === target) return setDraft(draftOf(target));
     void update(
       { claudeHourlyTarget: next },
-      next == null ? "Spend target off" : `Spend target ${formatUsdRate(targetPer15m(next))}`,
+      next == null ? "Hourly spend target off" : `Hourly spend target ${formatUsdRate(next)}`,
     ).then((ok) => ok || setDraft(draftOf(target)));
   };
   const apply = () => {
     const text = draft.trim();
     if (text === "") return save(null);
-    const next = sanitizeHourlyTarget(hourlyFromPer15m(Number(text)));
+    const next = sanitizeHourlyTarget(Number(text));
     // Out of range or not a number: put the saved value back.
     if (next === undefined) return setDraft(draftOf(target));
-    setDraft(draftOf(next));
+    setDraft(String(next));
     save(next);
   };
   return (
     <div data-testid="target-row">
       <SettingRow
-        title="Spend target"
+        title="Hourly spend target"
         description="Colours the spend on the widget: yellow below, green near, red above."
         control={(labelId, descId) => (
           <>
@@ -216,9 +212,9 @@ function TargetRow({ target, update }: { target: number | null; update: Update }
               <input
                 type="number"
                 inputMode="numeric"
-                min={0.25}
-                max={2500}
-                step="any"
+                min={1}
+                max={10000}
+                step={1}
                 placeholder="Off"
                 aria-labelledby={labelId}
                 aria-describedby={descId}
@@ -231,14 +227,14 @@ function TargetRow({ target, update }: { target: number | null; update: Update }
                 }}
               />
               <span className="text-(--p-muted)" aria-hidden="true">
-                /15m
+                /h
               </span>
             </span>
             <button
               type="button"
               className={`${secondaryButton} min-w-0!`}
               disabled={target == null && draft === ""}
-              aria-label="Clear spend target"
+              aria-label="Clear hourly spend target"
               onClick={() => {
                 setDraft("");
                 save(null);
@@ -250,9 +246,7 @@ function TargetRow({ target, update }: { target: number | null; update: Update }
         )}
       />
       <p className="mt-1 px-4 text-xs text-(--p-muted)" data-testid="target-band">
-        {target == null
-          ? "Off: the widget shows the spend in grey."
-          : targetBandText(targetPer15m(target)!)}
+        {target == null ? "Off: the widget shows the spend in grey." : targetBandText(target)}
       </p>
     </div>
   );
@@ -286,8 +280,8 @@ function PaceBody({ pace, now, target }: { pace: ClaudePace; now: number; target
     <>
       <div className={box}>
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-          <Stat label="Last 15 min" value={usd(s.last15m)} />
           <Stat label="Last hour" value={usd(s.lastHour)} />
+          <Stat label="Last 5 h" value={usd(s.last5h)} />
           <Stat label="Today" value={usd(s.today)} />
           <Stat label="Last 7 days" value={usd(s.last7d)} />
         </div>
@@ -296,8 +290,8 @@ function PaceBody({ pace, now, target }: { pace: ClaudePace; now: number; target
             "Reading Claude Code logs for the first time…"
           ) : (
             <>
-              Spending <RateFigure rate={s.last15m} target={targetPer15m(target)} /> over the last
-              15 min · {formatUsd(s.last5h)} over the last 5 h
+              Spending <RateFigure rate={s.rate60m} target={target} /> over the last 60 min ·{" "}
+              {formatUsdRate(s.rate15m)} over the last 15 min
             </>
           )}
         </div>
@@ -305,7 +299,7 @@ function PaceBody({ pace, now, target }: { pace: ClaudePace; now: number; target
 
       <div className={box}>
         <div className="mb-2 text-sm">Last 24 hours</div>
-        <SpendChart slots={s.quarterHours} />
+        <HourlyChart hourly={s.hourly} />
         {models.length > 0 && (
           <ul className="mt-3 flex flex-col gap-1 text-xs" aria-label="Spend by model, last 24 h">
             {models.map((m) => (
