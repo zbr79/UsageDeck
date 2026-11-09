@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, ipcMain, screen, desktopCapturer } = require("electron");
+const { app, BrowserWindow, Menu, ipcMain, screen, desktopCapturer, dialog } = require("electron");
 const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
@@ -8,14 +8,73 @@ const APP_ROOT = path.resolve(__dirname, "..");
 const WIDGET_URL = "http://127.0.0.1:3100/widget";
 const WIDTH = 238;
 const CONFIG_PATH = path.join(app.getPath("userData"), "widget-config.json");
-const SECRET_PATH = path.join(APP_ROOT, "data", ".api-secret");
+const UPDATE_DELAY_MS = 10 * 1000;
+const UPDATE_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
+function createDevMode() {
+  let child = null;
+  return {
+    dataDir: path.join(APP_ROOT, "data"),
+    iconPath: path.join(APP_ROOT, "app-icon.ico"),
+    startServer() {
+      child = spawn("cmd.exe", ["/c", "npm run start"], {
+        cwd: APP_ROOT,
+        stdio: "ignore",
+        windowsHide: true,
+      });
+    },
+    stopServer() {
+      const pid = child?.pid;
+      child = null;
+      if (!pid) return;
+      try {
+        spawn("taskkill", ["/pid", String(pid), "/f", "/t"], {
+          windowsHide: true,
+          stdio: "ignore",
+        });
+      } catch {
+        // ignore
+      }
+    },
+  };
+}
+
+function createPackagedMode() {
+  const dataDir = path.join(app.getPath("userData"), "data");
+  let child = null;
+  return {
+    dataDir,
+    iconPath: path.join(process.resourcesPath, "app-icon.ico"),
+    startServer() {
+      child = spawn(process.execPath, [path.join(process.resourcesPath, "server", "server.js")], {
+        env: {
+          ...process.env,
+          ELECTRON_RUN_AS_NODE: "1",
+          PORT: "3100",
+          HOSTNAME: "127.0.0.1",
+          USAGEDECK_DATA_DIR: dataDir,
+        },
+        stdio: "ignore",
+        windowsHide: true,
+      });
+    },
+    stopServer() {
+      child?.kill();
+      child = null;
+    },
+  };
+}
+
+const mode = app.isPackaged ? createPackagedMode() : createDevMode();
+const SECRET_PATH = path.join(mode.dataDir, ".api-secret");
 
 let win = null;
 let settingsWin = null;
 let dragOffset = null;
-let serverChild = null;
 let spawnedServer = false;
 let usageSecret = "";
+let updater = null;
+let updateCheckInFlight = false;
 
 function loadPos() {
   try {
@@ -76,28 +135,14 @@ async function serverIsUp() {
 }
 
 function startServer() {
-  serverChild = spawn("cmd.exe", ["/c", "npm run start"], {
-    cwd: APP_ROOT,
-    stdio: "ignore",
-    windowsHide: true,
-  });
+  mode.startServer();
   spawnedServer = true;
 }
 
 function stopServer() {
-  if (!spawnedServer || !serverChild) return;
-  const pid = serverChild.pid;
-  serverChild = null;
+  if (!spawnedServer) return;
   spawnedServer = false;
-  if (!pid) return;
-  try {
-    spawn("taskkill", ["/pid", String(pid), "/f", "/t"], {
-      windowsHide: true,
-      stdio: "ignore",
-    });
-  } catch {
-    // ignore
-  }
+  mode.stopServer();
 }
 
 async function waitForServer(timeoutMs = 60000) {
@@ -123,7 +168,7 @@ function createWindow() {
     skipTaskbar: true,
     hasShadow: false,
     backgroundColor: "#00000000",
-    icon: path.join(APP_ROOT, "app-icon.ico"),
+    icon: mode.iconPath,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -199,8 +244,64 @@ function showMenu() {
       click: () => openSettingsOverlay(),
     },
     { type: "separator" },
+    { label: `UsageDeck v${app.getVersion()}`, enabled: false },
+    updater
+      ? { label: "Check for Updates…", click: () => checkForUpdatesManually() }
+      : { label: "Updates are only available in the installed app", enabled: false },
+    { type: "separator" },
     { label: "Quit", click: () => app.quit() },
   ]).popup({ window: win });
+}
+
+function showMessage(options) {
+  const parent = win && !win.isDestroyed() ? win : undefined;
+  return dialog.showMessageBox(parent, { type: "info", title: "UsageDeck", ...options });
+}
+
+async function checkForUpdatesManually() {
+  if (updateCheckInFlight) return;
+  updateCheckInFlight = true;
+  try {
+    const result = await updater.checkForUpdates();
+    if (result?.isUpdateAvailable) {
+      await showMessage({
+        message: `Version ${result.updateInfo.version} is available.`,
+        detail: "It is downloading now. You will be asked to restart when it is ready.",
+      });
+    } else {
+      await showMessage({ message: "UsageDeck is up to date.", detail: `Version ${app.getVersion()}` });
+    }
+  } catch (err) {
+    await showMessage({
+      type: "error",
+      message: "Could not check for updates.",
+      detail: String(err?.message ?? err),
+    });
+  } finally {
+    updateCheckInFlight = false;
+  }
+}
+
+function setupUpdates() {
+  const { autoUpdater } = require("electron-updater");
+  autoUpdater.autoDownload = true;
+  autoUpdater.on("update-downloaded", async (info) => {
+    const { response } = await showMessage({
+      message: `UsageDeck ${info.version} is ready to install.`,
+      detail: "Restart now to finish updating.",
+      buttons: ["Restart now", "Later"],
+      defaultId: 0,
+      cancelId: 1,
+    });
+    if (response === 0) {
+      stopServer();
+      autoUpdater.quitAndInstall();
+    }
+  });
+  const check = () => autoUpdater.checkForUpdates().catch(() => {});
+  setTimeout(check, UPDATE_DELAY_MS);
+  setInterval(check, UPDATE_INTERVAL_MS);
+  return autoUpdater;
 }
 
 ipcMain.on("settings-close", () => {
@@ -237,17 +338,17 @@ ipcMain.on("widget-resize", (_e, width, height) => {
 });
 
 function startBgSampler() {
-  const SETTINGS_FILE = path.join(APP_ROOT, "data", "settings.json");
+  const SETTINGS_FILE = path.join(mode.dataDir, "settings.json");
   async function loop() {
     while (true) {
-      let mode = "auto";
+      let theme = "auto";
       try {
         const s = JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf8"));
-        if (s?.themeMode === "light" || s?.themeMode === "dark") mode = s.themeMode;
+        if (s?.themeMode === "light" || s?.themeMode === "dark") theme = s.themeMode;
       } catch {
         // no settings file yet → auto
       }
-      if (mode === "auto") {
+      if (theme === "auto") {
         try {
           if (win && !win.isDestroyed()) {
             const display = screen.getPrimaryDisplay();
@@ -288,6 +389,7 @@ app.whenReady().then(async () => {
   const ok = await waitForServer();
   if (!usageSecret) ensureSecret();
   if (ok) {
+    if (app.isPackaged) updater = setupUpdates();
     createWindow();
     startBgSampler();
   } else {
