@@ -45,6 +45,7 @@
     },
     "nsis": {
       "oneClick": false,
+      "artifactName": "UsageDeck-Setup-${version}.${ext}",
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "perMachine": false
