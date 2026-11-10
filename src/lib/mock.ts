@@ -33,6 +33,7 @@ let settings: Settings = {
   providerOrder: ["opencode", "cursor", "grok", "codex", "claude"],
   startAtLogin: true,
   claudeHourlyTarget: null,
+  snoozedUntil: {},
 };
 
 const win = (percent: number, resetsIn: number) => ({
