@@ -1,97 +1,175 @@
-# Provider Usage Monitor
+# UsageDeck
 
-A local desktop widget that shows how much of an AI subscription is left. It covers OpenCode Go, Cursor, Grok, Codex, and Claude.
+An always-on-top floating Windows widget that tracks AI subscription usage across **five
+providers**. One `usagedeck.exe` (Tauri 2: Rust core, React frontend in WebView2): no local server,
+no Electron, no Node at runtime.
 
-Keys and logins stay on this machine. OpenCode uses an API key you add in settings. The other providers are read from the apps already signed in on the computer.
+| Provider        | What's shown                                                                             | Data source                                                                   |
+| --------------- | ---------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| **OpenCode Go** | Rolling / Weekly / Monthly usage per account, reset countdowns, DeepSeek peak-hour timer | `opencode.ai/zen/go/v1/usage` (API key you add in Settings)                   |
+| **Cursor**      | First Party & API usage, plan badge, billing-cycle reset                                 | Cursor's local sign-in → `api2.cursor.sh`                                      |
+| **Grok Bot**    | Weekly usage %, plan badge, reset countdown                                              | Grok Bot's own sign-in (falls back to Cursor's) → `api2.cursor.sh` sand usage |
+| **Codex**       | Usage %, plan badge (Free/Plus/Pro), reset credits, reset countdown                      | Codex CLI sign-in → ChatGPT `wham/usage`                                      |
+| **Claude**      | 5-hour and weekly usage, plan badge, reset countdowns; spend rate ($/h) and pace (%/h, projected limit time) | Claude desktop / Claude Code sign-in → Anthropic OAuth usage; dollars from the Claude Code logs on this PC (usage fields only) |
 
-## What it shows
+Other apps' sign-ins are **read, never written**: UsageDeck never refreshes or rewrites another
+app's tokens (doing so rotates their refresh tokens and logs them out). If a sign-in has expired,
+the card shows the last known numbers with a `re-auth` hint — open that app once to refresh it.
+See [SECURITY.md](SECURITY.md) for exactly what is read, stored and sent.
 
-- OpenCode Go: rolling, weekly, and monthly usage, and the time until each window resets
-- Cursor: first-party and API usage, the plan name, and the billing-cycle reset
-- Grok: weekly usage and the time until reset
-- Codex: usage, plan, and the time until reset
-- Claude: signed-in state and plan
+---
 
-The panel stays compact until you expand it. Disabled accounts are hidden. An account that has used up its weekly or monthly allowance drops to the bottom, soonest reset first. Otherwise the account that changed most recently stays on top.
+## Architecture
 
-Right-click the window, or press Shift+F10, to expand, refresh, open settings, check for updates, or quit. Settings can turn providers on or off, rename accounts, show or hide the DeepSeek peak-hour warning, and add or remove OpenCode accounts.
+```
+Rust core (src-tauri/)                           React frontend (src/)
+├── providers/  one module per provider          ├── widget/    floating panel (widget.html)
+├── store.rs    settings, accounts, caches       ├── settings/  settings window (settings.html)
+├── api.rs      commands the frontend invokes    ├── ui/        palette + accessible primitives
+├── win/        DPAPI, screen sampling           └── lib/       ranking, formatting, settings rules
+├── cli.rs      --import-old-data, --dump
+└── lib.rs      windows, tray, autostart, log
+```
 
-Keyboard shortcuts on the widget:
-
-- `E` expands or collapses the panel
-- `R` refreshes usage
-- `Ctrl+,` opens settings
-- `Ctrl+Q` quits
-- `Shift+F10` opens the menu
-
-## How it runs
-
-A Next.js server and a small Electron window. The server listens on `127.0.0.1:3100`, so it can run next to other local apps. The window is frameless, always on top, and draggable. Both the widget and the settings screen use the same local API routes. Provider clients live in `lib/`.
+- The frontend calls Rust through Tauri `invoke`; nothing listens on a port.
+- Providers share one caching policy: short TTL, a single in-flight request, and a persisted
+  last-known value used when a provider is unreachable.
+- Each widget card loads independently: one slow or failing provider never blanks the others.
 
 ## Requirements
 
-- Node.js 20 or newer
-- Windows for the Electron window. The server can run on its own anywhere.
-- Cursor, the Codex CLI, or Claude Code if you want those rows. A missing app is skipped.
+- **Windows 10/11** with WebView2 (preinstalled on Windows 11)
+- To build: Node.js 22.13+, the Rust stable toolchain (rustup), and the Tauri 2 Windows
+  prerequisites (MSVC build tools)
+- Optional: Cursor, Grok Bot, Codex CLI, Claude desktop / Claude Code — each is auto-detected
 
-## Install
+## Your data
 
-1. Download `UsageDeck-Setup-x.y.z.exe` from the [latest release](https://github.com/zbr79/UsageDeck/releases/latest) and run it.
-2. Launch UsageDeck from the desktop shortcut or Start menu.
+Everything UsageDeck stores lives in `%APPDATA%\com.usagedeck.app`:
 
-The installed app checks for updates 10 seconds after launch and every 6 hours, downloads them in the background, and asks before restarting to install. To check on demand, right-click the widget and choose **Check for Updates…**.
+- `settings.json` — toggles, themes, nicknames, hidden accounts, provider order.
+- `settings-window.json` — the settings window's last position and size.
+- `accounts.json` — OpenCode account labels (emails only, no keys).
+- `seen-accounts.json` — emails of Cursor, Grok Bot, Codex and Claude accounts already seen, so
+  switching accounts in those apps does not drop the earlier one. Tokens are not stored.
+- `usage-cache.json` — last known usage per provider and account, so the widget has something to
+  show after a restart or outage (shown like fresh usage: it is the latest the app has seen).
+- `window-pos.json` — where the widget was last placed.
 
-The installer is unsigned, so Windows SmartScreen shows a warning. Choose **More info**, then **Run anyway**.
+OpenCode API keys live in **Windows Credential Manager** (service `UsageDeck`), never in a file.
+The settings window only ever shows a hint (`sk-…a1b2`). All file writes are atomic (temp file +
+rename), so a crash can't corrupt settings.
 
-Installed data lives in `%APPDATA%/UsageDeck/data`. If you are migrating from a source checkout, copy your old `data/` files (`accounts.json`, `settings.json`, `.api-secret`) there.
+The installed app starts at login by default; turn it off with **Start with Windows** in
+Settings → General (applied at once). Copies run from a cargo `target` folder never register
+autostart.
 
-## Develop from source
+Logs (about 1 MB per file, 5 files kept) are in `%LOCALAPPDATA%\com.usagedeck.app\logs\`; the
+tray menu's **Open log folder** opens it in Explorer. A crash leaves a `crash-<time>.txt` report
+there (panic message, location, backtrace, version; newest 10 kept).
 
-```bash
-npm install
-cd desktop && npm install && cd ..
-npm run build
-npm run start
+Uninstalling removes the start-at-login entry. Tick **Delete the application data** in the
+uninstaller to also remove settings, logs and the stored OpenCode keys (details in SECURITY.md).
+
+## Features
+
+### Widget
+
+- Compact panel with the active OpenCode account plus every enabled provider; right-click (or the
+  tray menu) → _Expand_ / _Collapse_ for all OpenCode accounts, _Refresh_, _Settings_, _Quit_
+- **Adaptive theme** — in `auto`, samples the screen around the widget and switches card style
+  with hysteresis; `light` and `dark` are fixed (no sampling)
+- **Change detection** — when an account's usage rises, a ▲ shows for 20 s and the most recently
+  used account floats to the top
+- **Reset countdowns** (`5d 7h 45m`) and **reset memory** — cached usage looks exactly like fresh
+  usage, with no "cached" or "updated … ago" note; a window whose stored reset time has passed
+  shows `--` until fresh data arrives
+- **States, consistently on every card** — a card shows text only when you must act: loading,
+  unavailable, `re-auth`, `key rejected` (OpenCode 401 / 403), `not signed in`, exhausted (red).
+  Passing failures (rate limit, network, service error, busy, changed reply format) show nothing
+  on the card; they stay in the log and `--dump`
+- **Unavailable banner** — "Usage unavailable · updated 3m ago" with Retry
+- **Copy key** — hover the OpenCode icon on a card (a copy glyph appears) and click; the key is
+  copied by the Rust side and never passes through the page
+- Settings changes apply live; right-click or **Shift+F10** opens the menu
+
+### Settings (right-click widget → Settings)
+
+- A normal window with a title bar and a taskbar button (960x680, resizable). It reopens where you
+  left it, kept on a visible monitor, and closes only when asked: the X, Alt+F4, Ctrl+W or Esc
+- General: start with Windows, DeepSeek peak-hour warning
+- Appearance: settings theme, widget theme, show provider names
+- Widget: provider order (drag the grip, or Move up / Move down) and a "Show on widget" switch per
+  provider
+- Accounts: one page per provider with the widget's own cards, 2 per row. Each card header has a
+  "Show on widget" switch and a "⋯" menu (also right-click, Shift+F10 or the Menu key): Rename,
+  Refresh now and, for OpenCode, Copy API key, Replace API key and Remove account. OpenCode
+  accounts are added with an API key; Cursor, Grok Bot, Codex and Claude read that app's own
+  sign-in and only the signed-in account shows on the widget
+- Claude page: a "Spend & pace" section with the API-equivalent spend of Claude Code on this PC
+  (last hour, 5 h, today, 7 days, $/h), a 24-hour bar chart, spend per model, each window's
+  speed, even pace and projected limit time, and what 1% of the weekly limit is worth in dollars.
+  The widget's Claude card shows the spend rate after its name (`$71/h`); its meter colours follow
+  the percentage only (amber from 80%, red from 100%), and pace stays in the meter tooltip
+- About: version, log folder and the repository
+- Fully keyboard accessible: modal dialogs trap focus and Esc closes the topmost one first; menus
+  use the arrow keys, Home and End; forced-colors (high contrast) is supported
+- `settings.html?page=<general|appearance|widget|claude|codex|cursor|grok|opencode|about>` opens a
+  page directly (browser preview: add `&panel=light` or `&panel=dark`)
+- Browser preview of spend and pace: add `?pace=<lasts|limit|weekly|measuring|backfill|unpriced|fail>`
+  to `widget.html` or `settings.html`
+
+### Ranking rules
+
+1. Accounts at 100% on **monthly or weekly** usage sink to the bottom (red glow)
+2. Among exhausted accounts, the one resetting soonest is ranked first
+3. Otherwise, the most recently used account floats to the top (green glow)
+
+## Command-line modes
+
+Headless: each prints a short report and exits.
+
+- `usagedeck.exe --import-old-data <dir>`: one-time copy of the old Next.js app's `data/` folder.
+  Settings go through the usual validation; the seen-accounts list and usage cache are copied when
+  their shape matches; OpenCode keys (plaintext or `enc:v1:`) move into Windows Credential Manager.
+  Keys are never printed.
+- `usagedeck.exe --dump`: fetch every provider once and print a redacted JSON summary (label cut to
+  two characters, plan, each window's percent and reset, stale / authExpired / error).
+
+## Development
+
+| Command                | Description                                                                      |
+| ---------------------- | -------------------------------------------------------------------------------- |
+| `npm install`          | Install the frontend and the Tauri CLI                                           |
+| `npm run tauri dev`    | Run the app with hot reload (Vite on port 1420)                                  |
+| `npm run tauri build`  | Release `usagedeck.exe` plus the per-user NSIS installer                         |
+| `npm run build`        | Type-check and build the frontend into `dist/`                                   |
+| `npm test`             | Frontend unit tests (Vitest)                                                     |
+| `npm run format`       | Format with Prettier                                                             |
+| `npm run check`        | Type-check, format check, frontend tests and `cargo test`                        |
+
+CI (GitHub Actions, Windows) runs the frontend build, tests and format check, `cargo fmt --check`,
+`cargo clippy -D warnings`, `cargo test`, and `npm audit` on every push and pull request.
+
+## History
+
+UsageDeck started as a Next.js server plus an Electron widget. That app was retired and removed;
+this Tauri app keeps its providers, cards, ranking and settings. `--import-old-data` carries a
+user's old data across. The design notes are in [`docs/plans/`](docs/plans/).
+
+## Project layout
+
 ```
-
-The site is at http://127.0.0.1:3100. From `desktop/`, `npm start` opens the widget. If port 3100 is already taken by another program, the window stays open and says so instead of exiting. A desktop shortcut can point at `desktop/widget-launcher.vbs`. From source, data stays in the repo's `data/` folder.
-
-To build the installer locally, run `npm run bundle` at the root, then `npm run dist` in `desktop/`. The installer lands in `desktop/dist/`.
-
-## Releasing
-
-Bump `version` in `desktop/package.json` and merge the change to `main`.
-
-The `Release` workflow then builds the installer on Windows and publishes it to GitHub Releases as `vX.Y.Z`, where installed apps pick it up. A push that leaves the version unchanged, or names a version that is already released, builds nothing. To rerun a release by hand, use **Run workflow** on the workflow's Actions page.
-
-## Local data
-
-The installed app keeps its data in `%APPDATA%/UsageDeck/data`. A source checkout uses the repo's `data/` folder, and the server reads `USAGE_DATA_DIR` to point somewhere else. Below, `data/` means that folder.
-
-In the repo, nothing under `data/` is committed except the example file.
-
-- `data/accounts.json` stores OpenCode emails and API keys. Keys are encrypted with AES-256-GCM. The key comes from `data/.api-secret`. An older plaintext file is encrypted the next time it is read. See `data/accounts.example.json` for the shape before encryption.
-- `data/settings.json` stores toggles, names, and disabled accounts.
-- `data/.api-secret` is a local token for account and settings writes, and for encrypting stored API keys. The desktop app sends it for you.
-- Crash logs: the Electron window writes `logs\main.log` under its app data folder (`%APPDATA%\UsageDeck` installed, `%APPDATA%\provider-usage-widget` from source). The server writes `data/logs/server.log`. The widget menu has **Open log folder**.
-
-## Scripts
-
-- `npm run dev` starts the development server on http://127.0.0.1:3100
-- `npm run build` builds for production
-- `npm run start` serves that build
-- `npm run bundle` builds for production, then assembles the server bundle in `desktop/server/` for the installer
-- `npm test` runs the unit tests
-- `npm run lint` runs ESLint
-- `npm run typecheck` checks TypeScript
-
-The tests cover ranking, reset text, settings defaults, the local write token, encrypted account keys, provider response parsers, and account validation. They do not call provider APIs.
-
-## Layout
-
-```
-app/        pages and API routes
-desktop/    Electron window
-lib/        provider clients, ranking, and settings
-data/       local accounts and settings, not committed
+src/                  # React frontend
+├── widget/           # floating panel (_components/ cards, _lib/ data + theme)
+├── settings/         # settings window (_components/, _lib/hooks.ts)
+├── components/toast/ # toast system
+├── ui/               # design tokens (palette.ts) + accessible primitives
+├── lib/              # bridge to Rust, ranking, formatting, settings rules (unit-tested)
+└── public/           # provider icons
+src-tauri/            # Rust core (providers/, win/, store, cli, tray), tauri.conf.json, icons
+tests/                # frontend unit tests (Vitest)
+widget.html           # widget page entry
+settings.html         # settings page entry
+docs/plans/           # design and build notes
 ```

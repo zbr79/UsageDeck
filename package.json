@@ -1,32 +1,37 @@
 {
-  "name": "provider-usage-monitor",
+  "name": "usagedeck",
   "version": "0.1.0",
-  "description": "Local desktop widget that tracks AI subscription usage for OpenCode, Cursor, Grok, Codex, and Claude.",
   "private": true,
+  "type": "module",
   "scripts": {
-    "dev": "next dev -H 127.0.0.1 -p 3100",
-    "build": "next build",
-    "start": "next start -H 127.0.0.1 -p 3100",
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
     "test": "vitest run",
-    "typecheck": "next typegen && tsc --noEmit",
-    "lint": "eslint .",
-    "bundle": "next build && node scripts/bundle-server.mjs"
+    "tauri": "tauri",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check": "tsc -b && npm run format:check && npm test && cargo test --manifest-path src-tauri/Cargo.toml"
   },
   "dependencies": {
-    "next": "16.3.4",
+    "@tauri-apps/api": "^2",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "react-hot-toast": "^2.6.0"
   },
   "devDependencies": {
-    "@tailwindcss/postcss": "^4",
-    "@types/node": "^20",
+    "@tailwindcss/vite": "^4.3.3",
+    "@tauri-apps/cli": "^2.12.3",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "eslint": "^9.39.5",
-    "eslint-config-next": "^16.3.4",
+    "@vitejs/plugin-react": "^6.1.2",
+    "prettier": "^3.9.10",
     "tailwindcss": "^4",
     "typescript": "^5",
-    "vitest": "^3.2.7"
+    "vite": "^8.3.4",
+    "vitest": "^5.0.3"
+  },
+  "engines": {
+    "node": ">=22.13"
   }
 }
