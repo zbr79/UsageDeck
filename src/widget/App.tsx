@@ -9,9 +9,9 @@ import {
   type MouseEvent,
   type ReactNode,
 } from "react";
-import { CollapseIcon, ExpandIcon, GearIcon, PowerIcon, RefreshIcon } from "@/ui/Icons";
+import { CollapseIcon, ExpandIcon, EyeOffIcon, GearIcon, PowerIcon, RefreshIcon } from "@/ui/Icons";
 import { cssVars, WIDGET_PALETTES } from "@/ui/palette";
-import { isAccountHidden } from "@/lib/account-key";
+import { accountKey, isAccountHidden } from "@/lib/account-key";
 import { copyKey } from "@/lib/copy-key";
 import {
   menuAction as bridgeMenuAction,
@@ -25,9 +25,11 @@ import { getPeakInfo } from "@/lib/peak";
 import { rankAccounts } from "@/lib/ranking";
 import { DEFAULT_SETTINGS } from "@/lib/settings-schema";
 import type { ProviderId, TrackedAccount, WidgetProvider } from "@/lib/types";
+import { openCodeUsedUp, usedUp, type UsageOf } from "@/lib/used-up";
 import { ClaudeCard, CodexCard, CursorCard, GrokCard, OpenCodeCard } from "./_components/cards";
 import { nextBrightness, resolveWidgetTheme } from "./_lib/theme";
 import { menuNavIndex } from "./_lib/menu-nav";
+import { snoozedCards, snoozeSummary } from "./_lib/snooze";
 import { slotFromAccount, useWidgetData, type AccountList } from "./_lib/useWidgetData";
 
 const WIDTH = 238;
@@ -49,7 +51,7 @@ function startDrag(e: MouseEvent) {
 }
 
 export default function WidgetPage() {
-  const { data, reload, lastUsed, increased } = useWidgetData();
+  const { data, reload, lastUsed, increased, updateSettings } = useWidgetData();
   const [expanded, setExpanded] = useState(false);
   const [brightness, setBrightness] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -71,12 +73,71 @@ export default function WidgetPage() {
     () => (data.accounts ? rankAccounts(data.accounts, lastUsed, now) : []),
     [data.accounts, lastUsed, now],
   );
-  const canToggleExpand = settings.opencodeEnabled && ranked.length > 1;
+  const enabled: Record<ProviderId, boolean> = {
+    cursor: settings.cursorEnabled,
+    grok: settings.grokEnabled,
+    codex: settings.codexEnabled,
+    claude: settings.claudeEnabled,
+  };
+  // Only the account that app is signed into. OpenCode is separate: it has no
+  // sign-in, so its API-key accounts are ranked instead.
+  const signedIn = <T,>(provider: ProviderId, list: AccountList<T>) =>
+    enabled[provider]
+      ? list.accounts.filter(
+          (account) =>
+            account.active && !isAccountHidden(settings.disabledAccounts, provider, account.id),
+        )
+      : [];
+
+  const cardsUsedUp = <P extends ProviderId>(provider: P, list: AccountList<UsageOf[P]>) =>
+    signedIn(provider, list).map((account) => ({
+      provider,
+      id: account.id,
+      used: usedUp(provider, account, now),
+    }));
+  const snoozed = snoozedCards(
+    [
+      ...(settings.opencodeEnabled
+        ? ranked.map((row) => ({
+            provider: "opencode" as const,
+            id: row.email,
+            used: openCodeUsedUp(row, now),
+          }))
+        : []),
+      ...cardsUsedUp("cursor", data.cursor),
+      ...cardsUsedUp("grok", data.grok),
+      ...cardsUsedUp("codex", data.codex),
+      ...cardsUsedUp("claude", data.claude),
+    ],
+    settings.snoozedUntil,
+    now,
+  );
+  const snoozedKeys = new Set(snoozed.map((card) => card.key));
+  const summary = snoozeSummary(snoozed, now);
+  const nextBack = snoozed.length ? Math.min(...snoozed.map((card) => card.until)) : null;
+  const hide = (provider: WidgetProvider, id: string) => (until: number) =>
+    void updateSettings({ snoozedUntil: { [accountKey(provider, id)]: until } }).catch(() => {});
+  const showSnoozed = () =>
+    void updateSettings({
+      snoozedUntil: Object.fromEntries(snoozed.map((card) => [card.key, null])),
+    }).catch(() => {});
+
+  const shownRows = ranked.filter((row) => !snoozedKeys.has(accountKey("opencode", row.email)));
+  const canToggleExpand = settings.opencodeEnabled && shownRows.length > 1;
 
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), CLOCK_MS);
     return () => clearInterval(id);
   }, []);
+
+  // A hidden card comes back at its reset, to the second rather than on the next minute tick.
+  useEffect(() => {
+    if (nextBack == null) return;
+    const wait = nextBack - Date.now();
+    if (wait > CLOCK_MS) return;
+    const id = setTimeout(() => setNow(Date.now()), Math.max(0, wait));
+    return () => clearTimeout(id);
+  }, [nextBack, now]);
 
   // Native bridge: brightness samples, expand toggle, and context menu.
   useEffect(() => {
@@ -209,7 +270,7 @@ export default function WidgetPage() {
     return () => ro.disconnect();
   }, []);
 
-  const visible = expanded ? ranked : ranked.slice(0, 1);
+  const visible = expanded ? shownRows : shownRows.slice(0, 1);
   const peak = useMemo(() => getPeakInfo(new Date(now)), [now]);
   const light = theme !== "dark";
   const menuAction = (action: MenuAction) => {
@@ -226,20 +287,9 @@ export default function WidgetPage() {
     card: (account: TrackedAccount<T>, multiple: boolean) => ReactNode,
     empty: ReactNode,
   ) => {
-    const enabled =
-      provider === "cursor"
-        ? settings.cursorEnabled
-        : provider === "grok"
-          ? settings.grokEnabled
-          : provider === "codex"
-            ? settings.codexEnabled
-            : settings.claudeEnabled;
-    if (!enabled) return null;
-    // Only the account that app is signed into. OpenCode is separate: it has no
-    // sign-in, so its API-key accounts are rendered above.
-    const shown = list.accounts.filter(
-      (account) =>
-        account.active && !isAccountHidden(settings.disabledAccounts, provider, account.id),
+    if (!enabled[provider]) return null;
+    const shown = signedIn(provider, list).filter(
+      (account) => !snoozedKeys.has(accountKey(provider, account.id)),
     );
     if (shown.length === 0) return list.accounts.length === 0 ? empty : null;
     const multiple = shown.length > 1;
@@ -268,6 +318,7 @@ export default function WidgetPage() {
                 now={now}
                 increased={(win) => increased(row.email, win, now)}
                 onCopyKey={() => void copyKey(row.email)}
+                onHide={hide("opencode", row.email)}
               />
             ))}
           </Fragment>
@@ -285,6 +336,7 @@ export default function WidgetPage() {
               accountId={account.id}
               accountLabel={account.label ?? account.usage?.accountName}
               multiple={multiple}
+              onHide={hide("cursor", account.id)}
             />
           ),
           <CursorCard
@@ -307,6 +359,7 @@ export default function WidgetPage() {
               accountId={account.id}
               accountLabel={account.label ?? account.usage?.email}
               multiple={multiple}
+              onHide={hide("grok", account.id)}
             />
           ),
           <GrokCard
@@ -330,6 +383,7 @@ export default function WidgetPage() {
               accountId={account.id}
               accountLabel={account.label ?? account.usage?.email}
               multiple={multiple}
+              onHide={hide("codex", account.id)}
             />
           ),
           <CodexCard
@@ -353,6 +407,7 @@ export default function WidgetPage() {
               accountId={account.id}
               accountLabel={account.label ?? account.usage?.email}
               multiple={multiple}
+              onHide={hide("claude", account.id)}
               pace={account.id === paceAccountId ? data.pace : null}
             />
           ),
@@ -398,6 +453,18 @@ export default function WidgetPage() {
             </div>
           )}
           {settings.providerOrder.map((id) => renderProvider(id))}
+          {summary && (
+            <button
+              type="button"
+              onClick={showSnoozed}
+              aria-label={summary.label}
+              title={summary.label}
+              className="flex w-full items-center gap-1.5 rounded-lg border border-(--w-cardBorder) bg-(--w-card) px-2 py-1 text-left text-[11px] leading-4 text-(--w-muted) hover:bg-(--w-hover) hover:text-(--w-text) transition-colors"
+            >
+              <EyeOffIcon size={12} className="shrink-0" />
+              <span className="truncate min-w-0">{summary.text}</span>
+            </button>
+          )}
         </div>
       )}
       {menuOpen && (

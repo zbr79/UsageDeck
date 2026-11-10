@@ -1,4 +1,5 @@
-import { isPassed, rankAccounts } from "@/lib/ranking";
+import { rankAccounts } from "@/lib/ranking";
+import { usedUp } from "@/lib/used-up";
 import type {
   ClaudeUsage,
   CodexUsage,
@@ -59,47 +60,6 @@ export function orderOpenCode(
 type AnyUsage = CursorUsage | GrokUsage | CodexUsage | ClaudeUsage;
 
 /**
- * Whether the card shows the account as used up (its red ring). Mirrors the `exhausted` checks of
- * the widget cards in src/widget/_components/cards.tsx.
- */
-export function isUsedUp(
-  id: ProviderId,
-  account: TrackedAccount<AnyUsage>,
-  now = Date.now(),
-): boolean {
-  const stale = account.stale;
-  const past = (iso: string | null | undefined) => stale && isPassed(iso, now);
-  switch (id) {
-    case "cursor": {
-      const c = account.usage as CursorUsage | null;
-      return !!c && !past(c.billingCycleEnd) && (c.totalPercentUsed ?? 0) >= 100;
-    }
-    case "grok": {
-      const g = account.usage as GrokUsage | null;
-      return !!g && !past(g.resetAt) && (g.percentUsed ?? 0) >= 100;
-    }
-    case "codex": {
-      const x = account.usage as CodexUsage | null;
-      if (!x) return false;
-      const hasWeekly = x.weeklyUsedPercent != null;
-      return (
-        (!past(x.resetAt) && (x.limitReached || (x.usedPercent ?? 0) >= 100)) ||
-        (hasWeekly && !past(x.weeklyResetAt) && (x.weeklyUsedPercent ?? 0) >= 100)
-      );
-    }
-    case "claude": {
-      const c = account.usage as ClaudeUsage | null;
-      if (!c) return false;
-      return [c.fiveHour, c.weekly].some(
-        (w) => w?.percent != null && !past(w.resetsAt) && w.percent >= 100,
-      );
-    }
-    default:
-      return false;
-  }
-}
-
-/**
  * Claude / Codex / Cursor / Grok cards: shown accounts before hidden ones; within each, the
  * signed-in account first, used-up accounts last, then the most recent cached use first.
  */
@@ -113,7 +73,7 @@ export function orderTracked(
     (a, b) =>
       Number(hidden(a.id)) - Number(hidden(b.id)) ||
       Number(b.active) - Number(a.active) ||
-      Number(isUsedUp(id, a, now)) - Number(isUsedUp(id, b, now)) ||
+      Number(!!usedUp(id, a, now)) - Number(!!usedUp(id, b, now)) ||
       (b.cachedAt ?? 0) - (a.cachedAt ?? 0),
   );
 }

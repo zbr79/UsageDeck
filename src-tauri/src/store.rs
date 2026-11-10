@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -254,6 +254,7 @@ impl Store {
         self.update_settings(|mut s| {
             s.display_names.retain(|k, _| k.to_lowercase() != lower);
             s.disabled_accounts.retain(|e| *e != lower);
+            s.snoozed_until.remove(&format!("opencode:{lower}"));
             s
         })
         .await
@@ -430,6 +431,8 @@ pub struct Settings {
     pub start_at_login: bool,
     /// Claude Code hourly spend target in whole USD per hour (1-10000); None = off
     pub claude_hourly_target: Option<u32>,
+    /// used-up cards hidden from the widget until they reset: account key -> epoch ms
+    pub snoozed_until: BTreeMap<String, u64>,
 }
 
 impl Default for Settings {
@@ -450,6 +453,7 @@ impl Default for Settings {
             provider_order: DEFAULT_PROVIDER_ORDER.to_vec(),
             start_at_login: true,
             claude_hourly_target: None,
+            snoozed_until: BTreeMap::new(),
         }
     }
 }
@@ -535,9 +539,62 @@ pub fn sanitize_disabled_accounts(value: &Value) -> Option<Vec<String>> {
     Some(out)
 }
 
+/// Largest integer a JS number holds exactly (`Number.MAX_SAFE_INTEGER`).
+const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+
+/// Merge snooze changes: a time sets an account's entry, null removes it. Entries that have run
+/// out are dropped, so the map only holds cards still hidden.
+pub fn merge_snoozed_until(
+    current: &BTreeMap<String, u64>,
+    changes: Option<&Value>,
+    now_ms: u64,
+) -> BTreeMap<String, u64> {
+    let mut out = current.clone();
+    if let Some(changes) = changes.and_then(Value::as_object) {
+        for (key, until) in changes {
+            if key.is_empty()
+                || js_len(key) > MAX_KEY_LENGTH
+                || FORBIDDEN_KEYS.contains(&key.as_str())
+            {
+                continue;
+            }
+            match until {
+                Value::Null => {
+                    out.remove(key);
+                }
+                Value::Number(n) => {
+                    if let Some(ms) = n
+                        .as_f64()
+                        .filter(|ms| (0.0..=MAX_SAFE_INTEGER).contains(ms))
+                    {
+                        // In range 0..=2^53, so the cast cannot truncate or wrap.
+                        out.insert(key.clone(), ms.round() as u64);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    out.into_iter()
+        .filter(|(_, until)| *until > now_ms)
+        .take(MAX_ENTRIES)
+        .collect()
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
 /// Apply a partial update. Unknown keys and wrongly-typed values are ignored, so a client can
 /// only ever change what it sent, and only to valid values.
 pub fn apply_settings_patch(current: &Settings, patch: &Value) -> Settings {
+    apply_settings_patch_at(current, patch, now_ms())
+}
+
+/// `apply_settings_patch` at a given time (epoch ms), which decides the snoozes that ran out.
+pub fn apply_settings_patch_at(current: &Settings, patch: &Value, now_ms: u64) -> Settings {
     let Some(obj) = patch.as_object() else {
         return current.clone();
     };
@@ -600,6 +657,8 @@ pub fn apply_settings_patch(current: &Settings, patch: &Value) -> Settings {
         }
         None => {}
     }
+    next.snoozed_until =
+        merge_snoozed_until(&current.snoozed_until, obj.get("snoozedUntil"), now_ms);
     next
 }
 
@@ -703,6 +762,80 @@ mod tests {
             serde_json::to_value(on).unwrap()["claudeHourlyTarget"],
             json!(80)
         );
+    }
+
+    #[test]
+    fn snoozed_until_patch_rules() {
+        const NOW: u64 = 1_793_000_000_000;
+        const H: u64 = 3_600_000;
+        let with = |entries: &[(&str, u64)]| Settings {
+            snoozed_until: entries.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
+            ..Settings::default()
+        };
+        let patch = |current: &Settings, change: Value| {
+            apply_settings_patch_at(current, &json!({ "snoozedUntil": change }), NOW).snoozed_until
+        };
+        let map = |entries: &[(&str, u64)]| with(entries).snoozed_until;
+
+        assert!(Settings::default().snoozed_until.is_empty());
+        assert!(normalize_settings(Some(&json!({})))
+            .snoozed_until
+            .is_empty());
+
+        // a time sets one account, null removes one, the rest are kept
+        let current = with(&[("codex:a@x.com", NOW + H), ("claude:b@x.com", NOW + 2 * H)]);
+        assert_eq!(
+            patch(
+                &current,
+                json!({ "claude:b@x.com": null, "grok:c@x.com": (NOW + 3 * H) as f64 + 0.4 })
+            ),
+            map(&[("codex:a@x.com", NOW + H), ("grok:c@x.com", NOW + 3 * H)])
+        );
+
+        // garbage keys and values are dropped
+        let long = "k".repeat(321);
+        let change = json!({
+            "": NOW + H,
+            "__proto__": NOW + H,
+            long: NOW + H,
+            "codex:neg": -5,
+            "codex:huge": 1e300,
+            "codex:text": "tomorrow",
+            "codex:obj": {},
+            "codex:ok": NOW + H
+        });
+        assert_eq!(
+            patch(&Settings::default(), change),
+            map(&[("codex:ok", NOW + H)])
+        );
+        assert_eq!(
+            patch(&with(&[("codex:a", NOW + H)]), json!("nope")),
+            map(&[("codex:a", NOW + H)])
+        );
+
+        // entries that ran out are pruned on every write, whatever the patch changes
+        let current = with(&[
+            ("codex:old", NOW - 1),
+            ("codex:now", NOW),
+            ("codex:later", NOW + H),
+        ]);
+        let pruned = map(&[("codex:later", NOW + H)]);
+        assert_eq!(
+            apply_settings_patch_at(&current, &json!({ "cursorEnabled": false }), NOW)
+                .snoozed_until,
+            pruned
+        );
+        assert!(patch(&Settings::default(), json!({ "codex:past": NOW - H })).is_empty());
+        // and on load, against the real clock
+        assert!(
+            normalize_settings(Some(&json!({ "snoozedUntil": { "codex:x": 1 } })))
+                .snoozed_until
+                .is_empty()
+        );
+
+        // serialised as camelCase, numbers in ms
+        let out = serde_json::to_value(with(&[("codex:a", NOW + H)])).unwrap();
+        assert_eq!(out["snoozedUntil"], json!({ "codex:a": NOW + H }));
     }
 
     #[test]

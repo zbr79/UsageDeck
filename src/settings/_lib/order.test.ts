@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { ClaudeUsage, CursorUsage, OpenCodeAccountUsage, TrackedAccount } from "@/lib/types";
-import { isUsedUp, orderOpenCode, orderTracked } from "./order";
+import type { ClaudeUsage, OpenCodeAccountUsage, TrackedAccount } from "@/lib/types";
+import { orderOpenCode, orderTracked } from "./order";
 
 const D = 24 * 3_600_000;
 const NOW = Date.parse("2026-10-12T00:00:00Z");
@@ -94,17 +94,5 @@ describe("orderTracked", () => {
     ];
     const out = orderTracked("claude", accounts, (id) => id === "hidden", NOW);
     expect(out.map((a) => a.id)).toEqual(["me", "recent", "old", "full", "hidden"]);
-  });
-
-  it("a stale window that already reset is not used up", () => {
-    const u = claude(100, 10);
-    u.fiveHour!.resetsAt = new Date(NOW - 1000).toISOString();
-    expect(isUsedUp("claude", tracked("x", u, { stale: true }), NOW)).toBe(false);
-    expect(isUsedUp("claude", tracked("x", u), NOW)).toBe(true);
-  });
-
-  it("cursor is used up at 100 % of its cycle", () => {
-    const c = { totalPercentUsed: 100, billingCycleEnd: null } as unknown as CursorUsage;
-    expect(isUsedUp("cursor", tracked("c", c), NOW)).toBe(true);
   });
 });

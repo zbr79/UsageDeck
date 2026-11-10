@@ -57,6 +57,15 @@ export const PencilIcon = (p: IconProps) => (
   </Icon>
 );
 
+export const EyeOffIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M10.7 5.1A10.4 10.4 0 0 1 12 5c5 0 9 4.5 10 7a13.2 13.2 0 0 1-2.2 3.3" />
+    <path d="M6.6 6.6C4.4 8 2.8 10.1 2 12c1 2.5 5 7 10 7 1.9 0 3.6-.6 5.1-1.5" />
+    <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" />
+    <path d="m2 2 20 20" />
+  </Icon>
+);
+
 export const CopyIcon = (p: IconProps) => (
   <Icon {...p}>
     <rect width="13" height="13" x="9" y="9" rx="2" />

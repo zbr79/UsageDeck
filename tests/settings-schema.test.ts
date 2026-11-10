@@ -140,3 +140,53 @@ describe("claudeHourlyTarget", () => {
     expect(applySettingsPatch(DEFAULT_SETTINGS, {}).claudeHourlyTarget).toBeNull();
   });
 });
+
+describe("snoozedUntil", () => {
+  const NOW = Date.parse("2026-11-10T12:00:00.000Z");
+  const H = 3_600_000;
+  const patch = (current: Record<string, number>, change: unknown, now = NOW) =>
+    applySettingsPatch(
+      { ...DEFAULT_SETTINGS, snoozedUntil: current },
+      { snoozedUntil: change },
+      now,
+    ).snoozedUntil;
+
+  it("is empty by default", () => {
+    expect(DEFAULT_SETTINGS.snoozedUntil).toEqual({});
+    expect(normalizeSettings({}).snoozedUntil).toEqual({});
+  });
+  it("merges: a time sets one account, null removes one, the rest are kept", () => {
+    const current = { "codex:a@x.com": NOW + H, "claude:b@x.com": NOW + 2 * H };
+    expect(patch(current, { "claude:b@x.com": null, "grok:c@x.com": NOW + 3 * H + 0.4 })).toEqual({
+      "codex:a@x.com": NOW + H,
+      "grok:c@x.com": NOW + 3 * H,
+    });
+  });
+  it("drops garbage keys and values", () => {
+    const change = {
+      "": NOW + H,
+      ["__proto__"]: NOW + H,
+      ["k".repeat(321)]: NOW + H,
+      "codex:nan": NaN,
+      "codex:inf": Infinity,
+      "codex:text": "tomorrow",
+      "codex:obj": {},
+      "codex:ok": NOW + H,
+    };
+    expect(patch({}, change)).toEqual({ "codex:ok": NOW + H });
+    expect(patch({ "codex:a": NOW + H }, "nope")).toEqual({ "codex:a": NOW + H });
+  });
+  it("prunes entries that have run out on every write and on load", () => {
+    const current = { "codex:old": NOW - 1, "codex:now": NOW, "codex:later": NOW + H };
+    expect(patch(current, undefined)).toEqual({ "codex:later": NOW + H });
+    expect(patch({}, { "codex:past": NOW - H })).toEqual({});
+    expect(
+      applySettingsPatch(
+        { ...DEFAULT_SETTINGS, snoozedUntil: current },
+        { cursorEnabled: false },
+        NOW,
+      ).snoozedUntil,
+    ).toEqual({ "codex:later": NOW + H });
+    expect(normalizeSettings({ snoozedUntil: { "codex:x": 1 } }).snoozedUntil).toEqual({});
+  });
+});

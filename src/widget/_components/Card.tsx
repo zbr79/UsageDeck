@@ -1,4 +1,5 @@
 import type { CSSProperties, ReactNode } from "react";
+import { EyeOffIcon } from "@/ui/Icons";
 import { formatPercent } from "@/lib/format";
 import { usageSeverity, type MeterSeverity } from "@/lib/pace";
 
@@ -42,6 +43,7 @@ export function Card({
   title,
   titleHint,
   titleAfter,
+  titleAction,
   hints,
   badges,
   state = "normal",
@@ -55,6 +57,8 @@ export function Card({
   titleHint?: string;
   /** muted text right after the title, same size (Claude: the spend rate, "$28/h") */
   titleAfter?: ReactNode;
+  /** a control right after the title (widget: hide a used-up card until it resets) */
+  titleAction?: ReactNode;
   hints?: ReactNode;
   badges?: ReactNode;
   state?: CardState;
@@ -86,6 +90,7 @@ export function Card({
           {title}
         </span>
         {titleAfter}
+        {titleAction}
         {extras?.hidden && <HiddenIcon />}
         {!hintsBelow && hints}
         <span className="ml-auto flex items-center gap-1 shrink-0">{!extras?.plain && badges}</span>
@@ -113,22 +118,7 @@ function HiddenIcon() {
       title="Hidden from widget"
       className="flex size-4 shrink-0 items-center justify-center text-(--w-muted)"
     >
-      <svg
-        aria-hidden="true"
-        width="16"
-        height="16"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      >
-        <path d="M10.7 5.1A10.4 10.4 0 0 1 12 5c5 0 9 4.5 10 7a13.2 13.2 0 0 1-2.2 3.3" />
-        <path d="M6.6 6.6C4.4 8 2.8 10.1 2 12c1 2.5 5 7 10 7 1.9 0 3.6-.6 5.1-1.5" />
-        <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" />
-        <path d="m2 2 20 20" />
-      </svg>
+      <EyeOffIcon size={16} />
     </span>
   );
 }

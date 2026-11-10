@@ -74,6 +74,7 @@ export const DEFAULT_SETTINGS: Settings = {
   providerOrder: [...DEFAULT_PROVIDER_ORDER],
   startAtLogin: true,
   claudeHourlyTarget: null,
+  snoozedUntil: {},
 };
 
 export const MIN_HOURLY_TARGET = 1;
@@ -121,11 +122,40 @@ export function sanitizeDisabledAccounts(value: unknown): string[] | null {
   return [...new Set(emails)].slice(0, MAX_ENTRIES);
 }
 
+/** A settings change as a client sends it: a snooze set to null is removed. */
+export type SettingsPatch = Omit<Partial<Settings>, "snoozedUntil"> & {
+  snoozedUntil?: Record<string, number | null>;
+};
+
+/**
+ * Merge snooze changes into `current`: a time sets an account's entry, null removes it. Entries
+ * that have run out are dropped, so the map only holds cards still hidden.
+ */
+export function mergeSnoozedUntil(
+  current: Record<string, number>,
+  changes: unknown,
+  now: number,
+): Record<string, number> {
+  const out: Record<string, number> = { ...current };
+  if (isRecord(changes)) {
+    for (const [key, until] of Object.entries(changes)) {
+      if (!key || key.length > MAX_KEY_LENGTH || FORBIDDEN_KEYS.has(key)) continue;
+      if (until === null) delete out[key];
+      else if (typeof until === "number" && Number.isFinite(until)) out[key] = Math.round(until);
+    }
+  }
+  return Object.fromEntries(
+    Object.entries(out)
+      .filter(([, until]) => until > now)
+      .slice(0, MAX_ENTRIES),
+  );
+}
+
 /**
  * Apply a partial update. Unknown keys and wrongly-typed values are ignored,
  * so a client can only ever change what it sent, and only to valid values.
  */
-export function applySettingsPatch(current: Settings, patch: unknown): Settings {
+export function applySettingsPatch(current: Settings, patch: unknown, now = Date.now()): Settings {
   if (!isRecord(patch)) return current;
   const next: Settings = { ...current };
   for (const key of BOOLEAN_KEYS) {
@@ -154,6 +184,7 @@ export function applySettingsPatch(current: Settings, patch: unknown): Settings 
     const target = sanitizeHourlyTarget(patch.claudeHourlyTarget);
     if (target !== undefined) next.claudeHourlyTarget = target;
   }
+  next.snoozedUntil = mergeSnoozedUntil(current.snoozedUntil, patch.snoozedUntil, now);
   return next;
 }
 

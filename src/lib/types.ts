@@ -27,6 +27,8 @@ export interface Settings {
   startAtLogin: boolean;
   /** Claude Code hourly spend target in whole USD per hour (1-10000); null = off */
   claudeHourlyTarget: number | null;
+  /** used-up cards hidden from the widget until they reset: account key → epoch ms */
+  snoozedUntil: Record<string, number>;
 }
 
 export type ProviderId = "cursor" | "grok" | "codex" | "claude";

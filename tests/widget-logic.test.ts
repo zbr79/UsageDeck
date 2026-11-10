@@ -11,6 +11,7 @@ import { getPeakInfo } from "@/lib/peak";
 import { increasedWindows, isAccountExhausted, rankAccounts, resetLabel } from "@/lib/ranking";
 import type { OpenCodeAccountUsage } from "@/lib/types";
 import { nextBrightness, resolveWidgetTheme } from "@/widget/_lib/theme";
+import { snoozedCards, snoozeSummary, type SnoozedCard } from "@/widget/_lib/snooze";
 
 const M = 60_000;
 const H = 60 * M;
@@ -187,5 +188,51 @@ describe("widget theme", () => {
     expect(nextBrightness(0.8, 0.2)).toBe(0.2);
     expect(nextBrightness(0.2, 0.4)).toBe(0.2); // not bright enough to flip back
     expect(nextBrightness(0.2, 0.6)).toBe(0.6);
+  });
+});
+
+describe("snoozeSummary", () => {
+  const NOW = Date.parse("2026-11-10T12:00:00.000Z");
+  const card = (provider: SnoozedCard["provider"], until: number): SnoozedCard => ({
+    key: `${provider}:a@example.com`,
+    provider,
+    until,
+  });
+
+  it("nothing hidden: no line", () => {
+    expect(snoozeSummary([], NOW)).toBeNull();
+  });
+  it("one card: its name and when it is back", () => {
+    expect(snoozeSummary([card("codex", NOW + H + 21 * M)], NOW)).toEqual({
+      text: "Codex hidden · back in 1h 21m",
+      label: "Codex is hidden until it resets in 1h 21m. Show it now",
+    });
+  });
+  it("several cards: the count and the soonest return", () => {
+    const summary = snoozeSummary([card("claude", NOW + 3 * D), card("codex", NOW + 5 * M)], NOW);
+    expect(summary?.text).toBe("2 hidden · next back in 5m");
+    expect(summary?.label).toContain("(Claude, Codex)");
+  });
+});
+
+describe("snoozedCards", () => {
+  const NOW = Date.parse("2026-11-10T12:00:00.000Z");
+  const used = { until: NOW + H };
+
+  it("the used-up cards hidden until a time still ahead, keyed like settings", () => {
+    const snoozes = {
+      "codex:c@example.com": NOW + H,
+      "claude:me@example.com": NOW + H,
+      "opencode:a@example.com": NOW - 1,
+    };
+    const cards = [
+      { provider: "codex" as const, id: "C@example.com", used },
+      { provider: "claude" as const, id: "me@example.com", used: null },
+      { provider: "opencode" as const, id: "a@example.com", used },
+      { provider: "grok" as const, id: "g@example.com", used },
+    ];
+    expect(snoozedCards(cards, snoozes, NOW)).toEqual([
+      { key: "codex:c@example.com", provider: "codex", until: NOW + H },
+    ]);
   });
 });

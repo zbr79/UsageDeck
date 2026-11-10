@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getJson, onSettingsChanged } from "@/lib/api";
+import { announceSettingsChanged, getJson, onSettingsChanged, sendJson } from "@/lib/api";
 import { onRefresh } from "@/lib/bridge";
 import { increasedWindows } from "@/lib/ranking";
+import { applySettingsPatch, type SettingsPatch } from "@/lib/settings-schema";
 import type {
   ClaudePace,
   ClaudeUsage,
@@ -187,5 +188,21 @@ export function useWidgetData() {
     return !!at && now - at < INCREASE_VISIBLE_MS;
   }, []);
 
-  return { data, reload: load, lastUsed, increased };
+  /** Save a settings change from the widget: shown at once, then whatever the store kept. */
+  const updateSettings = useCallback(
+    async (patch: SettingsPatch) => {
+      setData((prev) =>
+        prev.settings ? { ...prev, settings: applySettingsPatch(prev.settings, patch) } : prev,
+      );
+      try {
+        await sendJson("/api/settings", "POST", patch);
+        announceSettingsChanged();
+      } finally {
+        void load();
+      }
+    },
+    [load],
+  );
+
+  return { data, reload: load, lastUsed, increased, updateSettings };
 }
