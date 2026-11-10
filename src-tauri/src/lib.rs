@@ -10,6 +10,7 @@ pub mod pricing;
 pub mod providers;
 pub mod settings_window;
 pub mod store;
+pub mod updater;
 pub mod win;
 
 use providers::{SeenAccounts, UsageCache};
@@ -18,7 +19,7 @@ use settings_window::{hide_settings, show_settings};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use store::{CredentialVault, Store, SEEN_ACCOUNTS_FILE, USAGE_CACHE_FILE, WINDOW_POS_FILE};
-use tauri::menu::{Menu, MenuItem};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{
     AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, WebviewWindow, WindowEvent,
@@ -242,12 +243,21 @@ fn schedule_position_save(app: AppHandle, pos: PhysicalPosition<i32>) {
 }
 
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
+    let version_label = format!("UsageDeck v{}", app.package_info().version);
+    let version = MenuItem::with_id(app, "version", version_label, false, None::<&str>)?;
+    let separator = PredefinedMenuItem::separator(app)?;
     let toggle = MenuItem::with_id(app, "toggle", "Expand/Collapse", true, None::<&str>)?;
     let refresh = MenuItem::with_id(app, "refresh", "Refresh", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
+    let update = MenuItem::with_id(app, "update", "Check for updates", true, None::<&str>)?;
     let logs = MenuItem::with_id(app, "logs", "Open log folder", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&toggle, &refresh, &settings, &logs, &quit])?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &version, &separator, &toggle, &refresh, &settings, &update, &logs, &quit,
+        ],
+    )?;
     let mut tray = TrayIconBuilder::with_id("main")
         .tooltip("UsageDeck")
         .menu(&menu)
@@ -260,6 +270,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 let _ = app.emit_to(WIDGET, EVENT_REFRESH, ());
             }
             "settings" => show_settings(app),
+            "update" => updater::check_now(app),
             "logs" => open_log_folder(app),
             "quit" => app.exit(0),
             _ => {}
@@ -358,6 +369,13 @@ pub fn run() {
                 });
             }
             build_tray(app)?;
+            // Same rule as the Run key: a dev or cargo-target build never updates itself in
+            // the background (the tray's "Check for updates" still works).
+            if cfg!(debug_assertions) || running_from_cargo_target() {
+                log::info!("background update checks off (dev build)");
+            } else {
+                updater::start(app.handle().clone());
+            }
             win::screen::start_sampler(app.handle().clone());
             win::fullscreen::start_watcher(app.handle().clone());
             if cli::wants_settings(std::env::args()) {
