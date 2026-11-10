@@ -6,7 +6,8 @@ import { errorHint, isAuthRejected } from "@/lib/errors";
 import { capitalize, claudePlanLabel, formatDuration, formatUntil } from "@/lib/format";
 import { headerRate, meterPaceText, SPEND_BAND_TONE, spendBand, spendRateTitle } from "@/lib/pace";
 import type { PeakInfo } from "@/lib/peak";
-import { isAccountExhausted, isExhaustedWindow, isPassed, isUnknownWindow } from "@/lib/ranking";
+import { isExhaustedWindow, isPassed, isUnknownWindow } from "@/lib/ranking";
+import { openCodeUsedUp, usedUp } from "@/lib/used-up";
 import type {
   ClaudePace,
   ClaudeUsage,
@@ -136,11 +137,7 @@ export function OpenCodeCard({
     fullEmail ? row.email : row.email.slice(0, 4),
   );
   const u = row.usage;
-  const state: CardState = isAccountExhausted(row, now)
-    ? "exhausted"
-    : active
-      ? "active"
-      : "normal";
+  const state: CardState = openCodeUsedUp(row, now) ? "exhausted" : active ? "active" : "normal";
   const unknown = (w: "rolling" | "weekly" | "monthly") =>
     !!u && isUnknownWindow(u[w], row.stale, now);
   const reset = (w: "rolling" | "weekly" | "monthly", show: boolean) =>
@@ -272,7 +269,7 @@ export function CursorCard({
     multiple,
   );
   const cyclePassed = slot.stale && isPassed(c?.billingCycleEnd, now);
-  const exhausted = !!c && !cyclePassed && (c.totalPercentUsed ?? 0) >= 100;
+  const exhausted = !!usedUp("cursor", { usage: c, stale: slot.stale }, now);
   return (
     <Card
       extras={extras}
@@ -342,7 +339,7 @@ export function GrokCard({
     multiple,
   );
   const passed = slot.stale && isPassed(g?.resetAt, now);
-  const exhausted = !!g && !passed && (g.percentUsed ?? 0) >= 100;
+  const exhausted = !!usedUp("grok", { usage: g, stale: slot.stale }, now);
   const plan = g?.planLabel ?? g?.cursorPlanName;
   const account = g?.email
     ? `${g.email}${g.source === "cursor" ? " (via Cursor sign-in)" : ""}`
@@ -413,10 +410,7 @@ export function CodexCard({
   const hasWeekly = x?.weeklyUsedPercent != null;
   const fiveHour = hasWeekly && x?.limitWindowSeconds === 18000;
   const weeklyPassed = slot.stale && isPassed(x?.weeklyResetAt, now);
-  const exhausted =
-    !!x &&
-    ((!passed && (x.limitReached || (x.usedPercent ?? 0) >= 100)) ||
-      (hasWeekly && !weeklyPassed && (x.weeklyUsedPercent ?? 0) >= 100));
+  const exhausted = !!usedUp("codex", { usage: x, stale: slot.stale }, now);
   return (
     <Card
       extras={extras}
@@ -522,8 +516,7 @@ export function ClaudeCard({
   const badgeTone: Tone = !badge || badge === "signed out" ? "gray" : planTone(badge);
   const windowUnknown = (w: ClaudeUsage["fiveHour"] | undefined) =>
     w?.percent == null || (slot.stale && isPassed(w.resetsAt, now));
-  const exhausted =
-    !!c && [c.fiveHour, c.weekly].some((w) => !windowUnknown(w) && (w.percent ?? 0) >= 100);
+  const exhausted = !!usedUp("claude", { usage: c, stale: slot.stale }, now);
   const rate = headerRate(pace);
   const target = settings.claudeHourlyTarget;
   const rate60m = pace?.spend.rate60m ?? 0;
