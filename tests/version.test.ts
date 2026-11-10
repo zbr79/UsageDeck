@@ -1,20 +1,22 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import cargoLock from "../src-tauri/Cargo.lock?raw";
+import cargoToml from "../src-tauri/Cargo.toml?raw";
+import tauriConf from "../src-tauri/tauri.conf.json?raw";
+import packageLock from "../package-lock.json?raw";
+import packageJson from "../package.json?raw";
 
-const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
-
-// The release workflow tags v<tauri.conf.json version>, and the installed app compares its
-// Cargo version against that tag, so every copy of the version must agree.
+// The release tag (v<version>) and the version the installed app compares against it both come
+// from tauri.conf.json; the other files carry copies that must not drift.
 function versions(): Record<string, string | undefined> {
-  const lock = JSON.parse(read("package-lock.json"));
-  const cargoLockEntry = read("src-tauri/Cargo.lock").match(
+  const lock = JSON.parse(packageLock);
+  const cargoLockEntry = cargoLock.match(
     /\[\[package\]\]\nname = "usagedeck"\nversion = "([^"]+)"/,
   );
   return {
-    "src-tauri/tauri.conf.json": JSON.parse(read("src-tauri/tauri.conf.json")).version,
-    "src-tauri/Cargo.toml": read("src-tauri/Cargo.toml").match(/^version = "([^"]+)"/m)?.[1],
+    "src-tauri/tauri.conf.json": JSON.parse(tauriConf).version,
+    "src-tauri/Cargo.toml": cargoToml.match(/^version = "([^"]+)"/m)?.[1],
     "src-tauri/Cargo.lock": cargoLockEntry?.[1],
-    "package.json": JSON.parse(read("package.json")).version,
+    "package.json": JSON.parse(packageJson).version,
     "package-lock.json": lock.version,
     'package-lock.json packages[""]': lock.packages[""].version,
   };
