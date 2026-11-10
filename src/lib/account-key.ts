@@ -1,7 +1,10 @@
-import type { ProviderId } from "./types";
+import type { ProviderId, WidgetProvider } from "./types";
 
-/** Settings key for one account. Prefixed so it cannot collide with an OpenCode email. */
-export function accountKey(provider: ProviderId, id: string): string {
+/**
+ * Settings key for one account. Prefixed so it cannot collide with an OpenCode email (OpenCode's
+ * nicknames and hidden list use the bare email; its snoozes use this key).
+ */
+export function accountKey(provider: WidgetProvider, id: string): string {
   return `${provider}:${id.trim().toLowerCase()}`;
 }
 

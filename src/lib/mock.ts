@@ -1,6 +1,7 @@
 // Browser-only mock of the Rust `api` command, so `npm run dev` can be viewed
 // in a normal browser. Data adapted from tests/e2e/fixtures.ts, with times
 // relative to the page load instead of a frozen clock.
+import { applySettingsPatch } from "./settings-schema";
 import type {
   ClaudePace,
   ClaudeUsage,
@@ -15,6 +16,10 @@ import type {
 
 const NOW = Date.now();
 const H = 3_600_000;
+const query = () => new URLSearchParams(typeof location === "undefined" ? "" : location.search);
+// `?codexReset=5000` puts the used-up Codex card's 5-hour reset that many ms after page load
+// (browser preview only); it defaults to 1h 21m.
+const CODEX_RESET_MS = Number(query().get("codexReset")) || 81 * 60_000;
 const iso = (msFromNow: number) => new Date(NOW + msFromNow).toISOString();
 
 let settings: Settings = {
@@ -137,7 +142,10 @@ const providers: Record<string, unknown> = {
       planType: "plus",
       usedPercent: 100,
       limitWindowSeconds: 18000,
-      resetAt: iso(2 * H),
+      resetAt: iso(CODEX_RESET_MS),
+      weeklyUsedPercent: 64,
+      weeklyLimitWindowSeconds: 604800,
+      weeklyResetAt: iso(4 * 24 * H),
       creditsBalance: null,
       resetCredits: 1,
       limitReached: true,
@@ -355,14 +363,7 @@ export async function mockApi(method: string, path: string, body: unknown): Prom
   const b = (body ?? {}) as Record<string, unknown>;
   if (method !== "GET") {
     if (name === "settings") {
-      settings = {
-        ...settings,
-        ...(b as Partial<Settings>),
-        displayNames: {
-          ...settings.displayNames,
-          ...((b.displayNames as Record<string, string>) ?? {}),
-        },
-      };
+      settings = applySettingsPatch(settings, b);
       return json({ ok: true, settings });
     }
     if (name === "accounts") {

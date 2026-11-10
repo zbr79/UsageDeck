@@ -122,6 +122,11 @@ export function sanitizeDisabledAccounts(value: unknown): string[] | null {
   return [...new Set(emails)].slice(0, MAX_ENTRIES);
 }
 
+/** A settings change as a client sends it: a snooze set to null is removed. */
+export type SettingsPatch = Omit<Partial<Settings>, "snoozedUntil"> & {
+  snoozedUntil?: Record<string, number | null>;
+};
+
 /**
  * Merge snooze changes into `current`: a time sets an account's entry, null removes it. Entries
  * that have run out are dropped, so the map only holds cards still hidden.

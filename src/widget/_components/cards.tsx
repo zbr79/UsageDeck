@@ -1,13 +1,19 @@
 import type { ReactNode } from "react";
 import { Badge, HIT_24 } from "@/ui/controls";
-import { CopyIcon } from "@/ui/Icons";
+import { CopyIcon, EyeOffIcon } from "@/ui/Icons";
 import { WIDGET_SPEND_TONE, type Tone } from "@/ui/palette";
 import { errorHint, isAuthRejected } from "@/lib/errors";
-import { capitalize, claudePlanLabel, formatDuration, formatUntil } from "@/lib/format";
+import {
+  capitalize,
+  claudePlanLabel,
+  formatDuration,
+  formatResetDuration,
+  formatUntil,
+} from "@/lib/format";
 import { headerRate, meterPaceText, SPEND_BAND_TONE, spendBand, spendRateTitle } from "@/lib/pace";
 import type { PeakInfo } from "@/lib/peak";
 import { isExhaustedWindow, isPassed, isUnknownWindow } from "@/lib/ranking";
-import { openCodeUsedUp, usedUp } from "@/lib/used-up";
+import { openCodeUsedUp, usedUp, type UsedUp } from "@/lib/used-up";
 import type {
   ClaudePace,
   ClaudeUsage,
@@ -98,6 +104,37 @@ function planTone(plan: string): Tone {
   return "blue";
 }
 
+/**
+ * Widget: on a used-up card, hide it until it resets. Shown only when the reset time is known
+ * and still ahead, so the card is sure to come back.
+ */
+function HideButton({
+  name,
+  used,
+  now,
+  onHide,
+}: {
+  name: string;
+  used: UsedUp | null;
+  now: number;
+  onHide: ((until: number) => void) | undefined;
+}) {
+  const until = used?.until;
+  if (!onHide || until == null || until <= now) return null;
+  const label = `Hide ${name} until it resets in ${formatResetDuration(until - now)}`;
+  return (
+    <button
+      type="button"
+      onClick={() => onHide(until)}
+      aria-label={label}
+      title={label}
+      className={`${HIT_24} shrink-0 rounded-[3px] p-0.5 -m-0.5 text-(--w-muted) hover:bg-(--w-hover) hover:text-(--w-text) transition-colors`}
+    >
+      <EyeOffIcon size={12} />
+    </button>
+  );
+}
+
 function Unavailable<T>({ slot }: { slot: ProviderSlot<T> }) {
   return <Note>{slot.loaded ? "Not signed in or unavailable" : "Loading…"}</Note>;
 }
@@ -113,6 +150,7 @@ export function OpenCodeCard({
   now,
   increased,
   onCopyKey,
+  onHide,
   extras,
   fullEmail = false,
 }: {
@@ -125,6 +163,8 @@ export function OpenCodeCard({
   now: number;
   increased: (window: string) => boolean;
   onCopyKey: () => void;
+  /** widget: hide this used-up card until the given time */
+  onHide?: (until: number) => void;
   /** settings-only additions; the widget passes none */
   extras?: CardExtras;
   /** without a nickname, title the card with the whole email (settings), not its first letters */
@@ -137,7 +177,8 @@ export function OpenCodeCard({
     fullEmail ? row.email : row.email.slice(0, 4),
   );
   const u = row.usage;
-  const state: CardState = openCodeUsedUp(row, now) ? "exhausted" : active ? "active" : "normal";
+  const used = openCodeUsedUp(row, now);
+  const state: CardState = used ? "exhausted" : active ? "active" : "normal";
   const unknown = (w: "rolling" | "weekly" | "monthly") =>
     !!u && isUnknownWindow(u[w], row.stale, now);
   const reset = (w: "rolling" | "weekly" | "monthly", show: boolean) =>
@@ -177,6 +218,7 @@ export function OpenCodeCard({
       }
       title={title}
       titleHint={row.email}
+      titleAction={<HideButton name={title} used={used} now={now} onHide={onHide} />}
       hints={
         (rejected || failure || peakHint) && (
           <HintGroup>
@@ -248,6 +290,7 @@ export function CursorCard({
   accountId = null,
   accountLabel = null,
   multiple = false,
+  onHide,
   extras,
 }: {
   slot: ProviderSlot<CursorUsage>;
@@ -256,6 +299,8 @@ export function CursorCard({
   accountId?: string | null;
   accountLabel?: string | null;
   multiple?: boolean;
+  /** widget: hide this used-up card until the given time */
+  onHide?: (until: number) => void;
   /** settings-only additions; the widget passes none */
   extras?: CardExtras;
 }) {
@@ -269,7 +314,7 @@ export function CursorCard({
     multiple,
   );
   const cyclePassed = slot.stale && isPassed(c?.billingCycleEnd, now);
-  const exhausted = !!usedUp("cursor", { usage: c, stale: slot.stale }, now);
+  const used = usedUp("cursor", { usage: c, stale: slot.stale }, now);
   return (
     <Card
       extras={extras}
@@ -277,7 +322,8 @@ export function CursorCard({
       icon={<ProviderIcon src="/cursor.ico" alt="" />}
       title={title}
       titleHint={c?.accountName ?? undefined}
-      state={exhausted ? "exhausted" : "normal"}
+      state={used ? "exhausted" : "normal"}
+      titleAction={<HideButton name={title} used={used} now={now} onHide={onHide} />}
       hints={<SlotHints slot={slot} how="open Cursor" />}
       badges={
         c?.planName ? (
@@ -318,6 +364,7 @@ export function GrokCard({
   accountId = null,
   accountLabel = null,
   multiple = false,
+  onHide,
   extras,
 }: {
   slot: ProviderSlot<GrokUsage>;
@@ -326,6 +373,8 @@ export function GrokCard({
   accountId?: string | null;
   accountLabel?: string | null;
   multiple?: boolean;
+  /** widget: hide this used-up card until the given time */
+  onHide?: (until: number) => void;
   /** settings-only additions; the widget passes none */
   extras?: CardExtras;
 }) {
@@ -339,7 +388,7 @@ export function GrokCard({
     multiple,
   );
   const passed = slot.stale && isPassed(g?.resetAt, now);
-  const exhausted = !!usedUp("grok", { usage: g, stale: slot.stale }, now);
+  const used = usedUp("grok", { usage: g, stale: slot.stale }, now);
   const plan = g?.planLabel ?? g?.cursorPlanName;
   const account = g?.email
     ? `${g.email}${g.source === "cursor" ? " (via Cursor sign-in)" : ""}`
@@ -351,7 +400,8 @@ export function GrokCard({
       icon={<ProviderIcon src="/grokbot.ico" alt="" />}
       title={title}
       titleHint={account}
-      state={exhausted ? "exhausted" : "normal"}
+      state={used ? "exhausted" : "normal"}
+      titleAction={<HideButton name={title} used={used} now={now} onHide={onHide} />}
       hints={<SlotHints slot={slot} how="open Grok Bot" />}
       badges={
         plan ? (
@@ -385,6 +435,7 @@ export function CodexCard({
   accountId = null,
   accountLabel = null,
   multiple = false,
+  onHide,
   extras,
 }: {
   slot: ProviderSlot<CodexUsage>;
@@ -394,6 +445,8 @@ export function CodexCard({
   accountId?: string | null;
   accountLabel?: string | null;
   multiple?: boolean;
+  /** widget: hide this used-up card until the given time */
+  onHide?: (until: number) => void;
   /** settings-only additions; the widget passes none */
   extras?: CardExtras;
 }) {
@@ -410,7 +463,7 @@ export function CodexCard({
   const hasWeekly = x?.weeklyUsedPercent != null;
   const fiveHour = hasWeekly && x?.limitWindowSeconds === 18000;
   const weeklyPassed = slot.stale && isPassed(x?.weeklyResetAt, now);
-  const exhausted = !!usedUp("codex", { usage: x, stale: slot.stale }, now);
+  const used = usedUp("codex", { usage: x, stale: slot.stale }, now);
   return (
     <Card
       extras={extras}
@@ -418,7 +471,8 @@ export function CodexCard({
       icon={<ProviderIcon src="/openai.png" alt="" invert={light} />}
       title={title}
       titleHint={x?.email ?? undefined}
-      state={exhausted ? "exhausted" : "normal"}
+      state={used ? "exhausted" : "normal"}
+      titleAction={<HideButton name={title} used={used} now={now} onHide={onHide} />}
       hints={<SlotHints slot={slot} how="run codex" />}
       badges={
         <>
@@ -484,6 +538,7 @@ export function ClaudeCard({
   accountLabel = null,
   multiple = false,
   pace = null,
+  onHide,
   extras,
 }: {
   slot: ProviderSlot<ClaudeUsage>;
@@ -494,6 +549,8 @@ export function ClaudeCard({
   accountId?: string | null;
   accountLabel?: string | null;
   multiple?: boolean;
+  /** widget: hide this used-up card until the given time */
+  onHide?: (until: number) => void;
   /** settings-only additions; the widget passes none */
   extras?: CardExtras;
 }) {
@@ -516,7 +573,7 @@ export function ClaudeCard({
   const badgeTone: Tone = !badge || badge === "signed out" ? "gray" : planTone(badge);
   const windowUnknown = (w: ClaudeUsage["fiveHour"] | undefined) =>
     w?.percent == null || (slot.stale && isPassed(w.resetsAt, now));
-  const exhausted = !!usedUp("claude", { usage: c, stale: slot.stale }, now);
+  const used = usedUp("claude", { usage: c, stale: slot.stale }, now);
   const rate = headerRate(pace);
   const target = settings.claudeHourlyTarget;
   const rate60m = pace?.spend.rate60m ?? 0;
@@ -551,7 +608,8 @@ export function ClaudeCard({
           </span>
         )
       }
-      state={exhausted ? "exhausted" : "normal"}
+      state={used ? "exhausted" : "normal"}
+      titleAction={<HideButton name={title} used={used} now={now} onHide={onHide} />}
       hints={<SlotHints slot={slot} how="open Claude Code" />}
       badges={
         <>

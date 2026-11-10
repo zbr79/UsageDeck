@@ -11,7 +11,7 @@ import type {
 // When a card is used up (its red ring), and when it can be used again. The widget cards, the
 // settings order and the widget's "hide until it resets" all read this one rule.
 
-interface UsageOf {
+export interface UsageOf {
   cursor: CursorUsage;
   grok: GrokUsage;
   codex: CodexUsage;
