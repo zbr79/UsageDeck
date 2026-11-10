@@ -1,6 +1,7 @@
-import { promises as fs } from 'fs'
 import path from 'path'
 import os from 'os'
+import { toIsoTimestamp } from '@/lib/time'
+import { logWarn } from '@/lib/log'
 
 const STATE_DB = path.join(
   process.env.APPDATA ?? path.join(os.homedir(), 'AppData', 'Roaming'),
@@ -29,25 +30,50 @@ export interface CursorUsage {
   grokResetAt: string | null
 }
 
+export function parseCursorUsage(
+  usageJson: Record<string, unknown> | null | undefined,
+  planJson?: Record<string, unknown> | null,
+  sandJson?: Record<string, unknown> | null,
+  accountName: string | null = null,
+): CursorUsage {
+  const pu = (usageJson?.planUsage ?? null) as Record<string, unknown> | null
+  const planInfo = (planJson?.planInfo ?? null) as Record<string, unknown> | null
+  const planName = typeof planInfo?.planName === 'string' ? planInfo.planName : null
+  const grokPercentUsed =
+    typeof sandJson?.usagePercent === 'number' ? sandJson.usagePercent : null
+  let grokResetAt: string | null = null
+  if (typeof sandJson?.nextResetTimestampUtc === 'string') {
+    const parsed = new Date(sandJson.nextResetTimestampUtc)
+    if (!Number.isNaN(parsed.getTime())) {
+      grokResetAt = parsed.toISOString()
+    }
+  }
+  return {
+    autoPercentUsed: typeof pu?.autoPercentUsed === 'number' ? pu.autoPercentUsed : null,
+    apiPercentUsed: typeof pu?.apiPercentUsed === 'number' ? pu.apiPercentUsed : null,
+    totalPercentUsed: typeof pu?.totalPercentUsed === 'number' ? pu.totalPercentUsed : null,
+    billingCycleEnd: toIsoTimestamp(usageJson?.billingCycleEnd),
+    totalSpend: typeof pu?.totalSpend === 'number' ? pu.totalSpend : null,
+    limit: typeof pu?.limit === 'number' ? pu.limit : null,
+    bonusSpend: typeof pu?.bonusSpend === 'number' ? pu.bonusSpend : null,
+    accountName,
+    planName,
+    grokPercentUsed,
+    grokResetAt,
+  }
+}
+
 let tokenCache: { at: number; token: string } | null = null
 let usageCache: { at: number; data: CursorUsage | null } | null = null
 
-function toIsoTimestamp(value: unknown): string | null {
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    const ms = value < 1e12 ? value * 1000 : value
-    const d = new Date(ms)
-    return Number.isNaN(d.getTime()) ? null : d.toISOString()
+interface CursorStateDb {
+  prepare: (sql: string) => {
+    get: (key: string) => { value?: string } | undefined
   }
-  if (typeof value === 'string' && value.trim()) {
-    const trimmed = value.trim()
-    if (/^\d+(\.\d+)?$/.test(trimmed)) return toIsoTimestamp(Number(trimmed))
-    const d = new Date(trimmed)
-    return Number.isNaN(d.getTime()) ? null : d.toISOString()
-  }
-  return null
+  close: () => void
 }
 
-async function readState(fn: (db: any) => string | null): Promise<string | null> {
+async function readState(fn: (db: CursorStateDb) => string | null): Promise<string | null> {
   try {
     // @ts-expect-error node:sqlite types not in @types/node 20
     const mod = await import('node:sqlite')
@@ -95,18 +121,8 @@ async function getToken(): Promise<string | null> {
       tokenCache = { at: Date.now(), token: row.value }
       return row.value
     }
-  } catch {
-    // fall through to raw scan
-  }
-  try {
-    const raw = await fs.readFile(STATE_DB, 'utf8')
-    const m = raw.match(/cursorAuth\/accessToken[^"]*"([A-Za-z0-9._-]{40,})"/)
-    if (m?.[1]) {
-      tokenCache = { at: Date.now(), token: m[1] }
-      return m[1]
-    }
-  } catch {
-    // no cursor install / locked db
+  } catch (err) {
+    logWarn('cursor', 'Could not read the Cursor auth token from state.vscdb', err)
   }
   return null
 }
@@ -132,14 +148,13 @@ export async function getCursorUsage(): Promise<CursorUsage | null> {
       signal: AbortSignal.timeout(10_000),
     })
     if (!res.ok) {
+      logWarn('cursor', `GetCurrentPeriodUsage returned HTTP ${res.status}`)
       usageCache = { at: Date.now(), data: null }
       return null
     }
     const json = await res.json()
-    const pu = json?.planUsage
-    let planName: string | null = null
-    let grokPercentUsed: number | null = null
-    let grokResetAt: string | null = null
+    let planJson: Record<string, unknown> | null = null
+    let sandJson: Record<string, unknown> | null = null
     const headers = {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
@@ -151,33 +166,16 @@ export async function getCursorUsage(): Promise<CursorUsage | null> {
       fetch(SAND_URL, { method: 'POST', headers, body: '{}', cache: 'no-store', signal: AbortSignal.timeout(10_000) }).catch(() => null),
     ])
     if (planRes?.ok) {
-      const pj = await planRes.json()
-      planName = pj?.planInfo?.planName ?? null
+      planJson = await planRes.json()
     }
     if (sandRes?.ok) {
-      const sj = await sandRes.json()
-      grokPercentUsed = typeof sj?.usagePercent === 'number' ? sj.usagePercent : null
-      grokResetAt =
-        typeof sj?.nextResetTimestampUtc === 'string'
-          ? new Date(sj.nextResetTimestampUtc).toISOString()
-          : null
+      sandJson = await sandRes.json()
     }
-    const data: CursorUsage = {
-      autoPercentUsed: typeof pu?.autoPercentUsed === 'number' ? pu.autoPercentUsed : null,
-      apiPercentUsed: typeof pu?.apiPercentUsed === 'number' ? pu.apiPercentUsed : null,
-      totalPercentUsed: typeof pu?.totalPercentUsed === 'number' ? pu.totalPercentUsed : null,
-      billingCycleEnd: toIsoTimestamp(json?.billingCycleEnd),
-      totalSpend: typeof pu?.totalSpend === 'number' ? pu.totalSpend : null,
-      limit: typeof pu?.limit === 'number' ? pu.limit : null,
-      bonusSpend: typeof pu?.bonusSpend === 'number' ? pu.bonusSpend : null,
-      accountName: await getAccountName(),
-      planName,
-      grokPercentUsed,
-      grokResetAt,
-    }
+    const data = parseCursorUsage(json, planJson, sandJson, await getAccountName())
     usageCache = { at: Date.now(), data }
     return data
-  } catch {
+  } catch (err) {
+    logWarn('cursor', 'Failed to fetch Cursor usage', err)
     usageCache = { at: Date.now(), data: null }
     return null
   }

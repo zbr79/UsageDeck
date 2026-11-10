@@ -22,6 +22,9 @@
     "productName": "UsageDeck",
     "files": [
       "main.js",
+      "server-manager.js",
+      "restart-policy.js",
+      "bg-sampler.js",
       "preload.js",
       "settings-preload.js"
     ],

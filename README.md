@@ -1,38 +1,38 @@
 # Provider Usage Monitor
 
-An always-on-top floating desktop widget that tracks AI subscription usage across **five providers**:
+A local desktop widget that shows how much of an AI subscription is left. It covers OpenCode Go, Cursor, Grok, Codex, and Claude.
 
-| Provider | What's shown | Data source |
-| --- | --- | --- |
-| **OpenCode Go** | Rolling / Weekly / Monthly usage per account, reset countdowns, DeepSeek peak-hour timer | `opencode.ai/zen/go/v1/usage` (API key) |
-| **Cursor** | First Party & API usage, plan badge, billing-cycle reset | Cursor's local auth token → `api2.cursor.sh` |
-| **Grok Bot** | Weekly usage %, plan badge, reset countdown | Cursor sand usage endpoint (`grok-bot` client) |
-| **Codex** | Usage %, plan badge (Free/Plus/Pro), reset countdown | Codex CLI auth → ChatGPT `wham/usage` |
-| **Claude** | Subscription status badge (Free / plan) | Claude Code local credentials |
+Keys and logins stay on this machine. OpenCode uses an API key you add in settings. The other providers are read from the apps already signed in on the computer.
 
-No accounts or passwords leave your machine except the API calls each provider's own app makes.
+## What it shows
 
----
+- OpenCode Go: rolling, weekly, and monthly usage, and the time until each window resets
+- Cursor: first-party and API usage, the plan name, and the billing-cycle reset
+- Grok: weekly usage and the time until reset
+- Codex: usage, plan, and the time until reset
+- Claude: signed-in state and plan
 
-## Architecture
+The panel stays compact until you expand it. Disabled accounts are hidden. An account that has used up its weekly or monthly allowance drops to the bottom, soonest reset first. Otherwise the account that changed most recently stays on top.
 
-```
-Next.js app (server)                 Electron widget (desktop/)
-├── /widget          floating panel  ├── frameless, always-on-top
-├── /settings        settings modal  ├── follows your theme (adaptive background)
-├── /                → /widget       ├── draggable, expandable
-└── /api/*           usage endpoints └── right-click menu (expand, refresh, settings, updates, quit)
-```
+Right-click the window, or press Shift+F10, to expand, refresh, open settings, check for updates, or quit. Settings can turn providers on or off, rename accounts, show or hide the DeepSeek peak-hour warning, and add or remove OpenCode accounts.
 
-- The widget and settings modal read from the same local API routes.
-- The server binds to **127.0.0.1:3100** — deliberately not 3000 so it can coexist with other local dev servers.
-- Every provider integration lives in `lib/`: `opencode.ts`, `cursor.ts`, `codex.ts`, `claude.ts`, `settings.ts`.
+Keyboard shortcuts on the widget:
+
+- `E` expands or collapses the panel
+- `R` refreshes usage
+- `Ctrl+,` opens settings
+- `Ctrl+Q` quits
+- `Shift+F10` opens the menu
+
+## How it runs
+
+A Next.js server and a small Electron window. The server listens on `127.0.0.1:3100`, so it can run next to other local apps. The window is frameless, always on top, and draggable. Both the widget and the settings screen use the same local API routes. Provider clients live in `lib/`.
 
 ## Requirements
 
-- **Node.js 20+** (built and tested on Node 24)
-- Windows (the widget uses Electron; the server runs anywhere)
-- Optional: Cursor, Codex CLI, Claude Code installed locally — each provider is auto-detected
+- Node.js 20 or newer
+- Windows for the Electron window. The server can run on its own anywhere.
+- Cursor, the Codex CLI, or Claude Code if you want those rows. A missing app is skipped.
 
 ## Install
 
@@ -48,18 +48,13 @@ Installed data lives in `%APPDATA%/UsageDeck/data`. If you are migrating from a 
 ## Develop from source
 
 ```bash
-# 1. Install dependencies
 npm install
-
-# 2. (Widget only) install Electron deps
 cd desktop && npm install && cd ..
-
-# 3. Build and run
 npm run build
-npm run start        # serves the app on http://127.0.0.1:3100
+npm run start
 ```
 
-`desktop/widget-launcher.vbs` starts the floating widget from the `desktop/` folder (hidden). Create a shortcut to it (via `wscript.exe`) for one-click launch. From source, data stays in the repo's `data/` folder.
+The site is at http://127.0.0.1:3100. From `desktop/`, `npm start` opens the widget. If port 3100 is already taken by another program, the window stays open and says so instead of exiting. A desktop shortcut can point at `desktop/widget-launcher.vbs`. From source, data stays in the repo's `data/` folder.
 
 To build the installer locally, run `npm run bundle` at the root, then `npm run dist` in `desktop/`. The installer lands in `desktop/dist/`.
 
@@ -69,58 +64,34 @@ Bump `version` in `desktop/package.json` and merge the change to `main`.
 
 The `Release` workflow then builds the installer on Windows and publishes it to GitHub Releases as `vX.Y.Z`, where installed apps pick it up. A push that leaves the version unchanged, or names a version that is already released, builds nothing. To rerun a release by hand, use **Run workflow** on the workflow's Actions page.
 
-## Accounts & Secrets
+## Local data
 
-Provider credentials **never live in this repo**:
+The installed app keeps its data in `%APPDATA%/UsageDeck/data`. A source checkout uses the repo's `data/` folder, and the server reads `USAGE_DATA_DIR` to point somewhere else. Below, `data/` means that folder.
 
-- `data/accounts.json` — OpenCode API accounts (`email` + `sk-...` key). **Gitignored.**
-- `data/settings.json` — toggles, display names, disabled accounts. **Gitignored.**
-- `data/.api-secret` — local token for key/account writes. **Gitignored.** Electron injects it automatically.
-- `data/accounts.example.json` — committed template showing the format
+In the repo, nothing under `data/` is committed except the example file.
 
-Cursor / Codex / Claude read their tokens directly from each app's local credential store at request time; nothing is copied into this project.
-
-## Features
-
-### Widget
-- Compact panel showing the active account + all providers; click expand for the full list
-- **Adaptive theme** — samples screen brightness every 3 seconds and fades between dark/light card styles
-- **Change detection** — when an account's usage percent moves, a green ▲ appears for 20s and the most recently used account floats to the top
-- **Reset countdowns** — each bar shows time until its window resets (`5d 7h 45m`); monthly resets always visible
-- **Status badges** — `Go` (OpenCode), plan names for Cursor/Codex, `Free` for Claude
-- **Copy key** — click the OpenCode icon on a card to copy that account's API key
-- Right-click menu: expand/collapse, refresh, settings, quit
-
-### Settings (right-click widget → Settings)
-- Per-provider tabs with on/off toggles, nickname editing, and account details
-- **Show provider names** master toggle — display `OpenCode / Cursor / Grok Bot / Codex / Claude` instead of nicknames on all cards
-- **DeepSeek Peak Hour Warning** toggle — show or hide the peak-hour countdown on the active OpenCode card
-- Add / remove / disable OpenCode accounts without touching files
-
-### Ranking rules
-1. Accounts at 100% on **monthly or weekly** usage sink to the bottom (red glow)
-2. Among exhausted accounts, the one resetting soonest is ranked first
-3. Otherwise, the most recently used account floats to the top (green glow)
+- `data/accounts.json` stores OpenCode emails and API keys. Keys are encrypted with AES-256-GCM. The key comes from `data/.api-secret`. An older plaintext file is encrypted the next time it is read. See `data/accounts.example.json` for the shape before encryption.
+- `data/settings.json` stores toggles, names, and disabled accounts.
+- `data/.api-secret` is a local token for account and settings writes, and for encrypting stored API keys. The desktop app sends it for you.
+- Crash logs: the Electron window writes `logs\main.log` under its app data folder (`%APPDATA%\UsageDeck` installed, `%APPDATA%\provider-usage-widget` from source). The server writes `data/logs/server.log`. The widget menu has **Open log folder**.
 
 ## Scripts
 
-| Command | Description |
-| --- | --- |
-| `npm run dev` | Development server on http://127.0.0.1:3100 |
-| `npm run build` | Production build |
-| `npm run start` | Serve the production build on http://127.0.0.1:3100 |
-| `npm run bundle` | Production build, then assemble the server bundle in `desktop/server/` for the installer |
+- `npm run dev` starts the development server on http://127.0.0.1:3100
+- `npm run build` builds for production
+- `npm run start` serves that build
+- `npm run bundle` builds for production, then assembles the server bundle in `desktop/server/` for the installer
+- `npm test` runs the unit tests
+- `npm run lint` runs ESLint
+- `npm run typecheck` checks TypeScript
 
-## Project layout
+The tests cover ranking, reset text, settings defaults, the local write token, encrypted account keys, provider response parsers, and account validation. They do not call provider APIs.
+
+## Layout
 
 ```
-app/
-├── api/            # usage endpoints (opencode, cursor, codex, claude, settings, accounts, key)
-├── components/     # SettingsModal, toast system
-├── page.tsx        # redirects / → /widget
-├── settings/       # settings modal overlay
-└── widget/         # floating panel UI
-desktop/            # Electron wrapper (main.js, preload, launchers)
-lib/                # provider integrations + settings store
-data/               # local secrets (gitignored)
+app/        pages and API routes
+desktop/    Electron window
+lib/        provider clients, ranking, and settings
+data/       local accounts and settings, not committed
 ```

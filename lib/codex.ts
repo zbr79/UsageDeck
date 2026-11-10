@@ -1,6 +1,7 @@
 import { promises as fs } from 'fs'
 import path from 'path'
 import os from 'os'
+import { logWarn } from '@/lib/log'
 
 const AUTH_FILE = path.join(os.homedir(), '.codex', 'auth.json')
 const USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage'
@@ -15,6 +16,28 @@ export interface CodexUsage {
   resetAt: string | null
   creditsBalance: number | null
   limitReached: boolean
+}
+
+export function parseCodexUsage(json: Record<string, unknown> | null | undefined): CodexUsage {
+  const rl = (json?.rate_limit ?? null) as Record<string, unknown> | null
+  const primary = (rl?.primary_window ?? null) as Record<string, unknown> | null
+  const credits = (json?.credits ?? null) as Record<string, unknown> | null
+  return {
+    email: typeof json?.email === 'string' ? json.email : null,
+    planType: typeof json?.plan_type === 'string' ? json.plan_type : null,
+    usedPercent: typeof primary?.used_percent === 'number' ? primary.used_percent : null,
+    limitWindowSeconds:
+      typeof primary?.limit_window_seconds === 'number' ? primary.limit_window_seconds : null,
+    resetAt:
+      typeof primary?.reset_at === 'number'
+        ? new Date(primary.reset_at * 1000).toISOString()
+        : null,
+    creditsBalance:
+      credits?.balance != null && !Number.isNaN(Number(credits.balance))
+        ? Number(credits.balance)
+        : null,
+    limitReached: rl?.limit_reached === true,
+  }
 }
 
 let usageCache: { at: number; data: CodexUsage | null } | null = null
@@ -34,6 +57,7 @@ async function readAuth(): Promise<CodexAuth | null> {
   try {
     return JSON.parse(await fs.readFile(AUTH_FILE, 'utf8'))
   } catch {
+    // Expected when Codex CLI is not installed or signed in
     return null
   }
 }
@@ -68,7 +92,8 @@ async function refreshTokens(auth: CodexAuth): Promise<CodexAuth | null> {
     }
     await fs.writeFile(AUTH_FILE, JSON.stringify(next, null, 2), 'utf8')
     return next
-  } catch {
+  } catch (err) {
+    logWarn('codex', 'Failed to refresh Codex OAuth token', err)
     return null
   }
 }
@@ -105,31 +130,16 @@ export async function getCodexUsage(): Promise<CodexUsage | null> {
       res = await fetchUsage(refreshed.tokens.access_token, refreshed.tokens.account_id)
     }
     if (!res.ok) {
+      logWarn('codex', `Usage endpoint returned HTTP ${res.status}`)
       usageCache = { at: Date.now(), data: null }
       return null
     }
     const json = await res.json()
-    const rl = json?.rate_limit
-    const primary = rl?.primary_window
-    const data: CodexUsage = {
-      email: typeof json?.email === 'string' ? json.email : null,
-      planType: typeof json?.plan_type === 'string' ? json.plan_type : null,
-      usedPercent: typeof primary?.used_percent === 'number' ? primary.used_percent : null,
-      limitWindowSeconds:
-        typeof primary?.limit_window_seconds === 'number' ? primary.limit_window_seconds : null,
-      resetAt:
-        typeof primary?.reset_at === 'number'
-          ? new Date(primary.reset_at * 1000).toISOString()
-          : null,
-      creditsBalance:
-        json?.credits?.balance != null && !Number.isNaN(Number(json.credits.balance))
-          ? Number(json.credits.balance)
-          : null,
-      limitReached: rl?.limit_reached === true,
-    }
+    const data = parseCodexUsage(json)
     usageCache = { at: Date.now(), data }
     return data
-  } catch {
+  } catch (err) {
+    logWarn('codex', 'Failed to fetch Codex usage', err)
     usageCache = { at: Date.now(), data: null }
     return null
   }

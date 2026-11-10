@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Provider Usage Monitor",
-  description: "Usage monitor for OpenCode Go, Cursor, Grok Bot, Codex and Claude",
+  description: "Local desktop widget that tracks AI subscription usage for OpenCode, Cursor, Grok, Codex, and Claude.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
