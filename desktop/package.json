@@ -53,7 +53,8 @@
     "publish": {
       "provider": "github",
       "owner": "zbr79",
-      "repo": "UsageDeck"
+      "repo": "UsageDeck",
+      "releaseType": "release"
     }
   }
 }
