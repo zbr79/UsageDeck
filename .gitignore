@@ -1,24 +1,14 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
-
 # dependencies
 /node_modules
-/.pnp
-.pnp.*
-.yarn/*
-!.yarn/patches
-!.yarn/plugins
-!.yarn/releases
-!.yarn/versions
+
+# build output
+/dist
+/src-tauri/target/
+/src-tauri/gen/
+*.tsbuildinfo
 
 # testing
 /coverage
-
-# next.js
-/.next/
-/out/
-
-# production
-/build
 
 # misc
 .DS_Store
@@ -26,35 +16,17 @@
 
 # debug
 npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
+# env files
 .env*
 
-# vercel
-.vercel
+# secrets (all local app data)
+/data/
 
-# typescript
-*.tsbuildinfo
-next-env.d.ts
-
-# secrets
-/data/accounts.json
-/data/settings.json
-/data/.api-secret
-
-# desktop widget
-/desktop/node_modules/
-
-/desktop/*.log
-
-# agent instructions (next dev recreates AGENTS.md)
+# agent instructions
 /AGENTS.md
 /CLAUDE.md
 /.cursorrules
 
-# desktop packaging output
-/desktop/server/
-/desktop/dist/
+# agent worktrees
+/.claude/worktrees/

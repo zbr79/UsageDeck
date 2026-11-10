@@ -1,42 +1,100 @@
 name: Release
 
+# Publishes release v<version> when src-tauri/tauri.conf.json reaches main with a version that
+# has no complete release yet. The installed app's updater (src-tauri/src/updater.rs) reads the
+# latest release and installs its UsageDeck-Setup.exe, so that asset name must not change.
 on:
   push:
     branches: [main]
-    paths: ['desktop/package.json']
+    paths: [src-tauri/tauri.conf.json]
   workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   release:
+    name: Build and publish the installer
     runs-on: windows-latest
+    timeout-minutes: 45
     defaults:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+
+      - name: Read the version and look for its release
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          tag="v$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          # A tag whose release lacks UsageDeck-Setup.exe (a run that failed after publishing)
+          # is built again; tauri-action reuses the release and replaces its assets.
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null \
+            && gh release view "$tag" --json assets --jq '.assets[].name' | grep -qx 'UsageDeck-Setup.exe'; then
+            echo "$tag is already released; nothing to do."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Releasing $tag."
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.version.outputs.publish == 'true'
+        uses: actions/setup-node@v5
         with:
           node-version: 22
-      - name: Skip if this version is already released
-        id: version
-        run: |
-          tag="v$(node -p "require('./desktop/package.json').version")"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          fi
-      - if: steps.version.outputs.exists != 'true'
+          cache: npm
+
+      - if: steps.version.outputs.publish == 'true'
+        name: Cache cargo registry, tools and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/bin
+            src-tauri/target
+          key: cargo-release-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            cargo-release-${{ runner.os }}-
+            cargo-${{ runner.os }}-
+
+      - if: steps.version.outputs.publish == 'true'
         run: npm ci
-      - if: steps.version.outputs.exists != 'true'
-        run: npm ci
-        working-directory: desktop
-      - if: steps.version.outputs.exists != 'true'
-        run: npm run bundle
-      - if: steps.version.outputs.exists != 'true'
-        run: npx electron-builder --win --publish always
-        working-directory: desktop
+
+      - if: steps.version.outputs.publish == 'true'
+        name: Build the installer and publish the release
+        uses: tauri-apps/tauri-action@v0
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseName: UsageDeck v__VERSION__
+          releaseBody: |
+            Download UsageDeck-Setup.exe and run it. Installed copies update themselves.
+          releaseDraft: false
+          prerelease: false
+
+      - if: steps.version.outputs.publish == 'true'
+        name: Upload the installer as UsageDeck-Setup.exe
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # The cached target folder can hold installers of earlier versions, so match this one.
+          shopt -s nullglob
+          setups=(src-tauri/target/release/bundle/nsis/*_"${VERSION}"_*-setup.exe)
+          if [ "${#setups[@]}" -ne 1 ]; then
+            echo "Expected one NSIS installer for $VERSION, found: ${setups[*]:-none}"
+            exit 1
+          fi
+          cp "${setups[0]}" UsageDeck-Setup.exe
+          gh release upload "$TAG" UsageDeck-Setup.exe --clobber

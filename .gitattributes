@@ -1,0 +1,7 @@
+# Normalise to LF everywhere (stops CRLF churn from core.autocrlf).
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.vbs text eol=crlf
+*.png binary
+*.ico binary

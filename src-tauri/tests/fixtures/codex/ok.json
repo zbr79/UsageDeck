@@ -1,0 +1,24 @@
+{
+  "user_id": "REDACTED",
+  "account_id": "REDACTED",
+  "email": "user@example.com",
+  "plan_type": "plus",
+  "rate_limit": {
+    "allowed": true,
+    "limit_reached": false,
+    "primary_window": {
+      "used_percent": 37,
+      "limit_window_seconds": 18000,
+      "reset_after_seconds": 6120,
+      "reset_at": 1792000000
+    },
+    "secondary_window": {
+      "used_percent": 81,
+      "limit_window_seconds": 604800,
+      "reset_after_seconds": 345600,
+      "reset_at": 1792345600
+    }
+  },
+  "credits": { "has_credits": false, "unlimited": false, "balance": "12.5" },
+  "rate_limit_reset_credits": { "available_count": 2 }
+}
