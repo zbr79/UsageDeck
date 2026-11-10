@@ -19,6 +19,38 @@ See [SECURITY.md](SECURITY.md) for exactly what is read, stored and sent.
 
 ---
 
+## Install
+
+Download and run the installer:
+**<https://github.com/zbr79/UsageDeck/releases/latest/download/UsageDeck-Setup.exe>**
+
+This link always serves the newest version. The installer is per-user and needs no admin rights.
+It is not code-signed, so Windows SmartScreen may show "Windows protected your PC": choose
+**More info → Run anyway**.
+
+Updates install themselves. The app checks GitHub 15 seconds after it starts and then every 6
+hours. When a newer version is out, it downloads the installer, checks its size and SHA-256
+against the release, and asks "UsageDeck X is ready to install. Restart now?". To check at once,
+use the tray menu → **Check for updates**. The tray menu's first line shows the installed version.
+
+### Coming from UsageDeck 1.0.x
+
+Versions 1.0.0 and 1.0.1 were a different app (Electron). Both apps appear as "UsageDeck" under
+Settings → Apps; the old one has version 1.0.x. The old app does not update to this one, and it
+keeps its own data. To move your accounts and settings across:
+
+1. Install this version, then quit it (tray menu → **Quit**) and quit the old app.
+2. In a Command Prompt, copy the old app's data:
+
+   ```bat
+   "%LOCALAPPDATA%\UsageDeck\usagedeck.exe" --import-old-data "%APPDATA%\UsageDeck\data"
+   ```
+
+   This reads the old `accounts.json`, `settings.json` and `.api-secret` and moves the OpenCode
+   keys into Windows Credential Manager. It never prints a key.
+
+3. Uninstall the 1.0.x "UsageDeck" from Settings → Apps, then start UsageDeck again.
+
 ## Architecture
 
 ```
@@ -129,7 +161,8 @@ uninstaller to also remove settings, logs and the stored OpenCode keys (details 
 
 Headless: each prints a short report and exits.
 
-- `usagedeck.exe --import-old-data <dir>`: one-time copy of the old Next.js app's `data/` folder.
+- `usagedeck.exe --import-old-data <dir>`: one-time copy of the old Next.js or Electron app's
+  `data/` folder (the installed 1.0.x app kept it in `%APPDATA%\UsageDeck\data`).
   Settings go through the usual validation; the seen-accounts list and usage cache are copied when
   their shape matches; OpenCode keys (plaintext or `enc:v1:`) move into Windows Credential Manager.
   Keys are never printed.
@@ -150,6 +183,20 @@ Headless: each prints a short report and exits.
 
 CI (GitHub Actions, Windows) runs the frontend build, tests and format check, `cargo fmt --check`,
 `cargo clippy -D warnings`, `cargo test`, and `npm audit` on every push and pull request.
+
+## Releasing
+
+1. Raise the version in `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` and `package.json`,
+   then run `npm install` and `cargo check` (in `src-tauri/`) so both lock files follow.
+   `tests/version.test.ts` fails if any of the five disagree.
+2. Merge to `main`.
+
+The **Release** workflow (`.github/workflows/release.yml`) runs when `tauri.conf.json` changes on
+`main`. If `v<version>` has no release yet, it builds the NSIS installer and publishes release
+`v<version>` with the installer under two names: the versioned file from Tauri and
+`UsageDeck-Setup.exe`. The permanent download link and the in-app updater both use
+`UsageDeck-Setup.exe`. A version that is already released is skipped, so other edits to
+`tauri.conf.json` publish nothing. The workflow can also be started by hand from the Actions tab.
 
 ## History
 
