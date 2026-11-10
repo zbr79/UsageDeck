@@ -1,6 +1,9 @@
 import { promises as fs } from 'fs'
 import path from 'path'
-import { DATA_DIR } from './paths'
+import { dataDir } from '@/lib/data-dir'
+import { decryptKey, encryptKey, isEncryptedKey } from '@/lib/key-crypto'
+import { logWarn } from '@/lib/log'
+import { getOrCreateSecret } from '@/lib/secret'
 
 export interface Account {
   email: string
@@ -19,22 +22,74 @@ export interface Usage {
   monthly: UsageWindow
 }
 
-const ACCOUNTS_FILE = path.join(DATA_DIR, 'accounts.json')
 const USAGE_URL = 'https://opencode.ai/zen/go/v1/usage'
 
-export async function getAccounts(): Promise<Account[]> {
-  try {
-    const raw = await fs.readFile(ACCOUNTS_FILE, 'utf8')
-    const parsed = JSON.parse(raw)
-    return Array.isArray(parsed) ? parsed : []
-  } catch {
-    return []
+function accountsFile(): string {
+  return path.join(dataDir(), 'accounts.json')
+}
+
+function isUsageWindow(value: unknown): value is UsageWindow {
+  if (!value || typeof value !== 'object') return false
+  const window = value as UsageWindow
+  return (
+    typeof window.status === 'string' &&
+    typeof window.percent === 'number' &&
+    typeof window.resetsAt === 'string'
+  )
+}
+
+export function parseOpenCodeUsage(json: unknown): Usage | null {
+  const usage = (json as { usage?: unknown } | null)?.usage
+  if (!isUsageWindow((usage as Usage | undefined)?.rolling)) return null
+  if (!isUsageWindow((usage as Usage | undefined)?.weekly)) return null
+  if (!isUsageWindow((usage as Usage | undefined)?.monthly)) return null
+  const parsed = usage as Usage
+  return {
+    rolling: parsed.rolling,
+    weekly: parsed.weekly,
+    monthly: parsed.monthly,
   }
 }
 
+async function writeAccounts(accounts: Account[], secret: string): Promise<void> {
+  const file = accountsFile()
+  await fs.mkdir(path.dirname(file), { recursive: true })
+  const stored = accounts.map((account) => ({
+    email: account.email,
+    key: isEncryptedKey(account.key) ? account.key : encryptKey(account.key, secret),
+  }))
+  await fs.writeFile(file, JSON.stringify(stored, null, 2), { encoding: 'utf8', mode: 0o600 })
+}
+
+export async function getAccounts(): Promise<Account[]> {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(await fs.readFile(accountsFile(), 'utf8'))
+  } catch {
+    // Expected when accounts.json has not been created yet
+    return []
+  }
+  if (!Array.isArray(parsed)) return []
+  const secret = await getOrCreateSecret()
+  let needsMigration = false
+  const accounts: Account[] = []
+  for (const row of parsed) {
+    const email = String(row?.email ?? '').trim()
+    const storedKey = String(row?.key ?? '')
+    if (!email || !storedKey) continue
+    if (!isEncryptedKey(storedKey)) needsMigration = true
+    try {
+      accounts.push({ email, key: decryptKey(storedKey, secret) })
+    } catch (err) {
+      logWarn('opencode', `Could not decrypt the API key for ${email}`, err)
+    }
+  }
+  if (needsMigration) await writeAccounts(accounts, secret)
+  return accounts
+}
+
 export async function saveAccounts(accounts: Account[]): Promise<void> {
-  await fs.mkdir(DATA_DIR, { recursive: true })
-  await fs.writeFile(ACCOUNTS_FILE, JSON.stringify(accounts, null, 2), 'utf8')
+  await writeAccounts(accounts, await getOrCreateSecret())
 }
 
 const usageCache = new Map<string, { at: number; data: Usage | null }>()
@@ -78,8 +133,7 @@ export async function getUsage(
     let data: Usage | null = null
     const prev = lastSeen.get(email) ?? null
     if (res.ok) {
-      const json = await res.json()
-      data = (json?.usage as Usage) ?? null
+      data = parseOpenCodeUsage(await res.json())
       if (data) {
         if (prev) {
           const detail = diffText(prev, data)
@@ -87,10 +141,13 @@ export async function getUsage(
         }
         lastSeen.set(email, data)
       }
+    } else {
+      logWarn('opencode', `Usage request for ${email} returned HTTP ${res.status}`)
     }
     usageCache.set(email, { at: Date.now(), data })
     return { usage: data, prev }
-  } catch {
+  } catch (err) {
+    logWarn('opencode', `Usage request failed for ${email}`, err)
     usageCache.set(email, { at: Date.now(), data: null })
     return { usage: null, prev: lastSeen.get(email) ?? null }
   }

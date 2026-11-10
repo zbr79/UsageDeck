@@ -1,6 +1,6 @@
 {
   "name": "provider-usage-widget",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "UsageDeck desktop widget",
   "author": "zbr79",
   "private": true,
@@ -22,6 +22,9 @@
     "productName": "UsageDeck",
     "files": [
       "main.js",
+      "server-manager.js",
+      "restart-policy.js",
+      "bg-sampler.js",
       "preload.js",
       "settings-preload.js"
     ],

@@ -1,21 +1,24 @@
 import { promises as fs } from 'fs'
 import path from 'path'
-import { DATA_DIR } from './paths'
 import crypto from 'crypto'
 import { NextRequest } from 'next/server'
+import { dataDir } from '@/lib/data-dir'
 
-const FILE = path.join(DATA_DIR, '.api-secret')
+function secretFile(): string {
+  return path.join(dataDir(), '.api-secret')
+}
 
 export async function getOrCreateSecret(): Promise<string> {
+  const file = secretFile()
   try {
-    const existing = (await fs.readFile(FILE, 'utf8')).trim()
+    const existing = (await fs.readFile(file, 'utf8')).trim()
     if (existing) return existing
   } catch {
     // create below
   }
   const secret = crypto.randomBytes(32).toString('hex')
-  await fs.mkdir(path.dirname(FILE), { recursive: true })
-  await fs.writeFile(FILE, secret, { encoding: 'utf8', mode: 0o600 })
+  await fs.mkdir(path.dirname(file), { recursive: true })
+  await fs.writeFile(file, secret, { encoding: 'utf8', mode: 0o600 })
   return secret
 }
 
