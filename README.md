@@ -65,12 +65,9 @@ To build the installer locally, run `npm run bundle` at the root, then `npm run 
 
 ## Releasing
 
-1. Bump `version` in `desktop/package.json`.
-2. Commit the change.
-3. Tag it with `git tag vX.Y.Z`.
-4. Push the tag with `git push origin vX.Y.Z`.
+Bump `version` in `desktop/package.json` and merge the change to `main`.
 
-The `Release` workflow builds the installer on Windows and publishes it to GitHub Releases, where installed apps pick it up. The tag must match the version in `desktop/package.json`.
+The `Release` workflow then builds the installer on Windows and publishes it to GitHub Releases as `vX.Y.Z`, where installed apps pick it up. A push that leaves the version unchanged, or names a version that is already released, builds nothing. To rerun a release by hand, use **Run workflow** on the workflow's Actions page.
 
 ## Accounts & Secrets
 
