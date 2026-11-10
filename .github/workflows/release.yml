@@ -1,0 +1,42 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths: ['desktop/package.json']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Skip if this version is already released
+        id: version
+        run: |
+          tag="v$(node -p "require('./desktop/package.json').version")"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.version.outputs.exists != 'true'
+        run: npm ci
+      - if: steps.version.outputs.exists != 'true'
+        run: npm ci
+        working-directory: desktop
+      - if: steps.version.outputs.exists != 'true'
+        run: npm run bundle
+      - if: steps.version.outputs.exists != 'true'
+        run: npx electron-builder --win --publish always
+        working-directory: desktop
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

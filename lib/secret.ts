@@ -1,9 +1,10 @@
 import { promises as fs } from 'fs'
 import path from 'path'
+import { DATA_DIR } from './paths'
 import crypto from 'crypto'
 import { NextRequest } from 'next/server'
 
-const FILE = path.join(process.cwd(), 'data', '.api-secret')
+const FILE = path.join(DATA_DIR, '.api-secret')
 
 export async function getOrCreateSecret(): Promise<string> {
   try {

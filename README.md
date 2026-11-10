@@ -21,7 +21,7 @@ Next.js app (server)                 Electron widget (desktop/)
 ├── /widget          floating panel  ├── frameless, always-on-top
 ├── /settings        settings modal  ├── follows your theme (adaptive background)
 ├── /                → /widget       ├── draggable, expandable
-└── /api/*           usage endpoints └── right-click menu (expand, refresh, settings, quit)
+└── /api/*           usage endpoints └── right-click menu (expand, refresh, settings, updates, quit)
 ```
 
 - The widget and settings modal read from the same local API routes.
@@ -34,7 +34,18 @@ Next.js app (server)                 Electron widget (desktop/)
 - Windows (the widget uses Electron; the server runs anywhere)
 - Optional: Cursor, Codex CLI, Claude Code installed locally — each provider is auto-detected
 
-## Setup
+## Install
+
+1. Download `UsageDeck-Setup-x.y.z.exe` from the [latest release](https://github.com/zbr79/UsageDeck/releases/latest) and run it.
+2. Launch UsageDeck from the desktop shortcut or Start menu.
+
+The installed app checks for updates 10 seconds after launch and every 6 hours, downloads them in the background, and asks before restarting to install. To check on demand, right-click the widget and choose **Check for Updates…**.
+
+The installer is unsigned, so Windows SmartScreen shows a warning. Choose **More info**, then **Run anyway**.
+
+Installed data lives in `%APPDATA%/UsageDeck/data`. If you are migrating from a source checkout, copy your old `data/` files (`accounts.json`, `settings.json`, `.api-secret`) there.
+
+## Develop from source
 
 ```bash
 # 1. Install dependencies
@@ -48,9 +59,15 @@ npm run build
 npm run start        # serves the app on http://127.0.0.1:3100
 ```
 
-### Desktop shortcut
+`desktop/widget-launcher.vbs` starts the floating widget from the `desktop/` folder (hidden). Create a shortcut to it (via `wscript.exe`) for one-click launch. From source, data stays in the repo's `data/` folder.
 
-`desktop/widget-launcher.vbs` starts the floating widget from the `desktop/` folder (hidden). Create a shortcut to it (via `wscript.exe`) for one-click launch.
+To build the installer locally, run `npm run bundle` at the root, then `npm run dist` in `desktop/`. The installer lands in `desktop/dist/`.
+
+## Releasing
+
+Bump `version` in `desktop/package.json` and merge the change to `main`.
+
+The `Release` workflow then builds the installer on Windows and publishes it to GitHub Releases as `vX.Y.Z`, where installed apps pick it up. A push that leaves the version unchanged, or names a version that is already released, builds nothing. To rerun a release by hand, use **Run workflow** on the workflow's Actions page.
 
 ## Accounts & Secrets
 
@@ -92,6 +109,7 @@ Cursor / Codex / Claude read their tokens directly from each app's local credent
 | `npm run dev` | Development server on http://127.0.0.1:3100 |
 | `npm run build` | Production build |
 | `npm run start` | Serve the production build on http://127.0.0.1:3100 |
+| `npm run bundle` | Production build, then assemble the server bundle in `desktop/server/` for the installer |
 
 ## Project layout
 

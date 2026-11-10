@@ -1,5 +1,6 @@
 import { promises as fs } from 'fs'
 import path from 'path'
+import { DATA_DIR } from './paths'
 
 export type ThemeMode = 'auto' | 'light' | 'dark' | 'white'
 export type PanelTheme = 'light' | 'dark'
@@ -17,7 +18,7 @@ export interface Settings {
   disabledAccounts: string[]
 }
 
-const FILE = path.join(process.cwd(), 'data', 'settings.json')
+const FILE = path.join(DATA_DIR, 'settings.json')
 
 export async function getSettings(): Promise<Settings> {
   try {

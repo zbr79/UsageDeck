@@ -1,5 +1,6 @@
 import { promises as fs } from 'fs'
 import path from 'path'
+import { DATA_DIR } from './paths'
 
 export interface Account {
   email: string
@@ -18,7 +19,6 @@ export interface Usage {
   monthly: UsageWindow
 }
 
-const DATA_DIR = path.join(process.cwd(), 'data')
 const ACCOUNTS_FILE = path.join(DATA_DIR, 'accounts.json')
 const USAGE_URL = 'https://opencode.ai/zen/go/v1/usage'
 
