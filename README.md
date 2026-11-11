@@ -58,21 +58,18 @@ all shortcuts. Each release also has the plain NSIS installer, `UsageDeck_<versi
 
 UsageDeck checks GitHub 15 seconds after it starts and then every hour. When a newer version is
 out, it downloads the installer in the background and checks its size and SHA-256 against the
-release. Then a banner at the top of the widget says "Update X is ready":
+release. The widget shows nothing about updates. Everything is in Settings → General → Updates,
+and a dot on **General** in the settings navigation means an update is ready:
 
-- **Restart** installs the update silently and starts the new version. No installer window
-  opens; the widget disappears for a few seconds and comes back updated.
-- **Later** hides the banner until a newer version comes out or UsageDeck restarts. The download
-  is kept, so Restart later does not download again.
+- **Restart to update** installs the update silently and starts the new version. No installer
+  window opens; the widget disappears for a few seconds and comes back updated. Until you restart,
+  the download is kept, so it is not downloaded again.
+- **Check for updates** checks at once. The same page shows the installed version, when UsageDeck
+  last checked and what that check found (also a background check that showed nothing).
 
-Background checks show nothing else: no "up to date" note and no errors. To check at once, use
-**Check for updates** in either of these places. The result shows in the widget's banner.
-
-- Settings → General → Updates, which also shows the installed version, when UsageDeck last
-  checked and what that check found (also a background check that showed nothing), and offers
-  **Restart to update** once an update is ready;
-- the tray menu, which also brings up the widget. The tray menu's first line shows the installed
-  version.
+Background checks show nothing else: no "up to date" note and no errors. The tray menu's **Check
+for updates** also checks at once and opens Settings → General, where the result shows. The tray
+menu's first line shows the installed version.
 
 ### Coming from UsageDeck 1.0.x
 
@@ -155,7 +152,8 @@ You do not need the log files to see why a card is stale or an update did not sh
 - **Settings → General → Updates** shows the last update check: when, manual or background, the
   result, and the newest release GitHub named.
 - **Copy diagnostics** (on both pages) copies all of it as text, with the UsageDeck and Windows
-  versions, ready to paste into an issue.
+  versions and the Claude models of the last 7 days that have no price, ready to paste into an
+  issue.
 
 The report never contains a token, a key or an account name. Server replies are cut to 200
 characters and anything that looks like a token is replaced with `[redacted]`.
@@ -188,8 +186,6 @@ uninstaller to also remove settings, logs and the stored OpenCode keys (details 
   or sooner if usage drops. A hidden card leaves nothing on the widget; right-click → **Show
   hidden** brings it back early
 - **Unavailable banner** — "Usage unavailable · updated 3m ago" with Retry
-- **Update banner** — "Update X is ready" with Restart and Later, and the progress and result of a
-  check you started (see [Updates](#updates))
 - **Copy key** — hover the OpenCode icon on a card (a copy glyph appears) and click; the key is
   copied by the Rust side and never passes through the page
 - Settings changes apply live; right-click or **Shift+F10** opens the menu
@@ -213,6 +209,10 @@ uninstaller to also remove settings, logs and the stored OpenCode keys (details 
 - Claude page: a "Spend & pace" section with the API-equivalent spend of Claude Code on this PC
   (last hour, 5 h, today, 7 days, $/h), a 24-hour bar chart, spend per model, each window's
   speed, even pace and projected limit time, and what 1% of the weekly limit is worth in dollars.
+  Dollars use Anthropic's API list price of each model (input, output, cache reads, and cache
+  writes at 1.25x input for 5 minutes or 2x for 1 hour); Haiku 5.5 is priced per reply, at the
+  higher rate for a prompt over 100K tokens. A model without a price is never counted as $0: a
+  "Not priced: <model ids>" line names it, and its replies stay out of the dollars
   The widget's Claude card shows the spend rate after its name (`$71/h`); its meter colours follow
   the percentage only (amber from 80%, red from 100%), and pace stays in the meter tooltip
 - About: version, log folder and the repository

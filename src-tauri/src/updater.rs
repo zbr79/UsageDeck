@@ -1,6 +1,6 @@
 //! Self-updater: finds the newest GitHub release, downloads its `UsageDeck-Setup.exe`, checks it
 //! against the size and SHA-256 GitHub reports, and reports what it is doing as an
-//! [`UpdateStatus`] the widget and the settings window render (event `update-status`).
+//! [`UpdateStatus`] the settings window renders (event `update-status`).
 //!
 //! The release workflow (.github/workflows/release.yml) uploads that installer to every release.
 //! Background checks run 15 s after startup and then every hour; "Check for updates" in the tray
@@ -199,12 +199,6 @@ pub fn get_update_status(updater: tauri::State<'_, Updater>) -> UpdateStatus {
 #[tauri::command]
 pub fn check_for_updates(app: AppHandle) -> UpdateStatus {
     check_now(&app)
-}
-
-/// "Later": hide the widget's banner for the ready version. The download stays cached.
-#[tauri::command]
-pub fn dismiss_update(app: AppHandle) {
-    update(&app, Machine::dismiss);
 }
 
 /// Start the ready installer silently, then quit so it can replace the exe; it relaunches the

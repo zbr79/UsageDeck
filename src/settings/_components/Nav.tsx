@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import type { WidgetProvider } from "@/lib/types";
+import { useUpdateStatus } from "@/lib/updates";
 import { PAGE_TITLES, PROVIDER_ICONS, type PageId } from "../_lib/pages";
 
 function NavItem({
@@ -8,12 +9,15 @@ function NavItem({
   onSelect,
   icon,
   indent,
+  badge,
 }: {
   page: PageId;
   current: PageId;
   onSelect: (page: PageId) => void;
   icon?: ReactNode;
   indent?: boolean;
+  /** a dot after the title; the text is what assistive tech reads for it */
+  badge?: string;
 }) {
   const selected = page === current;
   return (
@@ -34,6 +38,13 @@ function NavItem({
         )}
         {icon}
         <span className="truncate">{PAGE_TITLES[page]}</span>
+        {badge && (
+          <span
+            role="img"
+            aria-label={badge}
+            className="ml-auto size-2 shrink-0 rounded-full bg-(--p-accent)"
+          />
+        )}
       </button>
     </li>
   );
@@ -51,6 +62,7 @@ export function Nav({
   providerOrder: readonly WidgetProvider[];
   light: boolean;
 }) {
+  const updateReady = useUpdateStatus()?.state === "ready";
   const item = (page: PageId, icon?: ReactNode, indent?: boolean) => (
     <NavItem
       key={page}
@@ -59,6 +71,7 @@ export function Nav({
       onSelect={onSelect}
       icon={icon}
       indent={indent}
+      badge={page === "general" && updateReady ? "Update ready" : undefined}
     />
   );
   return (

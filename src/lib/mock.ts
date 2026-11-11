@@ -481,6 +481,7 @@ export function paceScenario(scenario: PaceScenario, now = NOW): ClaudePace {
       ],
       hourly: [...PROBE_HOURLY],
       unpricedReplies: 0,
+      unpricedModels: [],
       scannedAt: now - 20_000,
       backfilling: false,
     },
@@ -528,6 +529,7 @@ export function paceScenario(scenario: PaceScenario, now = NOW): ClaudePace {
       break;
     case "unpriced":
       pace.spend.unpricedReplies = 17;
+      pace.spend.unpricedModels = ["claude-opus-6", "claude-sonnet-6"];
       break;
   }
   return pace;
@@ -587,7 +589,7 @@ const MOCK_PHASES: Record<string, UpdatePhase> = {
   downloading: { state: "downloading", version: MOCK_NEXT },
   upToDate: { state: "upToDate" },
   failed: { state: "failed", message: "network error: could not reach api.github.com" },
-  ready: { state: "ready", version: MOCK_NEXT, dismissed: false },
+  ready: { state: "ready", version: MOCK_NEXT },
 };
 // `?update=ready` starts the preview in that phase (idle, checking, downloading, upToDate, failed,
 // ready; `never` is idle with no check yet). `?updateResult=ready` (or upToDate, failed) is what
@@ -634,10 +636,7 @@ export const mockUpdates = {
     return () => void updateListeners.delete(cb);
   },
   async check() {
-    if (updateStatus.state === "ready") {
-      setUpdatePhase({ ...updateStatus, dismissed: false });
-      return;
-    }
+    if (updateStatus.state === "ready") return;
     setUpdatePhase(MOCK_PHASES.checking);
     await wait(MOCK_STEP_MS);
     const result = query().get("updateResult") ?? "upToDate";
@@ -650,10 +649,6 @@ export const mockUpdates = {
   async install() {
     if (updateStatus.state !== "ready") throw new Error("no update is ready to install");
     console.info("mock install_update: the app would restart into the installer");
-  },
-  async dismiss() {
-    console.info("mock dismiss_update");
-    if (updateStatus.state === "ready") setUpdatePhase({ ...updateStatus, dismissed: true });
   },
 };
 
@@ -672,7 +667,7 @@ function mockReport(): Diagnostics {
     check && updateStatus.lastChecked
       ? `Last check: ${new Date(updateStatus.lastChecked).toISOString()} (${check.trigger}) -> ${check.result}; latest release seen: ${check.latestVersion ?? "not learned"}`
       : "Last check: none since UsageDeck started",
-    `Banner: ${updateStatus.state}`,
+    `Status: ${updateStatus.state}`,
   ].join("\n");
   const system = "Windows 11 Pro 24H2 (build 26100)";
   const report = [
@@ -689,6 +684,9 @@ function mockReport(): Diagnostics {
     "",
     "Updater",
     updaterReport,
+    "",
+    "Claude spend",
+    "Not priced (last 7 days): none",
   ].join("\n");
   return {
     appVersion: MOCK_VERSION,

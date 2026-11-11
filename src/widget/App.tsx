@@ -26,11 +26,9 @@ import { formatAgo } from "@/lib/format";
 import { getPeakInfo } from "@/lib/peak";
 import { rankAccounts } from "@/lib/ranking";
 import { DEFAULT_SETTINGS } from "@/lib/settings-schema";
-import { useUpdateStatus } from "@/lib/updates";
 import type { ProviderId, TrackedAccount, WidgetProvider } from "@/lib/types";
 import { openCodeUsedUp, usedUp, type UsageOf } from "@/lib/used-up";
 import { ClaudeCard, CodexCard, CursorCard, GrokCard, OpenCodeCard } from "./_components/cards";
-import { UpdateBanner } from "./_components/UpdateBanner";
 import { nextBrightness, resolveWidgetTheme } from "./_lib/theme";
 import { menuNavIndex } from "./_lib/menu-nav";
 import { snoozedCards } from "./_lib/snooze";
@@ -59,7 +57,6 @@ export default function WidgetPage() {
   const openCursorThenWatch = useCallback(async () => {
     if (await openCursor()) watchCursorSignIn();
   }, [watchCursorSignIn]);
-  const updateStatus = useUpdateStatus();
   const [expanded, setExpanded] = useState(false);
   const [brightness, setBrightness] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -227,15 +224,19 @@ export default function WidgetPage() {
 
   // Menu focus, back to where it was on close. From the keyboard: the first item, with its ring.
   // From a right-click: the menu itself, so no item shows a focus ring (Down / Up still enter it).
+  // preventScroll: the menu can reach past the window's bottom until the window has grown, and a
+  // plain focus() would scroll the page to it, nudging every card up and back down.
   useEffect(() => {
     if (!menuOpen) return;
     const previous = document.activeElement;
     const menu = menuRef.current;
-    if (menuByKeyboard.current) menu?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
-    else menu?.focus();
+    const target = menuByKeyboard.current
+      ? menu?.querySelector<HTMLElement>('[role="menuitem"]')
+      : menu;
+    target?.focus({ preventScroll: true });
     return () => {
       if (previous instanceof HTMLElement && previous !== document.body && previous.isConnected) {
-        previous.focus();
+        previous.focus({ preventScroll: true });
       }
     };
   }, [menuOpen]);
@@ -259,13 +260,19 @@ export default function WidgetPage() {
     items[next]?.focus();
   };
 
-  // Size the frameless window to the content.
+  // Size the frameless window to the content. Only a new height goes over IPC: a menu that fits
+  // the window as it is resizes nothing.
   useEffect(() => {
     const el = rootRef.current;
     if (!el) return;
+    let sent = 0;
     const send = () => {
       const h = Math.ceil(el.getBoundingClientRect().height);
-      if (h > 0) resizeWidget(Math.max(h + GLOW, menuBottom.current));
+      if (h <= 0) return;
+      const next = Math.max(h + GLOW, menuBottom.current);
+      if (next === sent) return;
+      sent = next;
+      resizeWidget(next);
     };
     sendSize.current = send;
     const ro = new ResizeObserver(send);
@@ -439,7 +446,6 @@ export default function WidgetPage() {
         <p className="text-[11px] px-1 py-2 text-(--w-muted)">Loading…</p>
       ) : (
         <div className="space-y-1">
-          <UpdateBanner status={updateStatus} />
           {data.offline && (
             <div
               role="status"
