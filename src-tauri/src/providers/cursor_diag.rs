@@ -132,12 +132,26 @@ impl CursorAttempt {
         }
     }
 
-    /// The request that decided the outcome: the last one that failed.
+    /// The usage request (always the first one sent), when it failed.
     fn failed_request(&self) -> Option<&HttpAttempt> {
         self.requests
+            .first()
+            .filter(|r| !r.status.is_some_and(|s| (200..300).contains(&s)))
+    }
+
+    /// What the cursor.com fallback answered, when it was tried and gave no usage.
+    fn fallback_note(&self) -> String {
+        let web = self
+            .requests
             .iter()
-            .rev()
-            .find(|r| !r.status.is_some_and(|s| (200..300).contains(&s)))
+            .find(|r| r.endpoint.starts_with("cursor.com"));
+        match (web, self.auth_path) {
+            (Some(web), None) => match web.status {
+                Some(status) => format!("; cursor.com replied {status}"),
+                None => "; cursor.com could not be reached".into(),
+            },
+            _ => String::new(),
+        }
     }
 
     /// One line saying why the card has no fresh usage, for its tooltip. None when it has.
@@ -169,14 +183,6 @@ impl CursorAttempt {
                     .map(|r| r.endpoint.split('/').next().unwrap_or("Cursor"))
                     .unwrap_or("Cursor");
                 match (kind, request.and_then(|r| r.status)) {
-                    ("auth-rejected", Some(status))
-                        if self.token.expired(self.at_ms) == Some(true) =>
-                    {
-                        format!(
-                            "{host} replied {status} at {when}; {}. Open Cursor to renew it",
-                            self.token_note(tz)
-                        )
-                    }
                     (_, Some(status)) => {
                         let code = request
                             .and_then(|r| r.detail.as_deref())
@@ -185,8 +191,9 @@ impl CursorAttempt {
                             .map(|c| format!(" {c}"))
                             .unwrap_or_default();
                         format!(
-                            "{host} replied {status}{code} at {when}; {}",
-                            self.token_note(tz)
+                            "{host} replied {status}{code} at {when}; {}{}",
+                            self.token_note(tz),
+                            self.fallback_note()
                         )
                     }
                     ("schema-changed", None) => format!(
@@ -331,16 +338,28 @@ mod tests {
             a.reason(&Utc).as_deref(),
             Some("api2.cursor.sh replied 401 unauthenticated at 14:02; token valid until Dec 3")
         );
+        // the fallback was tried as well, and the side calls do not change the line
+        a.requests.push(request(Some(401), None));
+        a.requests.push(HttpAttempt {
+            method: "GET",
+            endpoint: "cursor.com/api/usage-summary".into(),
+            status: Some(403),
+            detail: None,
+        });
+        assert_eq!(
+            a.reason(&Utc).as_deref(),
+            Some("api2.cursor.sh replied 401 unauthenticated at 14:02; token valid until Dec 3; cursor.com replied 403")
+        );
     }
 
     #[test]
-    fn an_expired_token_says_to_open_cursor() {
+    fn an_expired_token_is_named_as_expired() {
         let mut a = attempt("auth-rejected");
         a.token.expires_at_ms = Some(AT - 86_400_000);
         a.requests = vec![request(Some(401), None)];
         assert_eq!(
             a.reason(&Utc).as_deref(),
-            Some("api2.cursor.sh replied 401 at 14:02; token expired Nov 10. Open Cursor to renew it")
+            Some("api2.cursor.sh replied 401 at 14:02; token expired Nov 10")
         );
     }
 
@@ -370,7 +389,7 @@ mod tests {
         );
 
         let mut shape = attempt("schema-changed");
-        shape.requests = vec![request(Some(200), None)];
+        shape.requests = vec![request(Some(200), None), request(Some(500), None)];
         shape.parse = Some("no planUsage; keys: billingCycleEnd".into());
         assert_eq!(
             shape.reason(&Utc).as_deref(),

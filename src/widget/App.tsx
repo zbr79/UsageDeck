@@ -10,15 +10,7 @@ import {
   type MouseEvent,
   type ReactNode,
 } from "react";
-import {
-  CollapseIcon,
-  DownloadIcon,
-  ExpandIcon,
-  EyeOffIcon,
-  GearIcon,
-  PowerIcon,
-  RefreshIcon,
-} from "@/ui/Icons";
+import { CollapseIcon, ExpandIcon, GearIcon, PowerIcon, RefreshIcon } from "@/ui/Icons";
 import { cssVars, WIDGET_PALETTES } from "@/ui/palette";
 import { accountKey, isAccountHidden } from "@/lib/account-key";
 import { copyKey } from "@/lib/copy-key";
@@ -34,7 +26,7 @@ import { formatAgo } from "@/lib/format";
 import { getPeakInfo } from "@/lib/peak";
 import { rankAccounts } from "@/lib/ranking";
 import { DEFAULT_SETTINGS } from "@/lib/settings-schema";
-import { checkForUpdates, useUpdateStatus } from "@/lib/updates";
+import { useUpdateStatus } from "@/lib/updates";
 import type { ProviderId, TrackedAccount, WidgetProvider } from "@/lib/types";
 import { openCodeUsedUp, usedUp, type UsageOf } from "@/lib/used-up";
 import { ClaudeCard, CodexCard, CursorCard, GrokCard, OpenCodeCard } from "./_components/cards";
@@ -54,7 +46,7 @@ const GLOW = 6;
 const MENU_REVEAL_MAX_MS = 150;
 /** Reset text is minute-resolution, so the whole panel does not re-render every second. */
 const CLOCK_MS = 60_000;
-type MenuAction = "expand" | "collapse" | "refresh" | "settings" | "update" | "quit";
+type MenuAction = "expand" | "collapse" | "refresh" | "settings" | "quit";
 
 function startDrag(e: MouseEvent) {
   if (e.button !== 0) return;
@@ -132,10 +124,6 @@ export default function WidgetPage() {
   const nextBack = snoozed.length ? Math.min(...snoozed.map((card) => card.until)) : null;
   const hide = (provider: WidgetProvider, id: string) => (until: number) =>
     void updateSettings({ snoozedUntil: { [accountKey(provider, id)]: until } }).catch(() => {});
-  const showSnoozed = () =>
-    void updateSettings({
-      snoozedUntil: Object.fromEntries(snoozed.map((card) => [card.key, null])),
-    }).catch(() => {});
 
   const shownRows = ranked.filter((row) => !snoozedKeys.has(accountKey("opencode", row.email)));
   const canToggleExpand = settings.opencodeEnabled && shownRows.length > 1;
@@ -293,7 +281,6 @@ export default function WidgetPage() {
     if (action === "expand") setExpanded(true);
     else if (action === "collapse") setExpanded(false);
     else if (action === "refresh") void reload();
-    else if (action === "update") checkForUpdates();
     else bridgeMenuAction(action);
   };
 
@@ -354,6 +341,7 @@ export default function WidgetPage() {
               multiple={multiple}
               onHide={hide("cursor", account.id)}
               onOpenCursor={() => void openCursorThenWatch()}
+              note={data.cursorNote}
             />
           ),
           <CursorCard
@@ -518,31 +506,6 @@ export default function WidgetPage() {
             <GearIcon size={14} />
             Settings
           </button>
-          <button
-            type="button"
-            role="menuitem"
-            tabIndex={-1}
-            onClick={() => menuAction("update")}
-            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] hover:bg-(--w-hover) focus-visible:bg-(--w-hover)"
-          >
-            <DownloadIcon size={14} />
-            Check for updates
-          </button>
-          {snoozed.length > 0 && (
-            <button
-              type="button"
-              role="menuitem"
-              tabIndex={-1}
-              onClick={() => {
-                setMenuOpen(false);
-                showSnoozed();
-              }}
-              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] hover:bg-(--w-hover) focus-visible:bg-(--w-hover)"
-            >
-              <EyeOffIcon size={14} />
-              Show hidden ({snoozed.length})
-            </button>
-          )}
           <div role="separator" className="my-1 border-t border-(--w-cardBorder)" />
           <button
             type="button"

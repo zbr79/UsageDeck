@@ -3,10 +3,11 @@ import { emitTo } from "@tauri-apps/api/event";
 import { toastError, toastSuccess } from "@/components/toast/toast";
 import { announceSettingsChanged, getJson, sendJson } from "@/lib/api";
 import { inTauri } from "@/lib/bridge";
-import { applySettingsPatch } from "@/lib/settings-schema";
+import { applySettingsPatch, type SettingsPatch } from "@/lib/settings-schema";
 import type {
   ClaudeUsage,
   CodexUsage,
+  CursorAttemptNote,
   CursorUsage,
   GrokUsage,
   OpenCodeAccountSummary,
@@ -43,7 +44,7 @@ export function useSettings() {
   }, []);
 
   const update = useCallback(
-    async (patch: Partial<Settings>, success?: string): Promise<boolean> => {
+    async (patch: SettingsPatch, success?: string): Promise<boolean> => {
       setSettings((prev) => (prev ? applySettingsPatch(prev, patch) : prev));
       try {
         const res = await sendJson<{ settings: Settings }>("/api/settings", "POST", patch);
@@ -68,7 +69,7 @@ export interface Summaries {
   /** The last account-list load failed (shown as an error, never as "no accounts"). */
   accountsFailed: boolean;
   usage: Record<string, OpenCodeAccountUsage>;
-  cursor: { accounts: TrackedAccount<CursorUsage>[] } | null;
+  cursor: { accounts: TrackedAccount<CursorUsage>[]; attempt?: CursorAttemptNote | null } | null;
   grok: { accounts: TrackedAccount<GrokUsage>[] } | null;
   codex: { accounts: TrackedAccount<CodexUsage>[] } | null;
   claude: { accounts: TrackedAccount<ClaudeUsage>[] } | null;

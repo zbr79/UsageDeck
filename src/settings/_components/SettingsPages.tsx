@@ -2,16 +2,24 @@ import { useEffect, useRef, useState, type PointerEvent } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { inTauri } from "@/lib/bridge";
-import { formatAgo } from "@/lib/format";
-import { checkForUpdates, installUpdate, useUpdateStatus, type UpdateStatus } from "@/lib/updates";
+import { formatAgo, formatResetDuration } from "@/lib/format";
+import {
+  checkForUpdates,
+  installUpdate,
+  lastCheckLine,
+  useUpdateStatus,
+  type UpdateStatus,
+} from "@/lib/updates";
+import type { SettingsPatch } from "@/lib/settings-schema";
 import type { PanelTheme, Settings, ThemeMode, WidgetProvider } from "@/lib/types";
 import { Toggle } from "@/ui/Toggle";
 import appIcon from "../../../src-tauri/icons/128x128.png";
 import { moveItem, PAGE_TITLES, PROVIDER_ICONS } from "../_lib/pages";
 import { usePanelTheme } from "../_lib/theme";
+import { CopyDiagnosticsButton, formatAt } from "./Diagnostics";
 import { Page, primaryButton, Section, secondaryButton, selectClass, SettingRow } from "./fields";
 
-type Update = (patch: Partial<Settings>, success?: string) => Promise<boolean>;
+type Update = (patch: SettingsPatch, success?: string) => Promise<boolean>;
 type Props = { settings: Settings; update: Update };
 
 const ENABLED_KEY: Record<WidgetProvider, keyof Settings & `${string}Enabled`> = {
@@ -147,6 +155,14 @@ function UpdatesSection() {
             </button>
           )
         }
+      />
+      <SettingRow
+        title="Diagnostics"
+        description={
+          lastCheckLine(status, (ms) => formatAt(ms, now)) ?? "No update check has finished yet"
+        }
+        live
+        control={() => <CopyDiagnosticsButton />}
       />
     </Section>
   );
@@ -340,7 +356,78 @@ export function WidgetPage({ settings, update }: Props) {
           })}
         </ol>
       </Section>
+      <HiddenUntilReset settings={settings} update={update} />
     </Page>
+  );
+}
+
+/** A snoozed card's provider and account from its settings key ("cursor:dev@example.com"). */
+export function snoozedEntries(
+  settings: Pick<Settings, "snoozedUntil" | "displayNames">,
+  now: number,
+): { key: string; provider: WidgetProvider; name: string; until: number }[] {
+  return Object.entries(settings.snoozedUntil)
+    .filter(([, until]) => until > now)
+    .flatMap(([key, until]) => {
+      const split = key.indexOf(":");
+      const provider = key.slice(0, split) as WidgetProvider;
+      const id = key.slice(split + 1);
+      if (split < 0 || !(provider in PROVIDER_ICONS)) return [];
+      // OpenCode nicknames are stored under the bare email, the others under the full key.
+      const name = settings.displayNames[key] ?? settings.displayNames[id] ?? id;
+      return [{ key, provider, name, until }];
+    })
+    .sort((a, b) => a.until - b.until);
+}
+
+/** Used-up cards the user hid from the widget until they reset, each with a way back. */
+function HiddenUntilReset({ settings, update }: Props) {
+  const light = usePanelTheme() === "light";
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
+  const hidden = snoozedEntries(settings, now);
+  return (
+    <Section title="Hidden until reset">
+      {hidden.length === 0 ? (
+        <p className="text-xs text-(--p-muted)">
+          No cards are hidden. A used-up card has an eye button on the widget that hides it until it
+          resets.
+        </p>
+      ) : (
+        hidden.map((card) => (
+          <SettingRow
+            key={card.key}
+            title={card.name}
+            description={`${PAGE_TITLES[card.provider]} · back in ${formatResetDuration(card.until - now)}`}
+            icon={
+              <img
+                src={PROVIDER_ICONS[card.provider]}
+                alt=""
+                className={`size-5 rounded ${card.provider === "codex" && light ? "invert" : ""}`}
+              />
+            }
+            control={(labelId) => (
+              <button
+                type="button"
+                aria-describedby={labelId}
+                onClick={() =>
+                  void update(
+                    { snoozedUntil: { [card.key]: null } },
+                    `${card.name} is back on the widget`,
+                  )
+                }
+                className={secondaryButton}
+              >
+                Show
+              </button>
+            )}
+          />
+        ))
+      )}
+    </Section>
   );
 }
 
