@@ -152,7 +152,8 @@ You do not need the log files to see why a card is stale or an update did not sh
 - **Settings → General → Updates** shows the last update check: when, manual or background, the
   result, and the newest release GitHub named.
 - **Copy diagnostics** (on both pages) copies all of it as text, with the UsageDeck and Windows
-  versions, ready to paste into an issue.
+  versions and the Claude models of the last 7 days that have no price, ready to paste into an
+  issue.
 
 The report never contains a token, a key or an account name. Server replies are cut to 200
 characters and anything that looks like a token is replaced with `[redacted]`.
@@ -208,6 +209,10 @@ uninstaller to also remove settings, logs and the stored OpenCode keys (details 
 - Claude page: a "Spend & pace" section with the API-equivalent spend of Claude Code on this PC
   (last hour, 5 h, today, 7 days, $/h), a 24-hour bar chart, spend per model, each window's
   speed, even pace and projected limit time, and what 1% of the weekly limit is worth in dollars.
+  Dollars use Anthropic's API list price of each model (input, output, cache reads, and cache
+  writes at 1.25x input for 5 minutes or 2x for 1 hour); Haiku 5.5 is priced per reply, at the
+  higher rate for a prompt over 100K tokens. A model without a price is never counted as $0: a
+  "Not priced: <model ids>" line names it, and its replies stay out of the dollars
   The widget's Claude card shows the spend rate after its name (`$71/h`); its meter colours follow
   the percentage only (amber from 80%, red from 100%), and pace stays in the meter tooltip
 - About: version, log folder and the repository

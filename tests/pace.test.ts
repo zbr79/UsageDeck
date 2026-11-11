@@ -52,6 +52,7 @@ const pace = (over: Partial<ClaudePace["spend"]> = {}, windows?: ClaudePace["win
       byModel: [],
       hourly: [],
       unpricedReplies: 0,
+      unpricedModels: [],
       scannedAt: NOW,
       backfilling: false,
       ...over,
@@ -250,6 +251,7 @@ describe("mock scenarios", () => {
     expect(meterPaceText(m.pct, m.evenPacePct, m, NOW)).toContain("measuring speed…");
     expect(headerRate(paceScenario("backfill", NOW))).toBeNull();
     expect(paceScenario("unpriced", NOW).spend.unpricedReplies).toBeGreaterThan(0);
+    expect(paceScenario("unpriced", NOW).spend.unpricedModels.length).toBeGreaterThan(0);
     expect(paceScenario("lasts", NOW).spend.hourly).toHaveLength(24);
   });
 });

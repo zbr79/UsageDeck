@@ -222,7 +222,10 @@ export interface PaceSpend {
   byModel: { model: string; usd24h: number }[];
   /** 24 entries, index 0 = current partial hour, USD per hour */
   hourly: number[];
+  /** last 7 days, replies with tokens on models the price table lacks */
   unpricedReplies: number;
+  /** those models' ids, sorted */
+  unpricedModels: string[];
   scannedAt: number | null;
   backfilling: boolean;
 }

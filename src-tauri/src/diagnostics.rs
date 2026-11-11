@@ -1,5 +1,6 @@
-//! The in-app diagnostics: what the last Cursor attempt and the last update check did, as rows for
-//! the settings window and as a plain-text report the user can copy. It answers "why is the card
+//! The in-app diagnostics: what the last Cursor attempt and the last update check did, and which
+//! Claude models have no price, as rows for the settings window and as a plain-text report the
+//! user can copy. It answers "why is the card
 //! stale" without log files.
 //!
 //! The report holds no token, key or account name: tokens appear only as a hash prefix and an
@@ -77,6 +78,7 @@ fn report_text(
     generated: &str,
     cursor: Option<&str>,
     updater: &str,
+    claude_spend: &str,
 ) -> String {
     let text = format!(
         "UsageDeck diagnostics (holds no token, key or account name)\n\
@@ -88,7 +90,10 @@ fn report_text(
          {}\n\
          \n\
          Updater\n\
-         {updater}",
+         {updater}\n\
+         \n\
+         Claude spend\n\
+         {claude_spend}",
         cursor.unwrap_or("No attempt yet since UsageDeck started")
     );
     redact(&text)
@@ -100,12 +105,17 @@ fn collect(app: &AppHandle) -> Diagnostics {
     let cursor = cursor::last_attempt();
     let updater = app.state::<Updater>().status();
     let updater_report = updater.report(|ms| stamp(ms as i64));
+    let claude_spend = app.try_state::<crate::Core>().map_or_else(
+        || "Logs: not started".to_string(),
+        |core| core.spend.spend(crate::claude_logs::now_ms()).report(),
+    );
     let report = report_text(
         &app_version,
         &system,
         &stamp(chrono::Utc::now().timestamp_millis()),
         cursor.as_ref().map(|c| c.report(&chrono::Local)).as_deref(),
         &updater_report,
+        &claude_spend,
     );
     Diagnostics {
         cursor_reason: cursor.as_ref().and_then(|c| c.reason(&chrono::Local)),
@@ -163,9 +173,13 @@ mod tests {
             "2026-11-11 14:03:00 +00:00",
             Some(cursor),
             updater,
+            "Not priced (last 7 days): claude-opus-6 (4 replies, not in the dollar figures)",
         );
         assert!(text.contains(cursor));
         assert!(text.contains(updater));
+        assert!(text.ends_with(
+            "\n\nClaude spend\nNot priced (last 7 days): claude-opus-6 (4 replies, not in the dollar figures)"
+        ));
         assert!(text.starts_with(
             "UsageDeck diagnostics (holds no token, key or account name)\nApp: UsageDeck 1.4.4\n"
         ));
@@ -178,10 +192,11 @@ mod tests {
             "now",
             Some(&format!("oops {jwt}")),
             updater,
+            "",
         );
         assert!(!leaked.contains("eyJ"));
         assert!(leaked.contains("oops [redacted]"));
-        assert!(report_text("1.4.4", "Windows", "now", None, updater)
+        assert!(report_text("1.4.4", "Windows", "now", None, updater, "")
             .contains("Cursor\nNo attempt yet since UsageDeck started"));
     }
 }

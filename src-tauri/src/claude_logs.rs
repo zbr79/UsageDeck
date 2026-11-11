@@ -599,6 +599,23 @@ pub struct Spend {
     pub last24h: f64,
 }
 
+impl Spend {
+    /// The Claude spend part of the diagnostics report.
+    pub fn report(&self) -> String {
+        if self.backfilling {
+            return "Logs: first read still running".into();
+        }
+        if self.unpriced_models.is_empty() {
+            return "Not priced (last 7 days): none".into();
+        }
+        format!(
+            "Not priced (last 7 days): {} ({} replies, not in the dollar figures)",
+            self.unpriced_models.join(", "),
+            self.unpriced_replies
+        )
+    }
+}
+
 fn summarize(
     buckets: &Buckets,
     now: i64,
@@ -922,6 +939,14 @@ mod tests {
             body["unpricedModels"],
             json!(["claude-fable-9", "claude-mystery-9"])
         );
+        assert_eq!(
+            s.report(),
+            "Not priced (last 7 days): claude-fable-9, claude-mystery-9 (3 replies, not in the dollar figures)"
+        );
+        let priced = summarize(&Buckets::new(), NOW, NOW, NOW, Some(NOW));
+        assert_eq!(priced.report(), "Not priced (last 7 days): none");
+        let reading = summarize(&Buckets::new(), NOW, NOW, NOW, None);
+        assert_eq!(reading.report(), "Logs: first read still running");
     }
 
     #[test]

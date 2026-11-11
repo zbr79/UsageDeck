@@ -324,10 +324,10 @@ function PaceBody({ pace, now, target }: { pace: ClaudePace; now: number; target
         <span className="text-sm">{calibration ?? "Not measured yet"}</span>
       </Row>
 
-      {s.unpricedReplies > 0 && (
-        <p className="text-xs text-(--p-muted)">
-          {s.unpricedReplies} {s.unpricedReplies === 1 ? "reply" : "replies"} on unpriced models are
-          not in the dollar figures.
+      {s.unpricedModels.length > 0 && (
+        <p className="text-xs text-(--p-muted)" data-testid="pace-unpriced">
+          Not priced: {s.unpricedModels.join(", ")} ({s.unpricedReplies}{" "}
+          {s.unpricedReplies === 1 ? "reply" : "replies"}, not in the dollar figures)
         </p>
       )}
       <p className="text-xs text-(--p-muted)">

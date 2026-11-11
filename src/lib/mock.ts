@@ -481,6 +481,7 @@ export function paceScenario(scenario: PaceScenario, now = NOW): ClaudePace {
       ],
       hourly: [...PROBE_HOURLY],
       unpricedReplies: 0,
+      unpricedModels: [],
       scannedAt: now - 20_000,
       backfilling: false,
     },
@@ -528,6 +529,7 @@ export function paceScenario(scenario: PaceScenario, now = NOW): ClaudePace {
       break;
     case "unpriced":
       pace.spend.unpricedReplies = 17;
+      pace.spend.unpricedModels = ["claude-opus-6", "claude-sonnet-6"];
       break;
   }
   return pace;
@@ -682,6 +684,9 @@ function mockReport(): Diagnostics {
     "",
     "Updater",
     updaterReport,
+    "",
+    "Claude spend",
+    "Not priced (last 7 days): none",
   ].join("\n");
   return {
     appVersion: MOCK_VERSION,
