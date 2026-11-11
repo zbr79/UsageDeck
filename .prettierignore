@@ -7,3 +7,5 @@ data
 package-lock.json
 src/public
 *.md
+installer/target
+installer/gen

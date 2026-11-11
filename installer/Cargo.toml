@@ -1,0 +1,32 @@
+[package]
+name = "usagedeck-installer"
+version = "1.3.0"
+description = "UsageDeck Setup: the installer window around the NSIS installer"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "usagedeck-installer"
+path = "src/main.rs"
+
+[features]
+# Always serve the bundled ui/ folder; there is no dev server.
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Com", "Win32_System_Environment", "Win32_UI_Shell"] }
+windows-registry = "0.6"
+
+[profile.release]
+# The embedded NSIS installer dominates the size; keep the wrapper itself small.
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true

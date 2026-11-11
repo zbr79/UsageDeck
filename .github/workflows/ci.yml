@@ -33,7 +33,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/bin
             src-tauri/target
-          key: cargo-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+            installer/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock', 'installer/Cargo.lock') }}
           restore-keys: cargo-${{ runner.os }}-
       - run: npm ci
       - run: npm run build
@@ -48,6 +49,17 @@ jobs:
       - name: cargo test
         working-directory: src-tauri
         run: cargo test
+      # The installer window (installer/). Debug builds embed an empty payload instead of the
+      # NSIS installer, which only the release workflow has.
+      - name: cargo fmt (installer)
+        working-directory: installer
+        run: cargo fmt --check
+      - name: cargo clippy (installer)
+        working-directory: installer
+        run: cargo clippy --all-targets -- -D warnings
+      - name: cargo test (installer)
+        working-directory: installer
+        run: cargo test
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
       - name: Audit Rust dependencies
@@ -55,3 +67,75 @@ jobs:
         run: |
           cargo install cargo-audit --locked
           cargo audit
+      - name: Audit Rust dependencies (installer)
+        working-directory: installer
+        run: cargo audit
+
+  installer-smoke:
+    name: Installer smoke test (real install on Windows)
+    # Builds the real NSIS installer and the installer window around it, then runs the result the
+    # three ways it is started in practice: silent install, the updater's /P /UPDATE, and a plain
+    # double-click.
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - name: Cache cargo registry, tools and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/bin
+            src-tauri/target
+            installer/target
+          key: cargo-release-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock', 'installer/Cargo.lock') }}
+          restore-keys: |
+            cargo-release-${{ runner.os }}-
+            cargo-${{ runner.os }}-
+      - run: npm ci
+      - name: Build the NSIS installer
+        run: npx tauri build --bundles nsis
+      - name: Build the installer window around it
+        shell: bash
+        run: |
+          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          shopt -s nullglob
+          setups=(src-tauri/target/release/bundle/nsis/*_"${version}"_*-setup.exe)
+          [ "${#setups[@]}" -eq 1 ] || { echo "found: ${setups[*]:-none}"; exit 1; }
+          USAGEDECK_NSIS_PATH="$(cygpath -w "$PWD/${setups[0]}")" \
+            cargo build --release --locked --manifest-path installer/Cargo.toml
+          cp installer/target/release/usagedeck-installer.exe UsageDeck-Setup.exe
+      - name: Silent install (/S) installs the app
+        shell: pwsh
+        run: |
+          $version = (Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json).version
+          $p = Start-Process -FilePath .\UsageDeck-Setup.exe -ArgumentList '/S' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "exit code $($p.ExitCode)" }
+          $exe = Join-Path $env:LOCALAPPDATA 'UsageDeck\usagedeck.exe'
+          if (-not (Test-Path $exe)) { throw "$exe missing after install" }
+          $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\UsageDeck'
+          $installed = (Get-ItemProperty $key).DisplayVersion
+          if ($installed -ne $version) { throw "DisplayVersion $installed, expected $version" }
+          Get-Process usagedeck -ErrorAction SilentlyContinue | Stop-Process -Force
+          "installed $version at $exe"
+      - name: Updater arguments (/P /UPDATE) pass through without a window
+        shell: pwsh
+        run: |
+          $exe = Join-Path $env:LOCALAPPDATA 'UsageDeck\usagedeck.exe'
+          $p = Start-Process -FilePath .\UsageDeck-Setup.exe -ArgumentList '/P','/UPDATE' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "exit code $($p.ExitCode)" }
+          if (-not (Test-Path $exe)) { throw "$exe missing after update" }
+          Get-Process usagedeck -ErrorAction SilentlyContinue | Stop-Process -Force
+          "update pass-through ok"
+      - name: Double-click start opens the window and keeps running
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath .\UsageDeck-Setup.exe -PassThru
+          Start-Sleep -Seconds 10
+          if ($p.HasExited) { throw "installer window exited early with code $($p.ExitCode)" }
+          Stop-Process -Id $p.Id -Force
+          "installer window still running after 10 s"
