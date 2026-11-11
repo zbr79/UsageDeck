@@ -64,11 +64,14 @@ export function Section({ title, children }: { title?: string; children: ReactNo
 export function SettingRow({
   title,
   description,
+  live,
   icon,
   control,
 }: {
   title: string;
   description?: string;
+  /** announce description changes (the result of an action started from this row) */
+  live?: boolean;
   icon?: ReactNode;
   /** gets the ids of the title and description, for aria-labelledby / aria-describedby */
   control: (labelId: string, descriptionId?: string) => ReactNode;
@@ -83,7 +86,11 @@ export function SettingRow({
           {title}
         </div>
         {description && (
-          <div id={descId} className="text-xs text-(--p-muted)">
+          <div
+            id={descId}
+            aria-live={live ? "polite" : undefined}
+            className="text-xs text-(--p-muted)"
+          >
             {description}
           </div>
         )}
