@@ -24,12 +24,12 @@ const ROOTS: [(HKEY, &str); 3] = [
     ),
 ];
 
-fn wide(s: &str) -> Vec<u16> {
+pub(crate) fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
 /// A string value of `subkey`, expanded if it is REG_EXPAND_SZ.
-fn string_value(key: HKEY, subkey: &[u16], name: &str) -> Option<String> {
+pub(crate) fn string_value(key: HKEY, subkey: &[u16], name: &str) -> Option<String> {
     let name = wide(name);
     let flags = RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ;
     let mut bytes = 0u32;

@@ -216,7 +216,7 @@ fn open_sealed(sealed_b64: &str, local_state: &Path) -> Result<String, String> {
     let sealed = B64
         .decode(sealed_b64.trim())
         .map_err(|_| "the stored value is not base64".to_string())?;
-    let key = os_crypt::app_key_or_why(local_state).map_err(|why| format!("Cursor's {why}"))?;
+    let key = os_crypt::app_key_or_why(local_state).map_err(str::to_string)?;
     os_crypt::unseal_bytes(&key, &sealed)
 }
 
@@ -819,7 +819,7 @@ mod tests {
         assert_eq!(unreadable.access, Err(ProviderError::SignInUnreadable));
         assert_eq!(
             unreadable.token.decrypt.as_deref(),
-            Some("Cursor's Local State not found")
+            Some("Local State not found")
         );
         assert_eq!(unreadable.token.id, None);
         assert_eq!(unreadable.label.as_deref(), Some("User@Example.com"));

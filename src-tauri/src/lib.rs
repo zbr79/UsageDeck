@@ -5,6 +5,7 @@ pub mod api;
 pub mod claude_logs;
 pub mod cli;
 pub mod crash;
+pub mod diagnostics;
 pub mod history;
 pub mod pricing;
 pub mod providers;
@@ -324,7 +325,12 @@ pub fn run() {
     if let Some(code) = cli::try_run() {
         std::process::exit(code);
     }
+    let context = tauri::generate_context!();
+    let version = context.package_info().version.to_string();
     tauri::Builder::default()
+        // Managed before the config's widget window exists: its first `get_update_status` and
+        // `get_diagnostics` cannot arrive ahead of this state.
+        .manage(updater::Updater::new(version))
         // must be first: a second launch focuses the running widget instead, or opens the
         // settings window when it was started with `--settings`
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
@@ -359,7 +365,9 @@ pub fn run() {
             updater::get_update_status,
             updater::check_for_updates,
             updater::install_update,
-            updater::dismiss_update
+            updater::dismiss_update,
+            diagnostics::get_diagnostics,
+            diagnostics::copy_diagnostics
         ])
         .setup(|app| {
             if let Ok(dir) = app.path().app_log_dir() {
@@ -369,7 +377,6 @@ pub fn run() {
             app.manage(Core::new(Store::new(dir, Box::new(CredentialVault))));
             claude_logs::start_scanner(app.state::<Core>().spend.clone());
             app.manage(PosSaver(AtomicU64::new(0)));
-            app.manage(updater::Updater::new(app.handle()));
 
             // Start at login follows the setting (default on).
             let start_at_login = app.state::<Core>().store.get_settings().start_at_login;
@@ -399,6 +406,6 @@ pub fn run() {
             }
             Ok(())
         })
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running UsageDeck");
 }
