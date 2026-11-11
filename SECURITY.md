@@ -50,12 +50,28 @@ instead. No token-refresh endpoint is ever called.
 `cursorAuth/refreshToken` and never calls `https://api2.cursor.sh/oauth/token`: Cursor stores each
 renewed access token as its refresh token too, and whether a refresh retires the token it was given
 is not known, so a refresh from UsageDeck could log Cursor out. When Cursor's API rejects the access
-token (401), the card shows its last numbers in gray with an **Open Cursor** button. The button
+token (401 or 403), the card shows its last numbers in gray with an **Open Cursor** button. The button
 starts `Cursor.exe`, which renews its own token. UsageDeck looks for it in
 `%LOCALAPPDATA%\Programs\cursor`, then `%ProgramFiles%\cursor`, then in the `InstallLocation` or
 `DisplayIcon` of a "Cursor" entry under the `HKCU` / `HKLM` `…\CurrentVersion\Uninstall` registry
-keys (read-only). While the token stays rejected, every poll reads `state.vscdb` again (read-only),
-so the renewed token is used as soon as Cursor writes it. The rejected token is kept in memory only.
+keys (read-only). After any failed fetch, every poll reads `state.vscdb` again (read-only),
+so the renewed token is used as soon as Cursor writes it. The token is kept in memory only.
+
+Cursor 3.27 and later store the access token sealed with Electron safeStorage, as
+`cursor-safe-storage:v1:` followed by base64. UsageDeck opens it with the key in
+`%APPDATA%\Cursor\Local State`, exactly as described below for Claude desktop and Grok Bot. A
+token it cannot open is reported as `can't read sign-in`; it is never sent anywhere.
+
+When Cursor has `state.vscdb` busy, UsageDeck copies it, with its `-wal`, `-shm` and `-journal`
+files, to a new folder under `%TEMP%`, reads the copy and deletes the folder at once. The copy holds
+Cursor's sign-in for those few milliseconds; Cursor's own files are never opened for writing.
+
+**cursor.com fallback.** When `api2.cursor.sh` answers 401 or 403 for a token whose expiry is still
+ahead, answers with another error, or answers without the usage, UsageDeck sends one
+`GET https://cursor.com/api/usage-summary` with the headers `Accept: application/json` and
+`Cookie: WorkosCursorSessionToken=<user id>%3A%3A<access token>`. The user id is the part of the
+token's `sub` claim after the last `|`. This is the session cookie Cursor's own web dashboard uses,
+built from the same access token; nothing new is stored and no cookie is kept between requests.
 
 | App            | What is read (read-only)                                                                                    |
 | -------------- | ----------------------------------------------------------------------------------------------------------- |
@@ -63,10 +79,10 @@ so the renewed token is used as soon as Cursor writes it. The rejected token is 
 | Claude Code transcripts | `~/.claude/projects/**/*.jsonl`, shared-read; only reply token counts, model and time are parsed; only per-minute token totals are stored (`spend-buckets.json`, `claude-logs-index.json`, `usage-history.jsonl` holds hashed account ids and percentages) |
 | Claude desktop | `%APPDATA%\Claude\config.json` token cache and `Local State` key (or the Microsoft Store package equivalent) |
 | Codex CLI      | `~/.codex/auth.json`                                                                                        |
-| Cursor         | `%APPDATA%\Cursor\User\globalStorage\state.vscdb` (SQLite, opened with `SQLITE_OPEN_READ_ONLY`)             |
+| Cursor         | `%APPDATA%\Cursor\User\globalStorage\state.vscdb` (SQLite, opened with `SQLITE_OPEN_READ_ONLY`; a temporary copy when busy) and the `Local State` key |
 | Grok Bot       | `%APPDATA%\Grok Bot\sand-secrets.json` and `Local State`; falls back to Cursor's `state.vscdb`              |
 
-Claude desktop and Grok Bot keep their tokens in Chromium "safeStorage": the AES key in
+Claude desktop, Grok Bot and Cursor (3.27 and later) keep their tokens in Chromium "safeStorage": the AES key in
 `Local State` is protected with Windows DPAPI for the current user. UsageDeck unprotects that key
 **in process** with `CryptUnprotectData` (current-user scope; no PowerShell or child process),
 keeps it in memory only, and decrypts the token with AES-GCM. Nothing decrypted is written to disk.
@@ -95,6 +111,18 @@ Writes are atomic (temp file + rename) and serialised per file.
 per file, at most 5 files, oldest deleted first. They hold start-up steps, provider request
 results and errors (HTTP status, error kind), with account ids hashed. They never hold API keys or
 tokens.
+
+**Diagnostics.** Settings → Cursor → Diagnostics and **Copy diagnostics** show what the last Cursor
+attempt and the last update check did. The record is kept in memory only and is gone when
+UsageDeck exits. It contains: the time; whether `state.vscdb` was found and how it was read; how
+the token is stored and whether it decrypted; the first 8 hex characters of the token's SHA-256 and
+its expiry time; for each request the host, path, HTTP status and either the server's Connect
+error or the first 200 characters of its reply; which source gave the usage; the UsageDeck and
+Windows versions; and the updater's last check. It never contains a token, a cookie, an API key or
+an account name: any run of 24 or more token characters, and anything shaped like a JWT, is
+replaced with `[redacted]` before it is recorded and again before the report is shown or copied.
+The file path is shown as `state.vscdb`, without your user folder. Copying puts the report on the
+clipboard from the app's own process; nothing is sent anywhere.
 
 **Crash files.** If the app panics it writes `crash-<unix-seconds>.txt` to the same log folder:
 the panic message, its source location, a backtrace (function names and addresses) and the app
@@ -130,17 +158,19 @@ data and the keys stay, so a reinstall or a manual upgrade picks them up again. 
 | ----------- | ----------------------------------------------------------------------------- | --------------------------- |
 | OpenCode Go | `https://opencode.ai/zen/go/v1/usage`                                         | your OpenCode API key       |
 | Cursor      | `https://api2.cursor.sh/aiserver.v1.DashboardService/` `GetCurrentPeriodUsage`, `GetPlanInfo`, `GetHardLimit` | Cursor's access token |
+| Cursor (fallback) | `GET https://cursor.com/api/usage-summary`                              | the same token, as the `WorkosCursorSessionToken` cookie |
 | Grok Bot    | `https://api2.cursor.sh/aiserver.v1.DashboardService/GetSandUsageStatus`      | Grok Bot's (or Cursor's) token |
 | Codex       | `https://chatgpt.com/backend-api/wham/usage`                                  | Codex CLI's access token    |
 | Claude      | `https://api.anthropic.com/api/oauth/usage`                                   | Claude's OAuth access token |
 
 Each token goes only to its own provider. No telemetry, no analytics, no token-refresh endpoints.
 
-Every Cursor and Grok Bot call is a `POST` with the body `{}` and these headers:
+Every DashboardService call (Cursor and Grok Bot) is a `POST` with the body `{}` and these headers:
 `Authorization: Bearer <token>`, `Content-Type: application/json`, `Connect-Protocol-Version: 1`,
 and the `Accept: */*`, `Host` and `Content-Length` that the HTTP client adds. No `User-Agent` and no
-cookie are sent. A failed Cursor call is logged with its endpoint, HTTP status, the error code and
-message from the reply and, on a 401, the expiry time from the token's `exp` claim; the token itself
+cookie are sent. The cursor.com fallback above is the only request that carries a cookie. A failed
+Cursor attempt is logged with the same one-line reason the card shows: the host, the HTTP status,
+the error code from the reply and the expiry time from the token's `exp` claim; the token itself
 is never logged.
 
 The updater (src-tauri/src/updater.rs) sends no token and no personal data. About once an hour it
