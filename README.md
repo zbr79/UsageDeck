@@ -7,7 +7,7 @@ no Electron, no Node at runtime.
 | Provider        | What's shown                                                                             | Data source                                                                   |
 | --------------- | ---------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
 | **OpenCode Go** | Rolling / Weekly / Monthly usage per account, reset countdowns, DeepSeek peak-hour timer | `opencode.ai/zen/go/v1/usage` (API key you add in Settings)                   |
-| **Cursor**      | Cursor Models & Other Models usage, on-demand spend, plan badge, reset countdown         | Cursor's local sign-in → `api2.cursor.sh`                                      |
+| **Cursor**      | First Party & API usage, plan badge, billing-cycle reset                                 | Cursor's local sign-in → `api2.cursor.sh`                                      |
 | **Grok Bot**    | Weekly usage %, plan badge, reset countdown                                              | Grok Bot's own sign-in (falls back to Cursor's) → `api2.cursor.sh` sand usage |
 | **Codex**       | Usage %, plan badge (Free/Plus/Pro), reset credits, reset countdown                      | Codex CLI sign-in → ChatGPT `wham/usage`                                      |
 | **Claude**      | 5-hour and weekly usage, plan badge, reset countdowns; spend rate ($/h) and pace (%/h, projected limit time) | Claude desktop / Claude Code sign-in → Anthropic OAuth usage; dollars from the Claude Code logs on this PC (usage fields only) |

@@ -82,6 +82,7 @@ pub fn start(app: AppHandle) {
 
 /// "Check for updates" from the tray, the widget menu or the settings window.
 pub fn check_now(app: &AppHandle) {
+    log::info!("manual update check requested");
     let app = app.clone();
     tauri::async_runtime::spawn(async move { run(&app, Trigger::Manual).await });
 }
