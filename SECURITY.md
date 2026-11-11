@@ -134,8 +134,12 @@ data and the keys stay, so a reinstall or a manual upgrade picks them up again. 
 | Codex       | `https://chatgpt.com/backend-api/wham/usage`                                  | Codex CLI's access token    |
 | Claude      | `https://api.anthropic.com/api/oauth/usage`                                   | Claude's OAuth access token |
 
-Each token goes only to its own provider. No telemetry, no analytics, no update check, no
-token-refresh endpoints.
+Each token goes only to its own provider. No telemetry, no analytics, no token-refresh endpoints.
+
+The updater (src-tauri/src/updater.rs) sends no token and no personal data. About once an hour it
+reads `https://api.github.com/repos/zbr79/UsageDeck/releases/latest`; when a newer version exists
+it downloads that release's `UsageDeck-Setup.exe` from GitHub and checks its size and SHA-256
+against the digest GitHub reports before offering to install it.
 
 ## Known limitations
 
