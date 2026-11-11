@@ -56,6 +56,11 @@ export function formatUntil(
     : null;
 }
 
+/** "$12.34", or "$50" for whole dollars. */
+export function formatUsd(v: number): string {
+  return `$${Number.isInteger(v) ? v : v.toFixed(2)}`;
+}
+
 /** Whole percent, except 99.x stays precise so "100%" is never shown early. */
 export function formatPercent(v: number): string {
   const r = Math.round(v * 10) / 10;

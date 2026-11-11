@@ -111,14 +111,22 @@ export interface OpenCodeAccountSummary {
 
 // ---- Cursor ---------------------------------------------------------------
 
+/** On-demand usage: what Cursor bills once the included buckets are used up. */
+export type CursorOnDemand =
+  | { state: "disabled" }
+  /** `limitUsd` null: no monthly limit */
+  | { state: "enabled"; spentUsd: number; limitUsd: number | null };
+
+/** The included-usage buckets of Cursor's Settings → Plan & Usage. */
 export interface CursorUsage {
-  autoPercentUsed: number | null;
-  apiPercentUsed: number | null;
-  totalPercentUsed: number | null;
-  billingCycleEnd: string | null;
-  totalSpend: number | null;
-  limit: number | null;
-  bonusSpend: number | null;
+  /** "Cursor Models" (Cursor's own models, e.g. Composer and Cursor Grok) */
+  cursorModelsPercentUsed: number | null;
+  /** "Other Models" */
+  otherModelsPercentUsed: number | null;
+  /** when both buckets reset */
+  resetsAt: string | null;
+  /** null when Cursor did not say */
+  onDemand: CursorOnDemand | null;
   accountName: string | null;
   planName: string | null;
 }
