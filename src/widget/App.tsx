@@ -9,7 +9,15 @@ import {
   type MouseEvent,
   type ReactNode,
 } from "react";
-import { CollapseIcon, ExpandIcon, EyeOffIcon, GearIcon, PowerIcon, RefreshIcon } from "@/ui/Icons";
+import {
+  CollapseIcon,
+  DownloadIcon,
+  ExpandIcon,
+  EyeOffIcon,
+  GearIcon,
+  PowerIcon,
+  RefreshIcon,
+} from "@/ui/Icons";
 import { cssVars, WIDGET_PALETTES } from "@/ui/palette";
 import { accountKey, isAccountHidden } from "@/lib/account-key";
 import { copyKey } from "@/lib/copy-key";
@@ -24,16 +32,18 @@ import { formatAgo } from "@/lib/format";
 import { getPeakInfo } from "@/lib/peak";
 import { rankAccounts } from "@/lib/ranking";
 import { DEFAULT_SETTINGS } from "@/lib/settings-schema";
+import { checkForUpdates, useUpdateStatus } from "@/lib/updates";
 import type { ProviderId, TrackedAccount, WidgetProvider } from "@/lib/types";
 import { openCodeUsedUp, usedUp, type UsageOf } from "@/lib/used-up";
 import { ClaudeCard, CodexCard, CursorCard, GrokCard, OpenCodeCard } from "./_components/cards";
+import { UpdateBanner } from "./_components/UpdateBanner";
 import { nextBrightness, resolveWidgetTheme } from "./_lib/theme";
 import { menuNavIndex } from "./_lib/menu-nav";
 import { snoozedCards } from "./_lib/snooze";
 import { slotFromAccount, useWidgetData, type AccountList } from "./_lib/useWidgetData";
 
 const WIDTH = 238;
-const MENU_WIDTH = 144;
+const MENU_WIDTH = 156;
 /** Gap between the right-click menu and the window edge. */
 const MENU_MARGIN = 4;
 /** +6px below the content leaves room for the bottom card's glow. */
@@ -42,7 +52,7 @@ const GLOW = 6;
 const MENU_REVEAL_MAX_MS = 150;
 /** Reset text is minute-resolution, so the whole panel does not re-render every second. */
 const CLOCK_MS = 60_000;
-type MenuAction = "expand" | "collapse" | "refresh" | "settings" | "quit";
+type MenuAction = "expand" | "collapse" | "refresh" | "settings" | "update" | "quit";
 
 function startDrag(e: MouseEvent) {
   if (e.button !== 0) return;
@@ -52,6 +62,7 @@ function startDrag(e: MouseEvent) {
 
 export default function WidgetPage() {
   const { data, reload, lastUsed, increased, updateSettings } = useWidgetData();
+  const updateStatus = useUpdateStatus();
   const [expanded, setExpanded] = useState(false);
   const [brightness, setBrightness] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -277,6 +288,7 @@ export default function WidgetPage() {
     if (action === "expand") setExpanded(true);
     else if (action === "collapse") setExpanded(false);
     else if (action === "refresh") void reload();
+    else if (action === "update") checkForUpdates();
     else bridgeMenuAction(action);
   };
 
@@ -433,6 +445,7 @@ export default function WidgetPage() {
         <p className="text-[11px] px-1 py-2 text-(--w-muted)">Loading…</p>
       ) : (
         <div className="space-y-1">
+          <UpdateBanner status={updateStatus} />
           {data.offline && (
             <div
               role="status"
@@ -498,6 +511,16 @@ export default function WidgetPage() {
           >
             <GearIcon size={14} />
             Settings
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            tabIndex={-1}
+            onClick={() => menuAction("update")}
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] hover:bg-(--w-hover) focus-visible:bg-(--w-hover)"
+          >
+            <DownloadIcon size={14} />
+            Check for updates
           </button>
           {snoozed.length > 0 && (
             <button

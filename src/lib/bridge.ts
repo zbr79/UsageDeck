@@ -3,6 +3,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import type { UpdateStatus } from "./updates";
 
 export type Unsubscribe = () => void;
 
@@ -61,3 +62,5 @@ export const onToggleExpand = (cb: () => void) => on<null>("widget-toggle-expand
 export const onRefresh = (cb: () => void) => on<null>("widget-refresh", () => cb());
 export const onWidgetSettingsChanged = (cb: () => void) =>
   on<null>("widget-settings-changed", () => cb());
+export const onUpdateStatus = (cb: (status: UpdateStatus) => void) =>
+  on<UpdateStatus>("update-status", cb);
