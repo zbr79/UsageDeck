@@ -34,6 +34,8 @@ const WIDTH: f64 = 238.0;
 pub const EVENT_TOGGLE_EXPAND: &str = "widget-toggle-expand";
 pub const EVENT_REFRESH: &str = "widget-refresh";
 pub const EVENT_SETTINGS_CHANGED: &str = "widget-settings-changed";
+/// Tells an open settings window to show General, where the update check's result appears.
+pub const EVENT_SHOW_UPDATES: &str = "settings-show-updates";
 
 /// Shared engine state, managed by Tauri and passed to every provider.
 pub struct Core {
@@ -277,10 +279,12 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 let _ = app.emit_to(WIDGET, EVENT_REFRESH, ());
             }
             "settings" => show_settings(app),
-            // The result shows in the widget's banner, so bring the widget up with it.
+            // The result shows in Settings → General → Updates. A new settings window opens on
+            // General; an open one is told to go there.
             "update" => {
                 updater::check_now(app);
-                show_widget(app);
+                let _ = app.emit_to(SETTINGS, EVENT_SHOW_UPDATES, ());
+                show_settings(app);
             }
             "logs" => open_log_folder(app),
             "quit" => app.exit(0),
@@ -365,7 +369,6 @@ pub fn run() {
             updater::get_update_status,
             updater::check_for_updates,
             updater::install_update,
-            updater::dismiss_update,
             diagnostics::get_diagnostics,
             diagnostics::copy_diagnostics
         ])

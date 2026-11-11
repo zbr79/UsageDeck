@@ -62,5 +62,7 @@ export const onToggleExpand = (cb: () => void) => on<null>("widget-toggle-expand
 export const onRefresh = (cb: () => void) => on<null>("widget-refresh", () => cb());
 export const onWidgetSettingsChanged = (cb: () => void) =>
   on<null>("widget-settings-changed", () => cb());
+/** The tray's "Check for updates": the settings window goes to General, where the result shows. */
+export const onShowUpdates = (cb: () => void) => on<null>("settings-show-updates", () => cb());
 export const onUpdateStatus = (cb: (status: UpdateStatus) => void) =>
   on<UpdateStatus>("update-status", cb);

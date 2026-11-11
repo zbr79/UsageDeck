@@ -1,4 +1,4 @@
-//! What the updater is doing, as the widget and the settings window render it, and how each step
+//! What the updater is doing, as Settings → General → Updates renders it, and how each step
 //! of a check changes it. No I/O here, so the tests run on any platform.
 //!
 //! Only a check the user asked for shows its progress and result. A background check shows
@@ -20,11 +20,9 @@ pub enum Phase {
     UpToDate,
     /// The user's check, or the start of the installer, failed.
     Failed { message: String },
-    /// A verified installer for `version` is on disk. `dismissed`: the user chose "Later", so the
-    /// widget hides its banner until a newer version turns up or the app restarts.
+    /// A verified installer for `version` is on disk.
     Ready {
         version: String,
-        dismissed: bool,
         #[serde(skip)]
         installer: PathBuf,
     },
@@ -50,7 +48,7 @@ pub enum Trigger {
     Manual,
 }
 
-/// The last finished check, kept whether or not the widget showed anything for it.
+/// The last finished check, kept whether or not it showed anything.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LastCheck {
@@ -64,17 +62,12 @@ pub struct LastCheck {
 impl UpdateStatus {
     /// The updater part of the diagnostics report. `time` formats ms since the epoch.
     pub fn report(&self, time: impl Fn(u64) -> String) -> String {
-        let banner = match &self.phase {
+        let shown = match &self.phase {
             Phase::Idle => "none (idle)".to_string(),
             Phase::Checking => "Checking for updates".into(),
             Phase::Downloading { version } => format!("Downloading {version}"),
             Phase::UpToDate => "You're up to date".into(),
             Phase::Failed { message } => format!("Couldn't check for updates ({message})"),
-            Phase::Ready {
-                version,
-                dismissed: true,
-                ..
-            } => format!("none (update {version} is ready, hidden with Later)"),
             Phase::Ready { version, .. } => format!("Update {version} is ready"),
         };
         let last = match (&self.last_check, self.last_checked) {
@@ -93,7 +86,7 @@ impl UpdateStatus {
             _ => "none since UsageDeck started".into(),
         };
         format!(
-            "Running version: {}\nLast check: {last}\nBanner: {banner}",
+            "Running version: {}\nLast check: {last}\nStatus: {shown}",
             self.current_version
         )
     }
@@ -139,11 +132,10 @@ impl Machine {
     /// already running, in which case a manual request makes that check report as manual.
     pub fn begin(&mut self, trigger: Trigger) -> bool {
         if trigger == Trigger::Manual {
-            match &mut self.status.phase {
-                // The update is already here: show it again rather than a spinner; the check
-                // still runs, quietly, in case a newer release came out since.
-                Phase::Ready { dismissed, .. } => *dismissed = false,
-                phase => *phase = Phase::Checking,
+            // The update is already here: keep offering it rather than a spinner; the check
+            // still runs, quietly, in case a newer release came out since.
+            if !matches!(self.status.phase, Phase::Ready { .. }) {
+                self.status.phase = Phase::Checking;
             }
         }
         match self.running {
@@ -188,29 +180,13 @@ impl Machine {
         });
         let phase = &mut self.status.phase;
         *phase = match outcome {
-            Outcome::Ready { version, installer } => {
-                // "Later" holds for the version it was said to, until the user checks again.
-                let dismissed = !manual
-                    && matches!(phase, Phase::Ready { version: v, dismissed: true, .. } if *v == version);
-                Phase::Ready {
-                    version,
-                    dismissed,
-                    installer,
-                }
-            }
+            Outcome::Ready { version, installer } => Phase::Ready { version, installer },
             Outcome::UpToDate if manual => Phase::UpToDate,
             // The installer already on disk stays good when GitHub cannot be reached.
             Outcome::Failed(_) if matches!(phase, Phase::Ready { .. }) => return,
             Outcome::Failed(message) if manual => Phase::Failed { message },
             Outcome::UpToDate | Outcome::Failed(_) => Phase::Idle,
         };
-    }
-
-    /// "Later": hide the banner for this version. Only meaningful in `Ready`.
-    pub fn dismiss(&mut self) {
-        if let Phase::Ready { dismissed, .. } = &mut self.status.phase {
-            *dismissed = true;
-        }
     }
 
     /// The verified installer to run, when an update is ready.
@@ -261,7 +237,6 @@ mod tests {
             json!({
                 "state": "ready",
                 "version": "1.5.0",
-                "dismissed": false,
                 "lastChecked": 1000,
                 "currentVersion": "1.4.0",
                 "lastCheck": {
@@ -332,9 +307,7 @@ mod tests {
             }
         );
         m.finish(ready("1.5.0"), 1);
-        assert!(
-            matches!(&m.status().phase, Phase::Ready { version, dismissed: false, .. } if version == "1.5.0")
-        );
+        assert!(matches!(&m.status().phase, Phase::Ready { version, .. } if version == "1.5.0"));
 
         let mut m = machine();
         check(&mut m, Trigger::Manual, Outcome::UpToDate);
@@ -372,55 +345,16 @@ mod tests {
     }
 
     #[test]
-    fn later_hides_this_version_until_a_newer_one_or_a_manual_check() {
+    fn a_manual_check_keeps_offering_a_ready_update() {
         let mut m = machine();
         check(&mut m, Trigger::Background, ready("1.5.0"));
-        m.dismiss();
-        assert!(matches!(
-            m.status().phase,
-            Phase::Ready {
-                dismissed: true,
-                ..
-            }
-        ));
-
-        check(&mut m, Trigger::Background, ready("1.5.0"));
-        assert!(
-            matches!(
-                m.status().phase,
-                Phase::Ready {
-                    dismissed: true,
-                    ..
-                }
-            ),
-            "the hourly check does not bring the same version back"
-        );
-
-        check(&mut m, Trigger::Background, ready("1.5.1"));
-        assert!(
-            matches!(&m.status().phase, Phase::Ready { version, dismissed: false, .. } if version == "1.5.1")
-        );
-
-        m.dismiss();
         assert!(m.begin(Trigger::Manual));
         assert!(
-            matches!(
-                m.status().phase,
-                Phase::Ready {
-                    dismissed: false,
-                    ..
-                }
-            ),
-            "asking again shows the ready update at once, not a spinner"
+            matches!(&m.status().phase, Phase::Ready { version, .. } if version == "1.5.0"),
+            "asking again keeps the ready update, not a spinner"
         );
         m.finish(ready("1.5.1"), 3);
-        assert!(matches!(
-            m.status().phase,
-            Phase::Ready {
-                dismissed: false,
-                ..
-            }
-        ));
+        assert!(matches!(&m.status().phase, Phase::Ready { version, .. } if version == "1.5.1"));
     }
 
     #[test]
@@ -443,15 +377,8 @@ mod tests {
         assert_eq!(m.installer(), None);
         check(&mut m, Trigger::Manual, Outcome::UpToDate);
         assert_eq!(m.installer(), None);
-        m.dismiss();
-        assert_eq!(
-            m.status().phase,
-            Phase::UpToDate,
-            "Later outside Ready does nothing"
-        );
         check(&mut m, Trigger::Background, ready("1.5.0"));
-        m.dismiss();
-        assert!(m.installer().is_some(), "Later keeps the download");
+        assert!(m.installer().is_some());
         m.install_failed("access denied".into());
         assert_eq!(m.installer(), None);
     }
@@ -462,7 +389,7 @@ mod tests {
         let time = |ms: u64| format!("t{ms}");
         assert_eq!(
             m.status().report(time),
-            "Running version: 1.4.0\nLast check: none since UsageDeck started\nBanner: none (idle)"
+            "Running version: 1.4.0\nLast check: none since UsageDeck started\nStatus: none (idle)"
         );
 
         assert!(m.begin(Trigger::Background));
@@ -471,18 +398,17 @@ mod tests {
         assert_eq!(m.status().phase, Phase::Idle);
         assert_eq!(
             m.status().report(time),
-            "Running version: 1.4.0\nLast check: t7 (background) -> up to date; latest release seen: 1.4.0\nBanner: none (idle)"
+            "Running version: 1.4.0\nLast check: t7 (background) -> up to date; latest release seen: 1.4.0\nStatus: none (idle)"
         );
 
         check(&mut m, Trigger::Manual, Outcome::Failed("HTTP 403".into()));
         assert_eq!(
             m.status().report(time),
-            "Running version: 1.4.0\nLast check: t1000 (manual) -> failed: HTTP 403; latest release seen: not learned\nBanner: Couldn't check for updates (HTTP 403)"
+            "Running version: 1.4.0\nLast check: t1000 (manual) -> failed: HTTP 403; latest release seen: not learned\nStatus: Couldn't check for updates (HTTP 403)"
         );
 
         // a failed check keeps the ready update, and the record still says it failed
         check(&mut m, Trigger::Background, ready("1.5.0"));
-        m.dismiss();
         check(
             &mut m,
             Trigger::Background,
@@ -490,7 +416,7 @@ mod tests {
         );
         assert_eq!(
             m.status().report(time),
-            "Running version: 1.4.0\nLast check: t1000 (background) -> failed: offline; latest release seen: not learned\nBanner: none (update 1.5.0 is ready, hidden with Later)"
+            "Running version: 1.4.0\nLast check: t1000 (background) -> failed: offline; latest release seen: not learned\nStatus: Update 1.5.0 is ready"
         );
     }
 }

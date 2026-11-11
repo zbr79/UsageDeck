@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { closeSettings, inTauri } from "@/lib/bridge";
+import { closeSettings, inTauri, onShowUpdates } from "@/lib/bridge";
 import { cssVars, PANEL_PALETTES, SETTINGS_CARD_PALETTES, SETTINGS_ROW_CARD } from "@/ui/palette";
 import { useSettings, useSummaries } from "./_lib/hooks";
 import { PanelThemeContext, resolvePanelTheme, useSystemDark } from "./_lib/theme";
@@ -89,6 +89,9 @@ export default function SettingsPage() {
     history.replaceState(null, "", searchWithPage(window.location.search, next));
     main.current?.scrollTo({ top: 0 });
   };
+
+  // `select` only touches setters and refs, so the first one stays good.
+  useEffect(() => onShowUpdates(() => select("general")), []);
 
   useEffect(() => {
     document.title = `${PAGE_TITLES[page]} - UsageDeck Settings`;

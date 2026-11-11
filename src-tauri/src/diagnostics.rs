@@ -156,7 +156,7 @@ mod tests {
     fn the_report_survives_redaction_and_a_leaked_token_does_not() {
         let cursor = "Request: POST api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage -> 401 (unauthenticated: Not logged in)\n\
                       Token: stored as safe-storage-v1; decrypt: ok; sha256 1a2b3c4d; token valid until Dec 3 (2026-12-03 10:00:00 +00:00)";
-        let updater = "Running version: 1.4.4\nLast check: 2026-11-11 14:02:00 +00:00 (manual) -> up to date; latest release seen: 1.4.4\nBanner: none (idle)";
+        let updater = "Running version: 1.4.4\nLast check: 2026-11-11 14:02:00 +00:00 (manual) -> up to date; latest release seen: 1.4.4\nStatus: none (idle)";
         let text = report_text(
             "1.4.4",
             "Windows 11 Pro 24H2 (build 26100)",

@@ -15,8 +15,7 @@ export type UpdatePhase =
   | { state: "downloading"; version: string }
   | { state: "upToDate" }
   | { state: "failed"; message: string }
-  /** `dismissed`: the user chose "Later"; the widget hides its banner, settings still offers it */
-  | { state: "ready"; version: string; dismissed: boolean };
+  | { state: "ready"; version: string };
 
 /** The last finished check, kept whether or not the widget showed anything for it. */
 export interface LastCheck {
@@ -57,7 +56,7 @@ export function isBusy(status: UpdateStatus | null): boolean {
   return status?.state === "checking" || status?.state === "downloading";
 }
 
-/** True when `next` says something `prev` does not (the banner's timers key on object identity). */
+/** True when `next` says something `prev` does not. */
 export function statusChanged(prev: UpdateStatus | null, next: UpdateStatus): boolean {
   return JSON.stringify(prev) !== JSON.stringify(next);
 }
@@ -117,12 +116,6 @@ export function checkForUpdates(): void {
 /** Rejects when no update is ready or the installer cannot start; on success the app exits. */
 export function installUpdate(): Promise<void> {
   return inTauri() ? invoke("install_update") : mockUpdates.install();
-}
-
-/** "Later": hide the widget's banner for the ready version. */
-export function dismissUpdate(): void {
-  const done = inTauri() ? invoke("dismiss_update") : mockUpdates.dismiss();
-  done.then(read).catch((err) => console.error("dismiss_update failed", err));
 }
 
 function onUpdateStatus(cb: (status: UpdateStatus) => void): () => void {
