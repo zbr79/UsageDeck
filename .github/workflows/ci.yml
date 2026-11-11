@@ -74,8 +74,8 @@ jobs:
   installer-smoke:
     name: Installer smoke test (real install on Windows)
     # Builds the real NSIS installer and the installer window around it, then runs the result the
-    # three ways it is started in practice: silent install, the updater's /P /UPDATE, and a plain
-    # double-click.
+    # three ways it is started in practice: silent install, an older updater's /P /UPDATE, and a
+    # plain double-click.
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
@@ -122,12 +122,26 @@ jobs:
           if ($installed -ne $version) { throw "DisplayVersion $installed, expected $version" }
           Get-Process usagedeck -ErrorAction SilentlyContinue | Stop-Process -Force
           "installed $version at $exe"
-      - name: Updater arguments (/P /UPDATE) pass through without a window
+      - name: An older updater's /P /UPDATE installs silently (/S, no window)
         shell: pwsh
         run: |
           $exe = Join-Path $env:LOCALAPPDATA 'UsageDeck\usagedeck.exe'
-          $p = Start-Process -FilePath .\UsageDeck-Setup.exe -ArgumentList '/P','/UPDATE' -Wait -PassThru
+          $p = Start-Process -FilePath .\UsageDeck-Setup.exe -ArgumentList '/P','/UPDATE' -PassThru
+          $null = $p.Handle # without -Wait, ExitCode stays empty unless the handle is opened early
+          # The embedded NSIS installer (installer/src/system.rs run_nsis) must get /S, not /P.
+          $nsis = $null
+          while (-not $p.HasExited -and -not $nsis) {
+            $nsis = Get-CimInstance Win32_Process -Filter "Name LIKE 'UsageDeck-%-nsis-%'" |
+              Select-Object -First 1 -ExpandProperty CommandLine
+          }
+          $p.WaitForExit()
           if ($p.ExitCode -ne 0) { throw "exit code $($p.ExitCode)" }
+          if ($nsis) {
+            "NSIS command line: $nsis"
+            if ($nsis -notmatch '\s/S(\s|$)' -or $nsis -match '\s/P(\s|$)') { throw "NSIS was not started silently" }
+          } else {
+            Write-Warning "the NSIS process exited before its command line was read"
+          }
           if (-not (Test-Path $exe)) { throw "$exe missing after update" }
           Get-Process usagedeck -ErrorAction SilentlyContinue | Stop-Process -Force
           "update pass-through ok"

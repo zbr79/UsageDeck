@@ -3,6 +3,7 @@
 
 use serde::Serialize;
 use serde_json::{Map, Value};
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 /// What a start of `UsageDeck-Setup.exe` does.
@@ -12,24 +13,68 @@ pub enum Launch<'a> {
     CustomUi,
     /// Run the embedded NSIS installer with its own wizard (it installs WebView2 when missing).
     NsisUi,
-    /// Run the embedded NSIS installer with exactly these arguments and no window of our own.
-    PassThrough(&'a str),
+    /// Run the embedded NSIS installer with these arguments ([`nsis_args`]) and no window of our
+    /// own.
+    PassThrough(Cow<'a, str>),
 }
 
-/// Any argument means an NSIS-style caller: the v1.1.0 and v1.2.0 updaters run the downloaded
-/// `UsageDeck-Setup.exe` with `/P /R /UPDATE` (src-tauri/src/updater.rs INSTALLER_ARGS), and
+/// Any argument means an NSIS-style caller: the updaters of 1.1.0 to 1.3.1 run the downloaded
+/// `UsageDeck-Setup.exe` with `/P /R /UPDATE`, 1.4.0 on with `/S /R /UPDATE`, and
 /// scripted installs pass `/S`, `/D=...` and the like. Those must behave exactly as the bare NSIS
 /// installer did, so the custom window only opens on a plain double-click. Without WebView2 the
 /// window cannot render, and the NSIS wizard installs WebView2 itself.
 pub fn launch(args: &str, webview2_installed: bool) -> Launch<'_> {
     let args = args.trim_start();
     if !args.is_empty() {
-        Launch::PassThrough(args)
+        Launch::PassThrough(nsis_args(args))
     } else if webview2_installed {
         Launch::CustomUi
     } else {
         Launch::NsisUi
     }
+}
+
+/// The arguments for NSIS, as typed except for one change: when an updater starts the installer
+/// (`/UPDATE`), its `/P` becomes `/S`. `/P` is the template's passive mode, which shows a progress
+/// window; the apps from 1.1.0 to 1.3.1 still pass it, and `/S` installs and relaunches the same
+/// way with no window (src-tauri/src/updater.rs INSTALLER_ARGS). Only whole words outside quotes
+/// before `/D=` count: NSIS reads `/D=` raw to the end of the line, so a path may hold " /P ".
+pub fn nsis_args(args: &str) -> Cow<'_, str> {
+    let options_end = if args.starts_with("/D=") {
+        0
+    } else {
+        args.find(" /D=").unwrap_or(args.len())
+    };
+    let options = &args[..options_end];
+    let mut words = Vec::new();
+    let mut quotes = 0;
+    for (start, word) in split_words(options) {
+        if quotes % 2 == 0 {
+            words.push((start, word));
+        }
+        quotes += word.matches('"').count();
+    }
+    let has = |flag: &str| words.iter().any(|(_, w)| w.eq_ignore_ascii_case(flag));
+    if !has("/UPDATE") || !has("/P") {
+        return Cow::Borrowed(args);
+    }
+    let mut rewritten = args.to_string();
+    for (start, word) in words {
+        if word.eq_ignore_ascii_case("/P") {
+            rewritten.replace_range(start..start + word.len(), "/S");
+        }
+    }
+    Cow::Owned(rewritten)
+}
+
+/// The words of `s` split at spaces and tabs, each with its byte offset.
+fn split_words(s: &str) -> impl Iterator<Item = (usize, &str)> {
+    let mut start = 0;
+    s.split([' ', '\t']).map(move |word| {
+        let at = start;
+        start += word.len() + 1;
+        (at, word)
+    })
 }
 
 /// The arguments in a Windows command line (`GetCommandLineW`), exactly as typed: everything
@@ -164,13 +209,44 @@ mod tests {
         patch: 0,
     };
 
+    fn pass(args: &str) -> Launch<'_> {
+        Launch::PassThrough(Cow::Borrowed(args))
+    }
+
     #[test]
-    fn updater_flags_pass_through_untouched() {
-        let cmd = r#""C:\Users\a b\AppData\Local\Temp\UsageDeck-1.3.0-setup.exe" /P /R /UPDATE"#;
+    fn an_older_updaters_passive_flag_becomes_silent() {
+        let cmd = r#""C:\Users\a b\AppData\Local\Temp\UsageDeck-1.4.0-setup.exe" /P /R /UPDATE"#;
         let args = command_line_args(cmd);
         assert_eq!(args, "/P /R /UPDATE");
-        assert_eq!(launch(args, true), Launch::PassThrough("/P /R /UPDATE"));
-        assert_eq!(launch(args, false), Launch::PassThrough("/P /R /UPDATE"));
+        assert_eq!(launch(args, true), pass("/S /R /UPDATE"));
+        assert_eq!(launch(args, false), pass("/S /R /UPDATE"));
+    }
+
+    #[test]
+    fn passive_becomes_silent_only_for_an_updater() {
+        for (args, nsis) in [
+            ("/P /R /UPDATE", "/S /R /UPDATE"),
+            ("/P /UPDATE", "/S /UPDATE"),
+            ("/UPDATE\t/p", "/UPDATE\t/S"),
+            ("/P  /update /R", "/S  /update /R"),
+            (
+                r"/P /UPDATE /D=C:\Apps\UsageDeck",
+                r"/S /UPDATE /D=C:\Apps\UsageDeck",
+            ),
+            ("/S /R /UPDATE", "/S /R /UPDATE"),
+            ("/P", "/P"),
+            ("/P /R", "/P /R"),
+            ("/UPDATE", "/UPDATE"),
+            ("/PASSIVE /UPDATE", "/PASSIVE /UPDATE"),
+            (r"/S /D=C:\x /P /UPDATE", r"/S /D=C:\x /P /UPDATE"),
+            (r"/P /D=C:\x /UPDATE y", r"/P /D=C:\x /UPDATE y"),
+            (r"/D=C:\x /P /UPDATE", r"/D=C:\x /P /UPDATE"),
+            (r#"/UPDATE /ARGS "a /P b""#, r#"/UPDATE /ARGS "a /P b""#),
+            (r#"/ARGS "a b" /P /UPDATE"#, r#"/ARGS "a b" /S /UPDATE"#),
+        ] {
+            assert_eq!(nsis_args(args), nsis, "{args}");
+            assert_eq!(launch(args, true), pass(nsis), "{args}");
+        }
     }
 
     #[test]
@@ -186,10 +262,7 @@ mod tests {
             (r#""C:\x\setup.exe"   /ARGS "--a b""#, r#"/ARGS "--a b""#),
         ] {
             assert_eq!(command_line_args(cmd), args, "{cmd}");
-            assert_eq!(
-                launch(command_line_args(cmd), true),
-                Launch::PassThrough(args)
-            );
+            assert_eq!(launch(command_line_args(cmd), true), pass(args));
         }
     }
 
