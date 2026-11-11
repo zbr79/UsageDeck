@@ -60,35 +60,56 @@ static KEY_CACHE: LazyLock<Mutex<HashMap<String, AppKey>>> = LazyLock::new(Defau
 
 /// The AES-256 key protecting an app's safeStorage values, or None.
 pub fn app_key(local_state: &Path) -> Option<AppKey> {
-    let text = std::fs::read_to_string(local_state).ok()?;
-    let json: Value = serde_json::from_str(&text).ok()?;
-    let encrypted = json.get("os_crypt")?.get("encrypted_key")?.as_str()?;
-    if encrypted.is_empty() {
-        return None;
-    }
+    app_key_or_why(local_state).ok()
+}
+
+/// The same key, or which step failed (for diagnostics; the text holds no secret).
+pub fn app_key_or_why(local_state: &Path) -> Result<AppKey, &'static str> {
+    let text = std::fs::read_to_string(local_state).map_err(|_| "Local State not found")?;
+    let json: Value = serde_json::from_str(&text).map_err(|_| "Local State is not JSON")?;
+    let encrypted = json["os_crypt"]["encrypted_key"]
+        .as_str()
+        .filter(|k| !k.is_empty())
+        .ok_or("Local State has no os_crypt.encrypted_key")?;
     if let Some(key) = KEY_CACHE.lock().unwrap().get(encrypted) {
-        return Some(*key);
+        return Ok(*key);
     }
-    let blob = B64.decode(encrypted).ok()?;
+    let blob = B64
+        .decode(encrypted)
+        .map_err(|_| "the Local State key is not base64")?;
     // Strip the 5-byte "DPAPI" prefix, as the old code did (`$enc[5..]`).
-    let key = dpapi_unprotect(blob.get(5..)?)?;
-    let key: AppKey = key.try_into().ok()?;
+    let protected = blob.get(5..).ok_or("the Local State key is too short")?;
+    let key = dpapi_unprotect(protected)
+        .ok_or("Windows (DPAPI) would not decrypt the Local State key for this user")?;
+    let key: AppKey = key
+        .try_into()
+        .map_err(|_| "the Local State key is not 32 bytes")?;
     KEY_CACHE.lock().unwrap().insert(encrypted.to_string(), key);
-    Some(key)
+    Ok(key)
 }
 
 /// Decrypt a base64 "v10" sealed value; None when it is not one or fails authentication.
 pub fn unseal(key: &AppKey, sealed_b64: Option<&Value>) -> Option<String> {
     let b = B64.decode(sealed_b64?.as_str()?).ok()?;
-    if b.len() < 3 + 12 + 16 || &b[..3] != b"v10" {
-        return None;
+    unseal_bytes(key, &b).ok()
+}
+
+/// Decrypt a "v10" sealed value, or say which step failed (the text holds no secret).
+pub fn unseal_bytes(key: &AppKey, sealed: &[u8]) -> Result<String, String> {
+    if sealed.len() < 3 + 12 + 16 || &sealed[..3] != b"v10" {
+        let prefix: String = sealed.iter().take(3).map(|b| format!("{b:02x}")).collect();
+        return Err(format!(
+            "not a v10 safeStorage value ({} bytes, starts 0x{prefix})",
+            sealed.len()
+        ));
     }
-    let cipher = Aes256Gcm::new_from_slice(key).ok()?;
+    let cipher =
+        Aes256Gcm::new_from_slice(key).map_err(|_| "the key has the wrong length".to_string())?;
     // aes-gcm expects ciphertext || tag, which is exactly the rest of the value.
     let plain = cipher
-        .decrypt(Nonce::from_slice(&b[3..15]), &b[15..])
-        .ok()?;
-    String::from_utf8(plain).ok()
+        .decrypt(Nonce::from_slice(&sealed[3..15]), &sealed[15..])
+        .map_err(|_| "AES-GCM rejected the value (the key does not match it)".to_string())?;
+    String::from_utf8(plain).map_err(|_| "the decrypted value is not text".to_string())
 }
 
 /// Seal a value the way Chromium does (tests only).

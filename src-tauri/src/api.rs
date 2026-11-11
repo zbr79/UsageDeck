@@ -210,9 +210,7 @@ pub async fn dispatch(core: &Core, method: &str, path: &str, body: Option<Value>
         ("/api/usage", "GET") => {
             ok(json!({ "accounts": providers::opencode::accounts(core).await }))
         }
-        ("/api/cursor", "GET") => {
-            ok(json!({ "accounts": providers::cursor::accounts(core).await }))
-        }
+        ("/api/cursor", "GET") => ok(providers::cursor::response(core).await),
         ("/api/grok", "GET") => ok(json!({ "accounts": providers::grok::accounts(core).await })),
         ("/api/codex", "GET") => ok(json!({ "accounts": providers::codex::accounts(core).await })),
         ("/api/claude", "GET") => {
@@ -427,6 +425,6 @@ mod tests {
             405
         );
         let r = dispatch(&core, "GET", "/api/cursor", None).await;
-        assert_eq!(r.body, json!({ "accounts": [] }));
+        assert_eq!(r.body["accounts"], json!([]));
     }
 }
