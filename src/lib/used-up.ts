@@ -63,6 +63,8 @@ const WINDOWS: { [P in ProviderId]: (usage: UsageOf[P]) => LimitWindow[] } = {
       resetsAt: x.weeklyResetAt,
     },
   ],
+  // A model's own weekly limit (Fable) is left out: when it is full, the other models still work,
+  // so only its bar turns red.
   claude: (c) =>
     [c.fiveHour, c.weekly].map((w) => ({
       full: w?.percent != null && w.percent >= 100,

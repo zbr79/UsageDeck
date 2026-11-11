@@ -178,6 +178,12 @@ export interface ClaudeWindow {
   resetsAt: string | null;
 }
 
+/** A weekly limit of one model's own, e.g. Fable (`limits[].kind == "weekly_scoped"`). */
+export interface ClaudeScopedWindow extends ClaudeWindow {
+  /** the model's display name, else its id, else "Model" */
+  label: string;
+}
+
 export interface ClaudeUsage {
   email: string | null;
   displayName: string | null;
@@ -189,6 +195,7 @@ export interface ClaudeUsage {
   weekly: ClaudeWindow;
   weeklyOpus: ClaudeWindow | null;
   weeklySonnet: ClaudeWindow | null;
+  weeklyScoped: ClaudeScopedWindow[];
   resetCredits: number | null;
   billingType: string | null;
   rateLimitTier: string | null;

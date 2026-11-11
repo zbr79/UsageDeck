@@ -623,6 +623,8 @@ export function ClaudeCard({
   const windowUnknown = (w: ClaudeUsage["fiveHour"] | undefined) =>
     w?.percent == null || (slot.stale && isPassed(w.resetsAt, now));
   const used = usedUp("claude", { usage: c, stale: slot.stale }, now);
+  // One model's own weekly limit (Fable) as a third bar; a second one would not fit at 238 px.
+  const scoped = c?.weeklyScoped[0];
   const rate = headerRate(pace);
   const target = settings.claudeHourlyTarget;
   const rate60m = pace?.spend.rate60m ?? 0;
@@ -689,7 +691,8 @@ export function ClaudeCard({
             {(
               [
                 ["5h", "Rolling 5-hour window", c.fiveHour, "fiveHour"],
-                ["Weekly", "Weekly", c.weekly, "weekly"],
+                // with a third bar "Weekly" no longer fits at 238 px: OpenCode's short "W"
+                [scoped ? "W" : "Weekly", "Weekly", c.weekly, "weekly"],
               ] as const
             ).map(([label, name, w, key]) => {
               const unknown = windowUnknown(w);
@@ -706,6 +709,20 @@ export function ClaudeCard({
                 />
               );
             })}
+            {scoped && (
+              <Meter
+                // from 99.1% the wider value leaves "Fable" too little room: its first letter then
+                label={
+                  scoped.percent != null && scoped.percent > 99
+                    ? scoped.label.charAt(0)
+                    : scoped.label
+                }
+                name={`${scoped.label} weekly`}
+                percent={scoped.percent}
+                unknown={windowUnknown(scoped)}
+                reset={windowUnknown(scoped) ? null : formatUntil(scoped.resetsAt, now)}
+              />
+            )}
           </div>
         </>
       )}
