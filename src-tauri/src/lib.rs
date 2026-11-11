@@ -126,6 +126,12 @@ async fn copy_key(
     })
 }
 
+/// The Cursor card's "Open Cursor" button: start Cursor so it renews its own sign-in.
+#[tauri::command]
+fn open_cursor() -> Result<(), String> {
+    providers::cursor::open_cursor()
+}
+
 #[tauri::command]
 fn open_settings(app: AppHandle) {
     show_settings(&app);
@@ -344,6 +350,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             api,
             copy_key,
+            open_cursor,
             widget_resize,
             open_settings,
             close_settings,

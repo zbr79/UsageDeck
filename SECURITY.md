@@ -45,6 +45,18 @@ refreshes or deletes them** — refreshing would rotate their refresh tokens and
 When a token has expired or is rejected, the card shows `re-auth` and the last known numbers
 instead. No token-refresh endpoint is ever called.
 
+**Cursor.** UsageDeck reads only `cursorAuth/accessToken` and the account name
+(`cursorAuth/cachedEmail`, else `cursorAuth/cachedScopedProfile`) from `state.vscdb`. It never reads
+`cursorAuth/refreshToken` and never calls `https://api2.cursor.sh/oauth/token`: Cursor stores each
+renewed access token as its refresh token too, and whether a refresh retires the token it was given
+is not known, so a refresh from UsageDeck could log Cursor out. When Cursor's API rejects the access
+token (401), the card shows its last numbers in gray with an **Open Cursor** button. The button
+starts `Cursor.exe`, which renews its own token. UsageDeck looks for it in
+`%LOCALAPPDATA%\Programs\cursor`, then `%ProgramFiles%\cursor`, then in the `InstallLocation` or
+`DisplayIcon` of a "Cursor" entry under the `HKCU` / `HKLM` `…\CurrentVersion\Uninstall` registry
+keys (read-only). While the token stays rejected, every poll reads `state.vscdb` again (read-only),
+so the renewed token is used as soon as Cursor writes it. The rejected token is kept in memory only.
+
 | App            | What is read (read-only)                                                                                    |
 | -------------- | ----------------------------------------------------------------------------------------------------------- |
 | Claude Code    | `~/.claude/.credentials.json` (`claudeAiOauth`), `~/.claude.json` (account email / plan)                    |
@@ -122,8 +134,12 @@ data and the keys stay, so a reinstall or a manual upgrade picks them up again. 
 | Codex       | `https://chatgpt.com/backend-api/wham/usage`                                  | Codex CLI's access token    |
 | Claude      | `https://api.anthropic.com/api/oauth/usage`                                   | Claude's OAuth access token |
 
-Each token goes only to its own provider. No telemetry, no analytics, no update check, no
-token-refresh endpoints.
+Each token goes only to its own provider. No telemetry, no analytics, no token-refresh endpoints.
+
+The updater (src-tauri/src/updater.rs) sends no token and no personal data. About once an hour it
+reads `https://api.github.com/repos/zbr79/UsageDeck/releases/latest`; when a newer version exists
+it downloads that release's `UsageDeck-Setup.exe` from GitHub and checks its size and SHA-256
+against the digest GitHub reports before offering to install it.
 
 ## Known limitations
 

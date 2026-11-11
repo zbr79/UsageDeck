@@ -1,5 +1,6 @@
 import {
   Fragment,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -21,6 +22,7 @@ import {
 import { cssVars, WIDGET_PALETTES } from "@/ui/palette";
 import { accountKey, isAccountHidden } from "@/lib/account-key";
 import { copyKey } from "@/lib/copy-key";
+import { openCursor } from "@/lib/open-cursor";
 import {
   menuAction as bridgeMenuAction,
   onBg,
@@ -61,7 +63,10 @@ function startDrag(e: MouseEvent) {
 }
 
 export default function WidgetPage() {
-  const { data, reload, lastUsed, increased, updateSettings } = useWidgetData();
+  const { data, reload, lastUsed, increased, updateSettings, watchCursorSignIn } = useWidgetData();
+  const openCursorThenWatch = useCallback(async () => {
+    if (await openCursor()) watchCursorSignIn();
+  }, [watchCursorSignIn]);
   const updateStatus = useUpdateStatus();
   const [expanded, setExpanded] = useState(false);
   const [brightness, setBrightness] = useState<number | null>(null);
@@ -348,6 +353,7 @@ export default function WidgetPage() {
               accountLabel={account.label ?? account.usage?.accountName}
               multiple={multiple}
               onHide={hide("cursor", account.id)}
+              onOpenCursor={() => void openCursorThenWatch()}
             />
           ),
           <CursorCard

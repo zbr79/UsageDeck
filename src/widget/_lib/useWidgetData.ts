@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { announceSettingsChanged, getJson, onSettingsChanged, sendJson } from "@/lib/api";
 import { onRefresh } from "@/lib/bridge";
+import { isAuthRejected } from "@/lib/errors";
 import { increasedWindows } from "@/lib/ranking";
 import { applySettingsPatch, type SettingsPatch } from "@/lib/settings-schema";
 import type {
@@ -16,6 +17,9 @@ import type {
 } from "@/lib/types";
 
 export const POLL_MS = 60_000;
+/** After "Open Cursor": poll this often, for this long, to show the sign-in Cursor renews. */
+export const FAST_POLL_MS = 10_000;
+export const FAST_POLL_FOR_MS = 120_000;
 const INCREASE_VISIBLE_MS = 20_000;
 
 export interface ProviderSlot<T> {
@@ -96,6 +100,32 @@ export function queuedRunner(task: () => Promise<void>): () => Promise<void> {
 }
 
 /**
+ * Runs `load` every `everyMs` for `forMs` after `start()`, and stops early once `done()` is true.
+ * `start()` while running begins a new window; `stop()` ends it.
+ */
+export function burstPoller(
+  load: () => unknown,
+  done: () => boolean,
+  everyMs = FAST_POLL_MS,
+  forMs = FAST_POLL_FOR_MS,
+) {
+  let timer: ReturnType<typeof setInterval> | null = null;
+  const stop = () => {
+    if (timer) clearInterval(timer);
+    timer = null;
+  };
+  const start = () => {
+    stop();
+    const until = Date.now() + forMs;
+    timer = setInterval(() => {
+      if (done() || Date.now() >= until) stop();
+      else void load();
+    }, everyMs);
+  };
+  return { start, stop };
+}
+
+/**
  * Polls every endpoint independently: one slow or failing provider never
  * blocks or blanks the others.
  */
@@ -114,6 +144,7 @@ export function useWidgetData() {
   });
   const lastUsedAt = useRef(new Map<string, number>());
   const increaseAt = useRef(new Map<string, number>());
+  const cursorRejected = useRef(false);
 
   const loadOnce = useCallback(async () => {
     const [settings, usage, cursor, grok, codex, claude, pace] = await Promise.allSettled([
@@ -143,6 +174,12 @@ export function useWidgetData() {
       }
     }
 
+    if (cursor.status === "fulfilled") {
+      cursorRejected.current = (cursor.value.accounts ?? []).some((a) =>
+        isAuthRejected(a.authExpired, a.error),
+      );
+    }
+
     const list = <T>(
       prev: AccountList<T>,
       r: PromiseSettledResult<{ accounts: TrackedAccount<T>[] }>,
@@ -169,6 +206,8 @@ export function useWidgetData() {
   }, []);
 
   const load = useMemo(() => queuedRunner(loadOnce), [loadOnce]);
+  const cursorWatch = useMemo(() => burstPoller(load, () => !cursorRejected.current), [load]);
+  useEffect(() => cursorWatch.stop, [cursorWatch]);
 
   useEffect(() => {
     void load();
@@ -204,5 +243,13 @@ export function useWidgetData() {
     [load],
   );
 
-  return { data, reload: load, lastUsed, increased, updateSettings };
+  return {
+    data,
+    reload: load,
+    lastUsed,
+    increased,
+    updateSettings,
+    /** after "Open Cursor": poll fast until Cursor's renewed sign-in shows */
+    watchCursorSignIn: cursorWatch.start,
+  };
 }
