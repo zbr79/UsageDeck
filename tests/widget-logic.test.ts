@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  apiByModel,
+  apiSpendText,
   claudePlanLabel,
   formatAgo,
   formatDuration,
@@ -69,6 +71,27 @@ describe("formatPercent / formatAgo", () => {
     expect(formatAgo(0, 3 * M)).toBe("3m ago");
     expect(formatAgo(0, 2 * H)).toBe("2h ago");
     expect(formatAgo(0, 3 * D)).toBe("3d ago");
+  });
+});
+
+describe("Cursor API spend", () => {
+  it("dollars, with the plan's limit when known", () => {
+    expect(apiSpendText(4.123, 20)).toBe("API $4.12 / $20");
+    expect(apiSpendText(4, null)).toBe("API $4");
+  });
+
+  it("the three largest models, the rest as other", () => {
+    const m = (model: string, usd: number) => ({ model, usd });
+    expect(apiByModel([m("claude-4.6-opus", 3.1), m("gpt-5", 1.02)])).toEqual([
+      "claude-4.6-opus $3.10",
+      "gpt-5 $1.02",
+    ]);
+    expect(apiByModel([m("a", 3), m("b", 2), m("c", 1), m("d", 0.25), m("e", 0.15)])).toEqual([
+      "a $3",
+      "b $2",
+      "c $1",
+      "other $0.40",
+    ]);
   });
 });
 

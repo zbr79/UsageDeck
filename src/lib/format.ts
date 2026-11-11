@@ -61,6 +61,20 @@ export function formatUsd(v: number): string {
   return `$${Number.isInteger(v) ? v : v.toFixed(2)}`;
 }
 
+/** "API $4.12 / $20", or "API $4.12" without a known limit. */
+export function apiSpendText(spentUsd: number, limitUsd: number | null): string {
+  return `API ${formatUsd(spentUsd)}${limitUsd == null ? "" : ` / ${formatUsd(limitUsd)}`}`;
+}
+
+/** ["claude-4.6-opus $3.10", "gpt-5 $1.02", "other $0.40"]: the three largest, the rest as "other". */
+export function apiByModel(byModel: readonly { model: string; usd: number }[]): string[] {
+  const rest = byModel.slice(3).reduce((sum, m) => sum + m.usd, 0);
+  return [
+    ...byModel.slice(0, 3).map((m) => `${m.model} ${formatUsd(m.usd)}`),
+    ...(byModel.length > 3 ? [`other ${formatUsd(rest)}`] : []),
+  ];
+}
+
 /** Whole percent, except 99.x stays precise so "100%" is never shown early. */
 export function formatPercent(v: number): string {
   const r = Math.round(v * 10) / 10;

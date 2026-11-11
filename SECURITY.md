@@ -73,6 +73,14 @@ ahead, answers with another error, or answers without the usage, UsageDeck sends
 token's `sub` claim after the last `|`. This is the session cookie Cursor's own web dashboard uses,
 built from the same access token; nothing new is stored and no cookie is kept between requests.
 
+**Cursor usage events.** When the usage shows API spend, UsageDeck sends
+`POST https://cursor.com/api/dashboard/get-filtered-usage-events` with the same cookie, the headers
+`Content-Type: application/json`, `Accept: application/json` and `Origin: https://cursor.com`
+(Cursor checks it), and the body `{"startDate": "<billing-cycle start, ms>", "endDate": "<now, ms>",
+"page": <n>, "pageSize": 500}`, one page at a time, at most 20 pages and at most every five minutes.
+This is the request behind Cursor's web Usage page. Only each event's model, kind and
+`chargedCents` are read, and only the per-model sums are kept, in memory and in the usage cache.
+
 | App            | What is read (read-only)                                                                                    |
 | -------------- | ----------------------------------------------------------------------------------------------------------- |
 | Claude Code    | `~/.claude/.credentials.json` (`claudeAiOauth`), `~/.claude.json` (account email / plan)                    |
@@ -159,6 +167,7 @@ data and the keys stay, so a reinstall or a manual upgrade picks them up again. 
 | OpenCode Go | `https://opencode.ai/zen/go/v1/usage`                                         | your OpenCode API key       |
 | Cursor      | `https://api2.cursor.sh/aiserver.v1.DashboardService/` `GetCurrentPeriodUsage`, `GetPlanInfo`, `GetHardLimit` | Cursor's access token |
 | Cursor (fallback) | `GET https://cursor.com/api/usage-summary`                              | the same token, as the `WorkosCursorSessionToken` cookie |
+| Cursor (API dollars) | `POST https://cursor.com/api/dashboard/get-filtered-usage-events`    | the same token, as the `WorkosCursorSessionToken` cookie |
 | Grok Bot    | `https://api2.cursor.sh/aiserver.v1.DashboardService/GetSandUsageStatus`      | Grok Bot's (or Cursor's) token |
 | Codex       | `https://chatgpt.com/backend-api/wham/usage`                                  | Codex CLI's access token    |
 | Claude      | `https://api.anthropic.com/api/oauth/usage`                                   | Claude's OAuth access token |
@@ -168,7 +177,8 @@ Each token goes only to its own provider. No telemetry, no analytics, no token-r
 Every DashboardService call (Cursor and Grok Bot) is a `POST` with the body `{}` and these headers:
 `Authorization: Bearer <token>`, `Content-Type: application/json`, `Connect-Protocol-Version: 1`,
 and the `Accept: */*`, `Host` and `Content-Length` that the HTTP client adds. No `User-Agent` and no
-cookie are sent. The cursor.com fallback above is the only request that carries a cookie. A failed
+cookie are sent. The cursor.com fallback and the usage events above are the only requests that
+carry a cookie. A failed
 Cursor attempt is logged with the same one-line reason the card shows: the host, the HTTP status,
 the error code from the reply and the expiry time from the token's `exp` claim; the token itself
 is never logged.

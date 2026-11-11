@@ -27,6 +27,27 @@ pub struct CursorUsage {
     pub on_demand: Option<OnDemand>,
     pub account_name: Option<String>,
     pub plan_name: Option<String>,
+    /// None when no API usage was read: none this cycle, or the usage events did not answer.
+    pub api_spend: Option<ApiSpend>,
+}
+
+/// The API bucket's dollars this billing cycle and the models they went to, summed from the usage
+/// events (`chargedCents`, what Cursor takes from the plan for each request).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiSpend {
+    pub spent_usd: f64,
+    /// The plan's included usage (`limit`), None when the usage reply had none.
+    pub limit_usd: Option<f64>,
+    /// Largest first.
+    pub by_model: Vec<ModelSpend>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelSpend {
+    pub model: String,
+    pub usd: f64,
 }
 
 /// On-demand usage: what Cursor bills once the included buckets are used up.
@@ -92,6 +113,7 @@ pub fn usage_from_dashboard(
         on_demand: hard_limit.map(|h| on_demand(h, &reply["spendLimitUsage"])),
         account_name,
         plan_name: plan.and_then(|p| cursor_plan_name(&p["planInfo"]["planName"])),
+        api_spend: None,
     })
 }
 
@@ -131,6 +153,7 @@ pub fn usage_from_summary(
         on_demand,
         account_name,
         plan_name: string_or_null(&reply["membershipType"]).map(|m| membership_name(&m)),
+        api_spend: None,
     })
 }
 
@@ -179,6 +202,155 @@ fn cursor_plan_name(value: &Value) -> Option<String> {
         "Pro".into()
     } else {
         plan
+    })
+}
+
+// ---- usage events: where the API dollars went ------------------------------------------------
+
+/// What the usage reply (GetCurrentPeriodUsage or usage-summary) tells the usage-events request.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Cycle {
+    pub start_ms: i64,
+    pub limit_usd: Option<f64>,
+    /// `autoBucketModels`: the models billed to the first-party bucket. Only GetCurrentPeriodUsage
+    /// lists them.
+    pub first_party: Option<Vec<String>>,
+}
+
+/// None when the reply names no billing-cycle start.
+pub fn cycle_of(usage_body: &[u8]) -> Option<Cycle> {
+    let reply: Value = serde_json::from_slice(usage_body).ok()?;
+    let start = to_iso(&reply["billingCycleStart"])?;
+    let start_ms = chrono::DateTime::parse_from_rfc3339(&start)
+        .ok()?
+        .timestamp_millis();
+    let limit_cents = number_or_null(&reply["planUsage"]["limit"])
+        .or_else(|| number_or_null(&reply["individualUsage"]["plan"]["limit"]));
+    let first_party = reply["autoBucketModels"].as_array().map(|models| {
+        models
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect()
+    });
+    Some(Cycle {
+        start_ms,
+        limit_usd: limit_cents.map(|c| c / 100.0),
+        first_party,
+    })
+}
+
+/// One usage event: one request, its model and what it took from the plan.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UsageEvent {
+    pub model: Option<String>,
+    pub kind: Option<String>,
+    pub charged_cents: f64,
+}
+
+/// One page of `POST cursor.com/api/dashboard/get-filtered-usage-events`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EventsPage {
+    /// `totalUsageEventsCount`: the events of the whole query, on every page.
+    pub total: Option<u64>,
+    pub events: Vec<UsageEvent>,
+}
+
+/// A number Cursor may send as a string (`"3.5"`, `"1793000000000"`).
+fn lenient_number(value: &Value) -> Option<f64> {
+    number_or_null(value).or_else(|| {
+        value
+            .as_str()?
+            .trim()
+            .parse()
+            .ok()
+            .filter(|v: &f64| v.is_finite())
+    })
+}
+
+/// Err says what the page lacked. Proto3 JSON leaves out an empty event list and a zero
+/// `chargedCents`, so either reads as nothing.
+pub fn events_page(body: &[u8]) -> Result<EventsPage, String> {
+    let reply: Value =
+        serde_json::from_slice(body).map_err(|_| "the reply is not JSON".to_string())?;
+    let Some(object) = reply.as_object() else {
+        return Err("the reply is not an object".into());
+    };
+    let total = object
+        .get("totalUsageEventsCount")
+        .and_then(lenient_number)
+        .filter(|t| *t >= 0.0)
+        .map(|t| t as u64);
+    let events = match object.get("usageEventsDisplay") {
+        Some(Value::Array(events)) => events,
+        None if object.is_empty() || total == Some(0) => {
+            return Ok(EventsPage {
+                total,
+                events: Vec::new(),
+            })
+        }
+        _ => return Err(format!("no usageEventsDisplay; {}", keys(&reply))),
+    };
+    let events = events
+        .iter()
+        .map(|e| UsageEvent {
+            model: string_or_null(&e["model"]),
+            kind: string_or_null(&e["kind"]),
+            charged_cents: lenient_number(&e["chargedCents"])
+                .filter(|c| *c > 0.0)
+                .unwrap_or(0.0),
+        })
+        .collect();
+    Ok(EventsPage { total, events })
+}
+
+/// Whether the pages read so far hold every event: `sent` came on the last page, `read` on all.
+/// Cursor may send fewer events than asked for per page, so a short page ends the read only when
+/// the reply gave no total.
+pub fn events_complete(total: Option<u64>, sent: usize, read: usize, page_size: usize) -> bool {
+    match total {
+        Some(total) => sent == 0 || read as u64 >= total,
+        None => sent < page_size,
+    }
+}
+
+/// Whether a model is billed to the first-party bucket ("Cursor Models"). Without Cursor's list
+/// (the cursor.com path), Auto and Composer are.
+fn is_first_party(model: &str, listed: Option<&[String]>) -> bool {
+    match listed {
+        Some(models) => models.iter().any(|m| m == model),
+        None => model == "default" || model == "auto" || model.starts_with("composer"),
+    }
+}
+
+/// The API bucket's spend from this cycle's events: every event outside the first-party bucket
+/// that Cursor did not mark as errored, summed per model. None when it comes to nothing.
+pub fn api_spend(events: &[UsageEvent], cycle: &Cycle) -> Option<ApiSpend> {
+    let mut by_model: Vec<ModelSpend> = Vec::new();
+    for event in events {
+        let model = event.model.as_deref().unwrap_or("unknown");
+        let errored = event.kind.as_deref().is_some_and(|k| k.contains("ERRORED"));
+        if errored
+            || event.charged_cents <= 0.0
+            || is_first_party(model, cycle.first_party.as_deref())
+        {
+            continue;
+        }
+        let usd = event.charged_cents / 100.0;
+        match by_model.iter_mut().find(|m| m.model == model) {
+            Some(m) => m.usd += usd,
+            None => by_model.push(ModelSpend {
+                model: model.to_string(),
+                usd,
+            }),
+        }
+    }
+    by_model.sort_by(|a, b| b.usd.total_cmp(&a.usd).then_with(|| a.model.cmp(&b.model)));
+    let spent_usd: f64 = by_model.iter().map(|m| m.usd).sum();
+    (spent_usd > 0.0).then_some(ApiSpend {
+        spent_usd,
+        limit_usd: cycle.limit_usd,
+        by_model,
     })
 }
 
@@ -390,6 +562,123 @@ mod tests {
         );
         let off = serde_json::to_value(OnDemand::Disabled).unwrap();
         assert_eq!(off, serde_json::json!({ "state": "disabled" }));
+    }
+
+    const EVENTS: &[u8] = include_bytes!("../../tests/fixtures/cursor/usage-events.json");
+
+    fn ok_cycle() -> Cycle {
+        let v: Value = serde_json::from_slice(OK).unwrap();
+        cycle_of(&serde_json::to_vec(&v["usage"]).unwrap()).unwrap()
+    }
+
+    fn close(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-9
+    }
+
+    #[test]
+    fn the_cycle_comes_from_either_usage_reply() {
+        assert_eq!(
+            ok_cycle(),
+            Cycle {
+                start_ms: 1_791_756_973_000,
+                limit_usd: Some(20.0),
+                first_party: Some(vec![
+                    "default".into(),
+                    "composer-1.5".into(),
+                    "composer-2".into()
+                ]),
+            }
+        );
+        let summary = cycle_of(include_bytes!(
+            "../../tests/fixtures/cursor/usage-summary.json"
+        ))
+        .unwrap();
+        assert_eq!(summary.start_ms, 1_791_756_973_000);
+        assert_eq!(summary.limit_usd, Some(20.0));
+        assert_eq!(summary.first_party, None);
+        assert_eq!(cycle_of(br#"{"planUsage":{}}"#), None);
+        assert_eq!(cycle_of(b"<html>"), None);
+    }
+
+    #[test]
+    fn api_spend_sums_the_events_outside_the_first_party_bucket_per_model() {
+        let page = events_page(EVENTS).unwrap();
+        assert_eq!(page.total, Some(7));
+        assert_eq!(page.events.len(), 7);
+        let spend = api_spend(&page.events, &ok_cycle()).unwrap();
+        let models: Vec<&str> = spend.by_model.iter().map(|m| m.model.as_str()).collect();
+        // composer-2 and default are first-party; the errored gpt-5 request cost nothing
+        assert_eq!(
+            models,
+            ["claude-4.6-opus-high-thinking", "gpt-5", "gemini-3-pro"]
+        );
+        assert!(close(spend.by_model[0].usd, 3.0503), "{spend:?}");
+        assert!(close(spend.by_model[1].usd, 0.5));
+        assert!(close(spend.spent_usd, 3.5723));
+        assert_eq!(spend.limit_usd, Some(20.0));
+        let v = serde_json::to_value(&spend).unwrap();
+        assert!(v.get("spentUsd").is_some() && v.get("limitUsd").is_some());
+        assert_eq!(
+            v["byModel"][1],
+            serde_json::json!({ "model": "gpt-5", "usd": 0.5 })
+        );
+    }
+
+    #[test]
+    fn without_cursors_model_list_auto_and_composer_are_first_party() {
+        let page = events_page(EVENTS).unwrap();
+        let cycle = Cycle {
+            first_party: None,
+            ..ok_cycle()
+        };
+        let spend = api_spend(&page.events, &cycle).unwrap();
+        assert!(close(spend.spent_usd, 3.5723));
+        let only_composer = UsageEvent {
+            model: Some("composer-2".into()),
+            kind: None,
+            charged_cents: 40.0,
+        };
+        assert_eq!(api_spend(&[only_composer], &cycle), None);
+        assert_eq!(api_spend(&[], &cycle), None);
+    }
+
+    #[test]
+    fn an_events_page_without_events_is_empty_and_an_odd_one_says_what_it_held() {
+        assert_eq!(
+            events_page(br#"{"totalUsageEventsCount":0}"#)
+                .unwrap()
+                .events,
+            vec![]
+        );
+        assert_eq!(events_page(b"{}").unwrap().events, vec![]);
+        assert_eq!(
+            events_page(br#"{"totalUsageEventsCount":3,"message":"blocked"}"#),
+            Err("no usageEventsDisplay; fields: totalUsageEventsCount, message".into())
+        );
+        assert_eq!(
+            events_page(b"<!doctype html>"),
+            Err("the reply is not JSON".into())
+        );
+        let odd = events_page(
+            br#"{"totalUsageEventsCount":"2","usageEventsDisplay":[{"model":"m","chargedCents":"$0.05"},{"chargedCents":-5}]}"#,
+        )
+        .unwrap();
+        assert_eq!(odd.total, Some(2));
+        assert!(odd.events.iter().all(|e| e.charged_cents == 0.0));
+        assert_eq!(odd.events[1].model, None);
+    }
+
+    #[test]
+    fn the_events_are_complete_at_the_total_even_when_cursor_sends_short_pages() {
+        // asked for 500, Cursor sent 100 of 250
+        assert!(!events_complete(Some(250), 100, 100, 500));
+        assert!(events_complete(Some(250), 50, 250, 500));
+        assert!(
+            events_complete(Some(250), 0, 200, 500),
+            "an empty page ends it"
+        );
+        assert!(events_complete(None, 120, 620, 500));
+        assert!(!events_complete(None, 500, 500, 500));
     }
 
     #[test]

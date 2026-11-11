@@ -49,6 +49,14 @@ describe("usedUp", () => {
     expect(usedUp("claude", fresh(claude(100, 100)), NOW)).toEqual({ until: NOW + 30 * H });
   });
 
+  it("claude: a full Fable limit leaves the card usable, since the other models still work", () => {
+    const fableFull = {
+      ...claude(30, 40),
+      weeklyScoped: [{ label: "Fable", percent: 100, resetsAt: at(30 * H) }],
+    };
+    expect(usedUp("claude", fresh(fableFull), NOW)).toBeNull();
+  });
+
   it("Codex's limit flag counts as full below 100 %", () => {
     const flagged = codex(97, null, { limitReached: true });
     expect(usedUp("codex", fresh(flagged), NOW)).toEqual({ until: NOW + 81 * M });

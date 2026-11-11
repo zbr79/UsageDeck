@@ -139,6 +139,17 @@ export interface CursorUsage {
   onDemand: CursorOnDemand | null;
   accountName: string | null;
   planName: string | null;
+  /** null when no API usage was read: none this cycle, or the usage events did not answer */
+  apiSpend: CursorApiSpend | null;
+}
+
+/** The API bucket's dollars this billing cycle and the models they went to (usage events). */
+export interface CursorApiSpend {
+  spentUsd: number;
+  /** the plan's included usage */
+  limitUsd: number | null;
+  /** largest first */
+  byModel: { model: string; usd: number }[];
 }
 
 // ---- Grok Bot -------------------------------------------------------------
@@ -178,6 +189,12 @@ export interface ClaudeWindow {
   resetsAt: string | null;
 }
 
+/** A weekly limit of one model's own, e.g. Fable (`limits[].kind == "weekly_scoped"`). */
+export interface ClaudeScopedWindow extends ClaudeWindow {
+  /** the model's display name, else its id, else "Model" */
+  label: string;
+}
+
 export interface ClaudeUsage {
   email: string | null;
   displayName: string | null;
@@ -189,6 +206,7 @@ export interface ClaudeUsage {
   weekly: ClaudeWindow;
   weeklyOpus: ClaudeWindow | null;
   weeklySonnet: ClaudeWindow | null;
+  weeklyScoped: ClaudeScopedWindow[];
   resetCredits: number | null;
   billingType: string | null;
   rateLimitTier: string | null;

@@ -10,6 +10,10 @@
 //! has not expired, or answers without the usage, `https://cursor.com/api/usage-summary` is asked
 //! with the session cookie made from the same token.
 //!
+//! When the usage shows API usage, the cycle's usage events
+//! (`cursor.com/api/dashboard/get-filtered-usage-events`, same cookie) say what it cost and which
+//! models it went to. They are read at most every five minutes and never fail the usage.
+//!
 //! UsageDeck never refreshes Cursor's token and never writes Cursor's files: only Cursor does.
 //! After a failed fetch every poll re-reads the DB, so the token Cursor renews is used at once;
 //! `open_cursor` starts Cursor for the widget's "Open Cursor" button. What each attempt did is
@@ -22,7 +26,10 @@ use super::cursor_auth::{
 use super::cursor_diag::{CursorAttempt, DbHow, DbRead, HttpAttempt, TokenInfo};
 use super::cursor_signin::{exe_candidates, reuse_state};
 pub use super::cursor_usage::CursorUsage;
-use super::cursor_usage::{reply_detail, usage_from_dashboard, usage_from_summary};
+use super::cursor_usage::{
+    api_spend, cycle_of, events_complete, events_page, reply_detail, usage_from_dashboard,
+    usage_from_summary, ApiSpend, Cycle, UsageEvent,
+};
 use super::{collect_accounts, CachedProvider, FetchError, LiveAccount, ProviderError};
 use crate::win::os_crypt;
 use crate::Core;
@@ -39,6 +46,12 @@ use std::time::{Duration, Instant};
 const API_HOST: &str = "api2.cursor.sh";
 const API_PATH: &str = "aiserver.v1.DashboardService";
 const WEB_SUMMARY: &str = "cursor.com/api/usage-summary";
+const WEB_EVENTS: &str = "cursor.com/api/dashboard/get-filtered-usage-events";
+/// Events asked for per page; Cursor may send fewer, so `totalUsageEventsCount` decides the end.
+const EVENTS_PAGE: usize = 500;
+const EVENTS_MAX_PAGES: u32 = 20;
+/// The events are read again at most this often: a month of them can take several pages.
+const EVENTS_TTL: Duration = Duration::from_secs(300);
 const SECTION: &str = "cursor";
 const BUSY_TIMEOUT: Duration = Duration::from_secs(2);
 const STATE_TTL: Duration = Duration::from_secs(60);
@@ -460,6 +473,29 @@ fn summary_get(http: &reqwest::Client, cookie: &str) -> reqwest::RequestBuilder 
         .timeout(REQUEST_TIMEOUT)
 }
 
+/// One page of the usage events since the cycle started, the request behind Cursor's web Usage
+/// page. Cursor checks the `Origin` of this POST.
+fn events_post(
+    http: &reqwest::Client,
+    cookie: &str,
+    start_ms: i64,
+    page: u32,
+) -> reqwest::RequestBuilder {
+    let body = serde_json::json!({
+        "startDate": start_ms.to_string(),
+        "endDate": now_ms().to_string(),
+        "page": page,
+        "pageSize": EVENTS_PAGE,
+    });
+    http.post(format!("https://{WEB_EVENTS}"))
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .header(reqwest::header::ACCEPT, "application/json")
+        .header(reqwest::header::ORIGIN, "https://cursor.com")
+        .header(reqwest::header::COOKIE, cookie)
+        .body(body.to_string())
+        .timeout(REQUEST_TIMEOUT)
+}
+
 /// Send one request: the reply body or the error its status maps to, and what to record of it
 /// (endpoint, status, and for a failure what the server said, redacted).
 async fn send(
@@ -525,6 +561,87 @@ async fn call(
     send(dashboard_post(http, token, method), "POST", endpoint).await
 }
 
+/// Every usage event of this cycle, page by page; each page sent is added to the trace. Err when
+/// they could not all be read: a partial sum would understate the spend.
+async fn cycle_events(
+    http: &reqwest::Client,
+    cookie: &str,
+    start_ms: i64,
+    trace: &mut Trace,
+) -> Result<Vec<UsageEvent>, ()> {
+    let mut events = Vec::new();
+    for page in 1..=EVENTS_MAX_PAGES {
+        let (reply, mut attempt) = send(
+            events_post(http, cookie, start_ms, page),
+            "POST",
+            WEB_EVENTS.into(),
+        )
+        .await;
+        let Ok(body) = reply else {
+            trace.requests.push(attempt);
+            return Err(());
+        };
+        let read = match events_page(&body) {
+            Ok(read) => read,
+            Err(lacked) => {
+                attempt.detail = Some(lacked);
+                trace.requests.push(attempt);
+                return Err(());
+            }
+        };
+        let sent = read.events.len();
+        events.extend(read.events);
+        if events_complete(read.total, sent, events.len(), EVENTS_PAGE) {
+            attempt.detail = Some(format!("{} events this cycle", events.len()));
+            trace.requests.push(attempt);
+            return Ok(events);
+        }
+        trace.requests.push(attempt);
+    }
+    if let Some(last) = trace.requests.last_mut() {
+        last.detail = Some(format!("more than {EVENTS_MAX_PAGES} pages; not summed"));
+    }
+    Err(())
+}
+
+/// The last read of the events: for which token (its hash) and cycle start, when, and its spend.
+type EventsRead = (String, i64, Instant, Option<ApiSpend>);
+static EVENTS: Mutex<Option<EventsRead>> = Mutex::new(None);
+
+/// The API bucket's spend this cycle and the models it went to, when the usage shows API usage.
+/// Read at most every `EVENTS_TTL`; a failed read keeps the last spend of the same cycle. None
+/// never fails the usage: the card then shows the percentages alone.
+async fn api_spend_for(
+    http: &reqwest::Client,
+    token: &str,
+    usage_body: &[u8],
+    usage: &CursorUsage,
+    trace: &mut Trace,
+) -> Option<ApiSpend> {
+    if !usage.other_models_percent_used.is_some_and(|p| p > 0.0) {
+        return None;
+    }
+    let cycle: Cycle = cycle_of(usage_body)?;
+    let who = token_id(token);
+    let earlier = EVENTS
+        .lock()
+        .unwrap()
+        .clone()
+        .filter(|(id, start, _, _)| *id == who && *start == cycle.start_ms);
+    if let Some((_, _, at, spend)) = &earlier {
+        if at.elapsed() < EVENTS_TTL {
+            return spend.clone();
+        }
+    }
+    let cookie = session_cookie(token)?;
+    let spend = match cycle_events(http, &cookie, cycle.start_ms, trace).await {
+        Ok(events) => api_spend(&events, &cycle),
+        Err(()) => earlier.and_then(|(_, _, _, spend)| spend),
+    };
+    *EVENTS.lock().unwrap() = Some((who, cycle.start_ms, Instant::now(), spend.clone()));
+    spend
+}
+
 /// The usage for `token`: the DashboardService first, then cursor.com when that refused a token
 /// that has not expired or answered without the usage. The error is the DashboardService's.
 async fn fetch_usage(
@@ -550,9 +667,10 @@ async fn fetch_usage(
         Ok(body) => {
             let (plan, hard_limit) = (json(plan.0), json(hard_limit.0));
             match usage_from_dashboard(&body, plan.as_ref(), hard_limit.as_ref(), label.clone()) {
-                Ok(usage) => {
+                Ok(mut usage) => {
                     trace.auth_path = Some("api2");
                     trace.parse = Some("ok".into());
+                    usage.api_spend = api_spend_for(http, token, &body, &usage, &mut trace).await;
                     return (Ok(usage), trace);
                 }
                 Err(lacked) => {
@@ -579,9 +697,10 @@ async fn fetch_usage(
         return (Err(error), trace);
     };
     match usage_from_summary(&body, label) {
-        Ok(usage) => {
+        Ok(mut usage) => {
             trace.auth_path = Some("cursor.com");
             trace.parse = Some("ok".into());
+            usage.api_spend = api_spend_for(http, token, &body, &usage, &mut trace).await;
             (Ok(usage), trace)
         }
         Err(lacked) => {
