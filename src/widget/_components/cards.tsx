@@ -9,7 +9,6 @@ import {
   formatDuration,
   formatResetDuration,
   formatUntil,
-  formatUsd,
 } from "@/lib/format";
 import { headerRate, meterPaceText, SPEND_BAND_TONE, spendBand, spendRateTitle } from "@/lib/pace";
 import type { PeakInfo } from "@/lib/peak";
@@ -19,7 +18,6 @@ import type {
   ClaudePace,
   ClaudeUsage,
   CodexUsage,
-  CursorOnDemand,
   CursorUsage,
   GrokUsage,
   OpenCodeAccountUsage,
@@ -338,7 +336,6 @@ export function CursorCard({
     multiple,
   );
   const cyclePassed = slot.stale && isPassed(c?.resetsAt, now);
-  const onDemand = c && !cyclePassed ? onDemandText(c.onDemand) : null;
   const used = signedOut ? null : usedUp("cursor", { usage: c, stale: slot.stale }, now);
   return (
     <Card
@@ -366,29 +363,24 @@ export function CursorCard({
     >
       {c ? (
         <>
-          {/* the widget is too narrow for both full names side by side */}
-          <div className={extras ? "flex gap-2" : "flex flex-col gap-1"}>
+          <div className="flex gap-2">
             <Meter
-              label="Cursor Models"
-              name="Cursor Models: included usage of Cursor's own models"
+              label="First Party"
+              name="First-party usage"
               percent={c.cursorModelsPercentUsed}
               unknown={cyclePassed}
               dimmed={signedOut}
             />
             <Meter
-              label="Other Models"
-              name="Other Models: included usage of other models"
+              label="API"
+              name="API usage"
               percent={c.otherModelsPercentUsed}
               unknown={cyclePassed}
               dimmed={signedOut}
             />
           </div>
-          {((c.resetsAt && !cyclePassed) || onDemand) && (
-            <ResetLine>
-              {[c.resetsAt && !cyclePassed && `Resets ${formatUntil(c.resetsAt, now)}`, onDemand]
-                .filter(Boolean)
-                .join(" · ")}
-            </ResetLine>
+          {c.resetsAt && !cyclePassed && (
+            <ResetLine>Resets {formatUntil(c.resetsAt, now)}</ResetLine>
           )}
         </>
       ) : (
@@ -396,13 +388,6 @@ export function CursorCard({
       )}
     </Card>
   );
-}
-
-/** "On-demand $12.34 / $50" while on-demand usage can be billed; nothing while it is off. */
-function onDemandText(od: CursorOnDemand | null): string | null {
-  if (od?.state !== "enabled" || od.limitUsd === 0) return null;
-  const limit = od.limitUsd == null ? "" : ` / ${formatUsd(od.limitUsd)}`;
-  return `On-demand ${formatUsd(od.spentUsd)}${limit}`;
 }
 
 // ---- Grok Bot -------------------------------------------------------------
