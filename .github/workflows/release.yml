@@ -57,7 +57,7 @@ jobs:
 
       - if: steps.version.outputs.publish == 'true'
         name: Cache cargo registry, tools and build
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
