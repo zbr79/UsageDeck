@@ -13,6 +13,7 @@ import type {
   Settings,
   TrackedAccount,
 } from "./types";
+import type { CursorAttempt, Diagnostics } from "./diagnostics";
 import type { UpdatePhase, UpdateStatus } from "./updates";
 
 const NOW = Date.now();
@@ -39,7 +40,10 @@ let settings: Settings = {
   providerOrder: ["opencode", "cursor", "grok", "codex", "claude"],
   startAtLogin: true,
   claudeHourlyTarget: null,
-  snoozedUntil: {},
+  // `?snoozed=1` starts with two cards hidden until they reset (browser preview only).
+  snoozedUntil: query().get("snoozed")
+    ? { "cursor:dev@example.com": NOW + 200 * 60_000, "opencode:main@example.com": NOW + 26 * H }
+    : {},
 };
 
 const win = (percent: number, resetsIn: number) => ({
@@ -172,27 +176,186 @@ const providers: Record<string, unknown> = {
   ),
 };
 
-// `?cursorAuth=rejected` shows Cursor's sign-in as expired, its last usage cached and used up (browser
-// preview only). "Open Cursor" then brings it back a few seconds later, as Cursor renewing it would.
+// `?cursorFail=<state>` puts the Cursor card and its diagnostics in one failure state (browser
+// preview only): rejected, expired, sealed, locked, network, schema, http, or web (the cursor.com
+// fallback worked). `?cursorAuth=rejected` is the older spelling of `rejected`. After a rejection,
+// "Open Cursor" brings the card back a few seconds later, as Cursor renewing its sign-in would.
 const cursorRow = (providers.cursor as { accounts: TrackedAccount<CursorUsage>[] }).accounts[0];
-if (query().get("cursorAuth") === "rejected") {
+const API2 = "api2.cursor.sh/aiserver.v1.DashboardService";
+const post = (method: string, status: number | null, detail: string | null = null) => ({
+  method: "POST",
+  endpoint: `${API2}/${method}`,
+  status,
+  detail,
+});
+const dashboardCalls = (status: number | null, detail: string | null = null) => [
+  post("GetCurrentPeriodUsage", status, detail),
+  post("GetPlanInfo", status, detail),
+  post("GetHardLimit", status, detail),
+];
+const clock = (ms: number) =>
+  new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+const TOKEN_EXP = NOW + 22 * 24 * H;
+const tokenDay = new Date(TOKEN_EXP).toLocaleDateString("en-US", {
+  month: "short",
+  day: "numeric",
+});
+const expiredDay = new Date(NOW - 3 * 24 * H).toLocaleDateString("en-US", {
+  month: "short",
+  day: "numeric",
+});
+const baseAttempt: CursorAttempt = {
+  atMs: NOW - 20_000,
+  db: { how: "opened", detail: null, readAtMs: NOW - 20_000, reusedEarlier: false },
+  token: {
+    present: true,
+    form: "safe-storage-v1",
+    decrypt: "ok",
+    id: "1a2b3c4d",
+    expiresAtMs: TOKEN_EXP,
+  },
+  requests: dashboardCalls(200),
+  authPath: "api2",
+  parse: "ok",
+  outcome: "ok",
+  failures: 0,
+  lastOkMs: NOW - 20_000,
+};
+const failing = (kind: string, patch: Partial<CursorAttempt>): CursorAttempt => ({
+  ...baseAttempt,
+  authPath: null,
+  parse: null,
+  outcome: kind,
+  failures: 12,
+  lastOkMs: null,
+  ...patch,
+});
+const at = clock(baseAttempt.atMs);
+const CURSOR_STATES: Record<string, { attempt: CursorAttempt; reason: string | null }> = {
+  rejected: {
+    attempt: failing("auth-rejected", {
+      requests: [
+        ...dashboardCalls(401, "unauthenticated: Not logged in"),
+        { method: "GET", endpoint: "cursor.com/api/usage-summary", status: 401, detail: null },
+      ],
+    }),
+    reason: `api2.cursor.sh replied 401 unauthenticated at ${at}; token valid until ${tokenDay}; cursor.com replied 401`,
+  },
+  expired: {
+    attempt: failing("auth-rejected", {
+      token: { ...baseAttempt.token, expiresAtMs: NOW - 3 * 24 * H },
+      requests: dashboardCalls(401, "unauthenticated: Not logged in"),
+    }),
+    reason: `api2.cursor.sh replied 401 unauthenticated at ${at}; token expired ${expiredDay}`,
+  },
+  sealed: {
+    attempt: failing("sign-in-unreadable", {
+      token: {
+        present: true,
+        form: "safe-storage-v1",
+        decrypt: "Windows (DPAPI) would not decrypt the Local State key for this user",
+        id: null,
+        expiresAtMs: null,
+      },
+      requests: [],
+    }),
+    reason: `Cursor's sign-in could not be read at ${at}: Windows (DPAPI) would not decrypt the Local State key for this user`,
+  },
+  locked: {
+    attempt: failing("locked", {
+      db: {
+        how: "locked",
+        detail: "database is locked; copy failed: the file is in use",
+        readAtMs: NOW - 20_000,
+        reusedEarlier: false,
+      },
+      token: { present: false, form: null, decrypt: null, id: null, expiresAtMs: null },
+      requests: [],
+    }),
+    reason: `Cursor's sign-in file was locked at ${at}; trying again`,
+  },
+  network: {
+    attempt: failing("network", {
+      requests: dashboardCalls(null, "could not connect: error sending request"),
+    }),
+    reason: `api2.cursor.sh could not be reached at ${at} (could not connect: error sending request)`,
+  },
+  schema: {
+    attempt: failing("schema-changed", {
+      requests: [
+        ...dashboardCalls(200),
+        { method: "GET", endpoint: "cursor.com/api/usage-summary", status: 200, detail: null },
+      ],
+      parse:
+        "no planUsage; fields: billingCycleEnd, usageBuckets; cursor.com: no individualUsage.plan; fields: teamUsage",
+    }),
+    reason: `Cursor's reply at ${at} had no usage in it (no planUsage; fields: billingCycleEnd, usageBuckets)`,
+  },
+  http: {
+    attempt: failing("http", {
+      requests: dashboardCalls(503, "<html> <head><title>503 Service Temporarily Unavailable"),
+    }),
+    reason: `api2.cursor.sh replied 503 at ${at}; token valid until ${tokenDay}`,
+  },
+  web: {
+    attempt: {
+      ...baseAttempt,
+      db: {
+        how: "copied",
+        detail: "database is locked",
+        readAtMs: NOW - 20_000,
+        reusedEarlier: false,
+      },
+      requests: [
+        ...dashboardCalls(401, "unauthenticated: Not logged in"),
+        { method: "GET", endpoint: "cursor.com/api/usage-summary", status: 200, detail: null },
+      ],
+      authPath: "cursor.com",
+    },
+    reason: null,
+  },
+  ok: { attempt: baseAttempt, reason: null },
+};
+const CURSOR_ERRORS: Record<string, TrackedAccount<CursorUsage>["error"]> = {
+  rejected: "auth-rejected",
+  expired: "auth-rejected",
+  sealed: "sign-in-unreadable",
+  locked: "locked",
+  network: "network",
+  schema: "schema-changed",
+  http: "http",
+};
+const cursorFail =
+  query().get("cursorFail") ?? (query().get("cursorAuth") === "rejected" ? "rejected" : null);
+let cursorState = (cursorFail && CURSOR_STATES[cursorFail]) || null;
+if (cursorFail && cursorState) {
+  const error = CURSOR_ERRORS[cursorFail] ?? null;
   Object.assign(cursorRow, {
-    authExpired: true,
-    error: "auth-rejected",
-    stale: true,
+    authExpired: error === "auth-rejected",
+    error,
+    stale: error !== null,
+    cachedAt: error === null ? null : cursorRow.cachedAt,
     usage: {
       ...cursorRow.usage,
       cursorModelsPercentUsed: 100,
-      otherModelsPercentUsed: 100,
+      otherModelsPercentUsed: error === null ? 100 : 20,
       onDemand: { state: "disabled" },
     },
   });
 }
+const cursorReply = () => ({
+  ...(providers.cursor as object),
+  attempt: cursorState && {
+    reason: cursorState.reason,
+    failures: cursorState.attempt.failures,
+  },
+});
 
 /** Browser stand-in for the Rust `open_cursor` command. */
 export function mockOpenCursor(): void {
   setTimeout(() => {
     Object.assign(cursorRow, { authExpired: false, error: null, stale: false, cachedAt: null });
+    cursorState = CURSOR_STATES.ok;
   }, 3_000);
 }
 
@@ -407,6 +570,7 @@ export async function mockApi(method: string, path: string, body: unknown): Prom
     case "claude/pace":
       return paceReply();
     default:
+      if (name === "cursor") return json(cursorReply());
       if (name in providers) return json(providers[name]);
       return json({ error: "not found" }, 404);
   }
@@ -433,6 +597,9 @@ let updateStatus: UpdateStatus = {
   ...(MOCK_PHASES[updateQuery] ?? MOCK_PHASES.idle),
   lastChecked: updateQuery === "never" ? null : NOW - 5 * 60_000,
   currentVersion: MOCK_VERSION,
+  ...(updateQuery === "never"
+    ? {}
+    : { lastCheck: { trigger: "background", result: "up to date", latestVersion: MOCK_VERSION } }),
 };
 const updateListeners = new Set<(status: UpdateStatus) => void>();
 
@@ -441,6 +608,18 @@ function setUpdatePhase(phase: UpdatePhase, checked = false) {
     ...phase,
     lastChecked: checked ? Date.now() : updateStatus.lastChecked,
     currentVersion: MOCK_VERSION,
+    lastCheck: checked
+      ? {
+          trigger: "manual",
+          result:
+            phase.state === "ready"
+              ? `update ${phase.version} downloaded`
+              : phase.state === "failed"
+                ? `failed: ${phase.message}`
+                : "up to date",
+          latestVersion: phase.state === "failed" ? null : MOCK_NEXT,
+        }
+      : updateStatus.lastCheck,
   };
   for (const cb of updateListeners) cb(updateStatus);
 }
@@ -475,5 +654,59 @@ export const mockUpdates = {
   async dismiss() {
     console.info("mock dismiss_update");
     if (updateStatus.state === "ready") setUpdatePhase({ ...updateStatus, dismissed: true });
+  },
+};
+
+// ---- diagnostics ------------------------------------------------------------
+
+function mockReport(): Diagnostics {
+  const state = cursorState ?? CURSOR_STATES.ok;
+  const a = state.attempt;
+  const requests = a.requests.map(
+    (r) =>
+      `Request: ${r.method} ${r.endpoint} -> ${r.status ?? "no reply"}${r.detail ? ` (${r.detail})` : ""}`,
+  );
+  const check = updateStatus.lastCheck;
+  const updaterReport = [
+    `Running version: ${MOCK_VERSION}`,
+    check && updateStatus.lastChecked
+      ? `Last check: ${new Date(updateStatus.lastChecked).toISOString()} (${check.trigger}) -> ${check.result}; latest release seen: ${check.latestVersion ?? "not learned"}`
+      : "Last check: none since UsageDeck started",
+    `Banner: ${updateStatus.state}`,
+  ].join("\n");
+  const system = "Windows 11 Pro 24H2 (build 26100)";
+  const report = [
+    "UsageDeck diagnostics (holds no token, key or account name)",
+    `App: UsageDeck ${MOCK_VERSION}`,
+    `System: ${system}`,
+    "",
+    "Cursor",
+    `Last attempt: ${new Date(a.atMs).toISOString()} -> ${a.outcome}`,
+    `Token: stored as ${a.token.form ?? "none"}; decrypt: ${a.token.decrypt ?? "n/a"}; sha256 ${a.token.id ?? "n/a"}`,
+    ...requests,
+    `Usage from: ${a.authPath ?? "none"}; parse: ${a.parse ?? "not reached"}`,
+    ...(state.reason ? [`Reason: ${state.reason}`] : []),
+    "",
+    "Updater",
+    updaterReport,
+  ].join("\n");
+  return {
+    appVersion: MOCK_VERSION,
+    system,
+    cursor: a,
+    cursorReason: state.reason,
+    updater: updateStatus,
+    updaterReport,
+    report,
+  };
+}
+
+/** Browser stand-in for the Rust `get_diagnostics` and `copy_diagnostics` commands. */
+export const mockDiagnostics = {
+  get: async () => mockReport(),
+  async copy() {
+    const { report } = mockReport();
+    console.info(`mock copy_diagnostics:\n${report}`);
+    await navigator.clipboard?.writeText(report).catch(() => undefined);
   },
 };

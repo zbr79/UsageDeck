@@ -8,6 +8,7 @@ import type {
   ClaudePace,
   ClaudeUsage,
   CodexUsage,
+  CursorAttemptNote,
   CursorUsage,
   GrokUsage,
   OpenCodeAccountUsage,
@@ -59,6 +60,8 @@ export interface WidgetData {
   settings: Settings | null;
   accounts: OpenCodeAccountUsage[] | null;
   cursor: AccountList<CursorUsage>;
+  /** why Cursor's last attempt failed (the card's tooltip); null when it worked */
+  cursorNote: CursorAttemptNote | null;
   grok: AccountList<GrokUsage>;
   codex: AccountList<CodexUsage>;
   claude: AccountList<ClaudeUsage>;
@@ -134,6 +137,7 @@ export function useWidgetData() {
     settings: null,
     accounts: null,
     cursor: emptyList(),
+    cursorNote: null,
     grok: emptyList(),
     codex: emptyList(),
     claude: emptyList(),
@@ -150,7 +154,9 @@ export function useWidgetData() {
     const [settings, usage, cursor, grok, codex, claude, pace] = await Promise.allSettled([
       getJson<{ settings: Settings }>("/api/settings"),
       getJson<{ accounts: OpenCodeAccountUsage[] }>("/api/usage"),
-      getJson<{ accounts: TrackedAccount<CursorUsage>[] }>("/api/cursor"),
+      getJson<{ accounts: TrackedAccount<CursorUsage>[]; attempt?: CursorAttemptNote | null }>(
+        "/api/cursor",
+      ),
       getJson<{ accounts: TrackedAccount<GrokUsage>[] }>("/api/grok"),
       getJson<{ accounts: TrackedAccount<CodexUsage>[] }>("/api/codex"),
       getJson<{ accounts: TrackedAccount<ClaudeUsage>[] }>("/api/claude"),
@@ -194,6 +200,13 @@ export function useWidgetData() {
       settings: settings.status === "fulfilled" ? settings.value.settings : prev.settings,
       accounts: usage.status === "fulfilled" ? usage.value.accounts : prev.accounts,
       cursor: list(prev.cursor, cursor),
+      cursorNote:
+        cursor.status === "fulfilled"
+          ? (cursor.value.attempt ?? null)
+          : {
+              reason: `UsageDeck could not read Cursor's usage: ${String(cursor.reason)}`,
+              failures: (prev.cursorNote?.failures ?? 0) + 1,
+            },
       grok: list(prev.grok, grok),
       codex: list(prev.codex, codex),
       claude: list(prev.claude, claude),

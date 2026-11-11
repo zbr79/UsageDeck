@@ -38,12 +38,65 @@ pub struct UpdateStatus {
     /// When the last check finished, whatever it found (ms since the Unix epoch).
     pub last_checked: Option<u64>,
     pub current_version: String,
+    /// What the last finished check was and found, also when it showed nothing (diagnostics).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_check: Option<LastCheck>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Trigger {
     Background,
     Manual,
+}
+
+/// The last finished check, kept whether or not the widget showed anything for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LastCheck {
+    pub trigger: Trigger,
+    /// "up to date", "update 1.5.0 downloaded" or "failed: <why>"
+    pub result: String,
+    /// the newest release GitHub named, when it answered
+    pub latest_version: Option<String>,
+}
+
+impl UpdateStatus {
+    /// The updater part of the diagnostics report. `time` formats ms since the epoch.
+    pub fn report(&self, time: impl Fn(u64) -> String) -> String {
+        let banner = match &self.phase {
+            Phase::Idle => "none (idle)".to_string(),
+            Phase::Checking => "Checking for updates".into(),
+            Phase::Downloading { version } => format!("Downloading {version}"),
+            Phase::UpToDate => "You're up to date".into(),
+            Phase::Failed { message } => format!("Couldn't check for updates ({message})"),
+            Phase::Ready {
+                version,
+                dismissed: true,
+                ..
+            } => format!("none (update {version} is ready, hidden with Later)"),
+            Phase::Ready { version, .. } => format!("Update {version} is ready"),
+        };
+        let last = match (&self.last_check, self.last_checked) {
+            (Some(check), Some(at)) => {
+                let trigger = match check.trigger {
+                    Trigger::Manual => "manual",
+                    Trigger::Background => "background",
+                };
+                let latest = check.latest_version.as_deref().unwrap_or("not learned");
+                format!(
+                    "{} ({trigger}) -> {}; latest release seen: {latest}",
+                    time(at),
+                    check.result
+                )
+            }
+            _ => "none since UsageDeck started".into(),
+        };
+        format!(
+            "Running version: {}\nLast check: {last}\nBanner: {banner}",
+            self.current_version
+        )
+    }
 }
 
 /// How a check ended.
@@ -60,6 +113,8 @@ pub enum Outcome {
 pub struct Machine {
     status: UpdateStatus,
     running: Option<Trigger>,
+    /// the newest release the running check was told about
+    latest_seen: Option<String>,
 }
 
 impl Machine {
@@ -69,8 +124,10 @@ impl Machine {
                 phase: Phase::Idle,
                 last_checked: None,
                 current_version,
+                last_check: None,
             },
             running: None,
+            latest_seen: None,
         }
     }
 
@@ -103,6 +160,11 @@ impl Machine {
         }
     }
 
+    /// GitHub named `version` as the newest release.
+    pub fn saw_release(&mut self, version: String) {
+        self.latest_seen = Some(version);
+    }
+
     /// The running check starts downloading `version` (no cached copy verified).
     pub fn downloading(&mut self, version: String) {
         if self.running == Some(Trigger::Manual) && self.status.phase == Phase::Checking {
@@ -112,8 +174,18 @@ impl Machine {
 
     /// The running check ended at `now_ms`.
     pub fn finish(&mut self, outcome: Outcome, now_ms: u64) {
-        let manual = self.running.take() == Some(Trigger::Manual);
+        let trigger = self.running.take().unwrap_or(Trigger::Background);
+        let manual = trigger == Trigger::Manual;
         self.status.last_checked = Some(now_ms);
+        self.status.last_check = Some(LastCheck {
+            trigger,
+            result: match &outcome {
+                Outcome::Ready { version, .. } => format!("update {version} downloaded"),
+                Outcome::UpToDate => "up to date".into(),
+                Outcome::Failed(why) => format!("failed: {why}"),
+            },
+            latest_version: self.latest_seen.take(),
+        });
         let phase = &mut self.status.phase;
         *phase = match outcome {
             Outcome::Ready { version, installer } => {
@@ -191,7 +263,12 @@ mod tests {
                 "version": "1.5.0",
                 "dismissed": false,
                 "lastChecked": 1000,
-                "currentVersion": "1.4.0"
+                "currentVersion": "1.4.0",
+                "lastCheck": {
+                    "trigger": "background",
+                    "result": "update 1.5.0 downloaded",
+                    "latestVersion": null
+                }
             })
         );
         m.install_failed("access denied".into());
@@ -377,5 +454,43 @@ mod tests {
         assert!(m.installer().is_some(), "Later keeps the download");
         m.install_failed("access denied".into());
         assert_eq!(m.installer(), None);
+    }
+
+    #[test]
+    fn the_last_check_is_recorded_even_when_nothing_was_shown() {
+        let mut m = machine();
+        let time = |ms: u64| format!("t{ms}");
+        assert_eq!(
+            m.status().report(time),
+            "Running version: 1.4.0\nLast check: none since UsageDeck started\nBanner: none (idle)"
+        );
+
+        assert!(m.begin(Trigger::Background));
+        m.saw_release("1.4.0".into());
+        m.finish(Outcome::UpToDate, 7);
+        assert_eq!(m.status().phase, Phase::Idle);
+        assert_eq!(
+            m.status().report(time),
+            "Running version: 1.4.0\nLast check: t7 (background) -> up to date; latest release seen: 1.4.0\nBanner: none (idle)"
+        );
+
+        check(&mut m, Trigger::Manual, Outcome::Failed("HTTP 403".into()));
+        assert_eq!(
+            m.status().report(time),
+            "Running version: 1.4.0\nLast check: t1000 (manual) -> failed: HTTP 403; latest release seen: not learned\nBanner: Couldn't check for updates (HTTP 403)"
+        );
+
+        // a failed check keeps the ready update, and the record still says it failed
+        check(&mut m, Trigger::Background, ready("1.5.0"));
+        m.dismiss();
+        check(
+            &mut m,
+            Trigger::Background,
+            Outcome::Failed("offline".into()),
+        );
+        assert_eq!(
+            m.status().report(time),
+            "Running version: 1.4.0\nLast check: t1000 (background) -> failed: offline; latest release seen: not learned\nBanner: none (update 1.5.0 is ready, hidden with Later)"
+        );
     }
 }

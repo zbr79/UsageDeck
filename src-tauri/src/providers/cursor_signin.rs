@@ -1,22 +1,17 @@
 //! Pure rules for getting a rejected Cursor sign-in back. UsageDeck never refreshes Cursor's token
 //! itself (a refresh could cost Cursor its own sign-in); Cursor renews it when it runs. So the
-//! widget offers to start Cursor, and re-reads `state.vscdb` on every poll while it still holds
-//! the rejected token, to pick up the renewed one as soon as Cursor writes it.
+//! widget offers to start Cursor, and re-reads `state.vscdb` on every poll after a failed fetch,
+//! to pick up the renewed token as soon as Cursor writes it.
 //!
 //! No Windows or app dependencies, so the unit tests also run on Linux.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// Whether a cached read of `state.vscdb` can be served instead of reading the file again. A read
-/// that still holds the token the API rejected is never reused: Cursor may have renewed it since.
-pub fn reuse_state(
-    age: Duration,
-    ttl: Duration,
-    cached_token: Option<&str>,
-    rejected: Option<&str>,
-) -> bool {
-    age < ttl && (rejected.is_none() || cached_token != rejected)
+/// Whether a cached read of `state.vscdb` can be served instead of reading the file again. After
+/// any failed fetch the file is read again on the next poll: Cursor may have renewed the token.
+pub fn reuse_state(age: Duration, ttl: Duration, last_fetch_failed: bool) -> bool {
+    age < ttl && !last_fetch_failed
 }
 
 /// The values of one `...\CurrentVersion\Uninstall\<key>` registry entry.
@@ -93,13 +88,11 @@ mod tests {
     const TTL: Duration = Duration::from_secs(60);
 
     #[test]
-    fn a_fresh_read_is_reused_unless_it_holds_the_rejected_token() {
+    fn a_fresh_read_is_reused_until_a_fetch_fails() {
         let young = Duration::from_secs(5);
-        assert!(reuse_state(young, TTL, Some("a"), None));
-        assert!(reuse_state(young, TTL, Some("b"), Some("a")));
-        assert!(reuse_state(young, TTL, None, Some("a")));
-        assert!(!reuse_state(young, TTL, Some("a"), Some("a")));
-        assert!(!reuse_state(TTL, TTL, Some("a"), None));
+        assert!(reuse_state(young, TTL, false));
+        assert!(!reuse_state(young, TTL, true));
+        assert!(!reuse_state(TTL, TTL, false));
     }
 
     fn entry(

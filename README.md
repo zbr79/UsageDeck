@@ -7,7 +7,7 @@ no Electron, no Node at runtime.
 | Provider        | What's shown                                                                             | Data source                                                                   |
 | --------------- | ---------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
 | **OpenCode Go** | Rolling / Weekly / Monthly usage per account, reset countdowns, DeepSeek peak-hour timer | `opencode.ai/zen/go/v1/usage` (API key you add in Settings)                   |
-| **Cursor**      | First Party & API usage, plan badge, billing-cycle reset                                 | Cursor's local sign-in → `api2.cursor.sh`                                      |
+| **Cursor**      | First Party & API usage, plan badge, billing-cycle reset                                 | Cursor's local sign-in → `api2.cursor.sh`, else `cursor.com/api/usage-summary`    |
 | **Grok Bot**    | Weekly usage %, plan badge, reset countdown                                              | Grok Bot's own sign-in (falls back to Cursor's) → `api2.cursor.sh` sand usage |
 | **Codex**       | Usage %, plan badge (Free/Plus/Pro), reset credits, reset countdown                      | Codex CLI sign-in → ChatGPT `wham/usage`                                      |
 | **Claude**      | 5-hour and weekly usage, plan badge, reset countdowns; spend rate ($/h) and pace (%/h, projected limit time) | Claude desktop / Claude Code sign-in → Anthropic OAuth usage; dollars from the Claude Code logs on this PC (usage fields only) |
@@ -17,8 +17,14 @@ app's tokens (doing so rotates their refresh tokens and logs them out). If a sig
 the card shows the last known numbers with a `re-auth` hint — open that app once to refresh it.
 For Cursor the numbers turn gray and the hint is an **Open Cursor** button: it starts Cursor,
 which renews its own sign-in, and the card shows live numbers again within about 10 seconds of that.
-If the card stays gray while Cursor works, the log names the endpoint, the HTTP status and whether
-the access token Cursor stored had expired (see Logs below).
+Cursor 3.27 and later store that sign-in encrypted; UsageDeck opens it with the key in Cursor's own
+`Local State`, and reads a private copy of `state.vscdb` when Cursor has the file busy. When
+`api2.cursor.sh` refuses a token that has not expired, the same token is sent to
+`https://cursor.com/api/usage-summary` as the `WorkosCursorSessionToken` cookie.
+Whenever the card has no fresh numbers, its header says so (`Open Cursor`, `can't read sign-in` or
+`not updating`) and the hint's tooltip gives the reason in one line, for example
+"api2.cursor.sh replied 401 unauthenticated at 14:02; token valid until Dec 3". The full record is
+in Settings → Cursor → Diagnostics (see [Diagnostics](#diagnostics)).
 The Cursor card turns red when both included buckets are at 100% and on-demand usage is off (or its
 monthly limit is spent); with on-demand budget left it stays usable.
 See [SECURITY.md](SECURITY.md) for exactly what is read, stored and sent.
@@ -60,11 +66,11 @@ release. Then a banner at the top of the widget says "Update X is ready":
   is kept, so Restart later does not download again.
 
 Background checks show nothing else: no "up to date" note and no errors. To check at once, use
-**Check for updates** in any of these places. The result shows in the widget's banner.
+**Check for updates** in either of these places. The result shows in the widget's banner.
 
-- the widget's right-click menu;
-- Settings → General → Updates, which also shows the installed version and when UsageDeck last
-  checked, and offers **Restart to update** once an update is ready;
+- Settings → General → Updates, which also shows the installed version, when UsageDeck last
+  checked and what that check found (also a background check that showed nothing), and offers
+  **Restart to update** once an update is ready;
 - the tray menu, which also brings up the widget. The tray menu's first line shows the installed
   version.
 
@@ -134,11 +140,25 @@ autostart.
 Logs (about 1 MB per file, 5 files kept) are in `%LOCALAPPDATA%\com.usagedeck.app\logs\`; the
 tray menu's **Open log folder** opens it in Explorer. A crash leaves a `crash-<time>.txt` report
 there (panic message, location, backtrace, version; newest 10 kept).
-A Cursor call that fails is logged once per endpoint and status, for example
-`cursor https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage: HTTP 401
-(unauthenticated: …); the stored access token expired at 2026-11-10 08:00:00 UTC`. An expired token
-means Cursor has not written a renewed one yet; a token still valid means the server refused the
-request itself.
+A Cursor failure is logged once each time its kind changes, with the same one-line reason the
+card's tooltip shows.
+
+### Diagnostics
+
+You do not need the log files to see why a card is stale or an update did not show.
+
+- **Settings → Cursor → Diagnostics** lists what the last attempt to read Cursor's usage did:
+  whether `state.vscdb` was found and how it was read (opened, read from a copy, locked), how the
+  token is stored (plain or `cursor-safe-storage:v1`) and whether it decrypted, the first 8 hex
+  characters of the token's SHA-256 and when the token expires, each request with its endpoint,
+  HTTP status and the server's error text, which source gave the usage, and the reason in one line.
+- **Settings → General → Updates** shows the last update check: when, manual or background, the
+  result, and the newest release GitHub named.
+- **Copy diagnostics** (on both pages) copies all of it as text, with the UsageDeck and Windows
+  versions, ready to paste into an issue.
+
+The report never contains a token, a key or an account name. Server replies are cut to 200
+characters and anything that looks like a token is replaced with `[redacted]`.
 
 Uninstalling removes the start-at-login entry. Tick **Delete the application data** in the
 uninstaller to also remove settings, logs and the stored OpenCode keys (details in SECURITY.md).
@@ -148,8 +168,8 @@ uninstaller to also remove settings, logs and the stored OpenCode keys (details 
 ### Widget
 
 - Compact panel with the active OpenCode account plus every enabled provider; right-click (or the
-  tray menu) → _Expand_ / _Collapse_ for all OpenCode accounts, _Refresh_, _Settings_, _Check for
-  updates_, _Quit_
+  tray menu) → _Expand_ / _Collapse_ for all OpenCode accounts, _Refresh_, _Settings_, _Quit_.
+  The tray menu also has _Check for updates_ and _Open log folder_
 - **Adaptive theme** — in `auto`, samples the screen around the widget and switches card style
   with hysteresis; `light` and `dark` are fixed (no sampling)
 - **Change detection** — when an account's usage rises, a ▲ shows for 20 s and the most recently
@@ -160,7 +180,8 @@ uninstaller to also remove settings, logs and the stored OpenCode keys (details 
 - **States, consistently on every card** — a card shows text only when you must act: loading,
   unavailable, `re-auth` (Cursor: an `Open Cursor` button, numbers in gray), `key rejected` (OpenCode 401 / 403), `not signed in`, exhausted (red).
   Passing failures (rate limit, network, service error, busy, changed reply format) show nothing
-  on the card; they stay in the log and `--dump`
+  on the card; they stay in the log and `--dump`. The Cursor card is the exception: it names a
+  failure that lasts (`not updating`, `can't read sign-in`) and explains it in the tooltip
 - **Hide until reset** — a used-up (red) card has a small eye-slash button next to its name. Click
   it to hide the card until it can be used again: the latest reset among its full windows (5-hour
   and weekly both full waits for the weekly reset). The card comes back on its own at that time,
@@ -178,10 +199,12 @@ uninstaller to also remove settings, logs and the stored OpenCode keys (details 
 - A normal window with a title bar and a taskbar button (960x680, resizable). It reopens where you
   left it, kept on a visible monitor, and closes only when asked: the X, Alt+F4, Ctrl+W or Esc
 - General: start with Windows, hide during full-screen apps, DeepSeek peak-hour warning, and
-  Updates (installed version, last check, Check for updates, Restart to update)
+  Updates (installed version, last check and its result, Check for updates, Restart to update,
+  Copy diagnostics)
 - Appearance: settings theme, widget theme, show provider names
-- Widget: provider order (drag the grip, or Move up / Move down) and a "Show on widget" switch per
-  provider
+- Widget: provider order (drag the grip, or Move up / Move down), a "Show on widget" switch per
+  provider, and **Hidden until reset**: the used-up cards you hid from the widget, each with a
+  **Show** button that brings it back at once
 - Accounts: one page per provider with the widget's own cards, 2 per row. Each card header has a
   "Show on widget" switch and a "⋯" menu (also right-click, Shift+F10 or the Menu key): Rename,
   Refresh now and, for OpenCode, Copy API key, Replace API key and Remove account. OpenCode
@@ -199,6 +222,9 @@ uninstaller to also remove settings, logs and the stored OpenCode keys (details 
   page directly (browser preview: add `&panel=light` or `&panel=dark`)
 - Browser preview of spend and pace: add `?pace=<lasts|limit|weekly|measuring|backfill|unpriced|fail>`
   to `widget.html` or `settings.html`
+- Browser preview of the Cursor card and its diagnostics: add
+  `?cursorFail=<rejected|expired|sealed|locked|network|schema|http|web>`; `?snoozed=1` starts with
+  two cards hidden until reset
 - Browser preview of the updater: add `?update=<idle|never|checking|downloading|upToDate|failed|ready>`
   for the starting state and `&updateResult=<ready|upToDate|failed>` for what Check for updates
   finds

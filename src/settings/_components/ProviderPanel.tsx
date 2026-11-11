@@ -4,6 +4,7 @@ import { accountKey } from "@/lib/account-key";
 import type {
   ClaudeUsage,
   CodexUsage,
+  CursorAttemptNote,
   CursorUsage,
   GrokUsage,
   ProviderId,
@@ -13,16 +14,18 @@ import type {
 import { ClaudeCard, CodexCard, CursorCard, GrokCard } from "@/widget/_components/cards";
 import { slotFromAccount as widgetSlot } from "@/widget/_lib/useWidgetData";
 import { cardErrorKind } from "@/lib/errors";
+import type { SettingsPatch } from "@/lib/settings-schema";
 import { PAGE_TITLES, PROVIDER_ICONS } from "../_lib/pages";
 import { refreshWidget, type Summaries } from "../_lib/hooks";
 import { orderTracked } from "../_lib/order";
 import { usePanelTheme } from "../_lib/theme";
 import { AccountCell, CardGrid, EmptyState, ProviderLogo, useNow } from "./CardGrid";
 import { RenameDialog } from "./dialogs";
+import { CursorDiagnostics } from "./Diagnostics";
 import PaceSection from "./PaceSection";
 import { Page } from "./fields";
 
-type Update = (patch: Partial<Settings>, success?: string) => Promise<boolean>;
+type Update = (patch: SettingsPatch, success?: string) => Promise<boolean>;
 type AnyAccount = TrackedAccount<CursorUsage | GrokUsage | CodexUsage | ClaudeUsage>;
 
 /** The account's own name: the label Rust gives it, else the provider's account name / email. */
@@ -50,6 +53,7 @@ function providerCard(
   header: CardHeader,
   hidden: boolean,
   light: boolean,
+  cursorNote: CursorAttemptNote | null,
 ) {
   // Cached usage looks like fresh usage: no status note and no dimming. A hidden account is gray.
   const extras = { active: account.active, dimmed: hidden, hidden, ...header };
@@ -63,6 +67,7 @@ function providerCard(
         <CursorCard
           slot={slotFromAccount(a)}
           accountLabel={label ?? a.usage?.accountName}
+          note={a.active ? cursorNote : null}
           {...common}
         />
       );
@@ -164,12 +169,24 @@ export default function ProviderPanel({
                     onSelect: () => refreshWidget(summaries.reloadAll),
                   },
                 ]}
-                card={(header) => providerCard(id, account, settings, now, header, isHidden, light)}
+                card={(header) =>
+                  providerCard(
+                    id,
+                    account,
+                    settings,
+                    now,
+                    header,
+                    isHidden,
+                    light,
+                    summaries.cursor?.attempt ?? null,
+                  )
+                }
               />
             );
           })}
         </CardGrid>
       )}
+      {id === "cursor" && <CursorDiagnostics />}
       {id === "claude" && <PaceSection target={settings.claudeHourlyTarget} update={update} />}
       {renameAccount && (
         <RenameDialog

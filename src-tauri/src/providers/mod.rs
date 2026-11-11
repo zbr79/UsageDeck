@@ -11,6 +11,8 @@
 pub mod claude;
 pub mod codex;
 pub mod cursor;
+pub mod cursor_auth;
+pub mod cursor_diag;
 pub mod cursor_signin;
 pub mod cursor_usage;
 pub mod grok;
@@ -48,6 +50,9 @@ pub enum ProviderError {
     SchemaChanged,
     #[error("locked")]
     Locked,
+    /// The app's sign-in is there but this build cannot read it (encrypted, or the file is damaged).
+    #[error("sign-in-unreadable")]
+    SignInUnreadable,
 }
 
 impl ProviderError {
@@ -66,6 +71,7 @@ impl ProviderError {
             ProviderError::Http(_) => "http",
             ProviderError::SchemaChanged => "schema-changed",
             ProviderError::Locked => "locked",
+            ProviderError::SignInUnreadable => "sign-in-unreadable",
         }
     }
 }
@@ -1216,10 +1222,59 @@ mod tests {
             "missing-credentials"
         );
         assert_eq!(ProviderError::RateLimited.kind(), "rate-limited");
+        assert_eq!(ProviderError::SignInUnreadable.kind(), "sign-in-unreadable");
         let id = log_id("Someone@Example.com");
         assert_eq!(id.len(), 8);
         assert_eq!(id, log_id(" someone@example.com"));
         assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
         assert_ne!(id, log_id("other@example.com"));
+    }
+
+    /// A rejected sign-in is neither remembered nor final: the next poll fetches again, and the
+    /// card's `authExpired` always describes that latest attempt.
+    #[tokio::test]
+    async fn a_rejection_is_retried_and_only_the_latest_attempt_marks_auth_expired() {
+        let dir = temp_dir("retry");
+        let cache = UsageCache::new(dir.join("usage-cache.json"));
+        let provider: CachedProvider<Usage> = CachedProvider::new("test", Duration::ZERO, None);
+        let fetches = std::sync::atomic::AtomicU32::new(0);
+        let attempt = |outcome: Result<Usage, ProviderError>| {
+            let fetches = &fetches;
+            let (provider, cache) = (&provider, &cache);
+            async move {
+                provider
+                    .get(cache, "a@x.com", |_| async move {
+                        fetches.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        outcome.map_err(FetchError::from)
+                    })
+                    .await
+            }
+        };
+
+        attempt(Ok(Usage { percent_used: 20.0 })).await;
+        let rejected = attempt(Err(ProviderError::AuthRejected)).await;
+        assert!(rejected.auth_expired && rejected.stale);
+
+        for later in [
+            ProviderError::Locked,
+            ProviderError::Network,
+            ProviderError::Http(503),
+            ProviderError::SchemaChanged,
+            ProviderError::SignInUnreadable,
+        ] {
+            let row = attempt(Err(later)).await;
+            assert!(!row.auth_expired, "{later} is not a rejected sign-in");
+            assert_eq!(row.error, Some(later));
+            assert_eq!(row.usage, Some(Usage { percent_used: 20.0 }));
+        }
+        let again = attempt(Err(ProviderError::AuthRejected)).await;
+        assert!(again.auth_expired);
+        let fresh = attempt(Ok(Usage {
+            percent_used: 100.0,
+        }))
+        .await;
+        assert!(!fresh.auth_expired && !fresh.stale && fresh.error.is_none());
+        assert_eq!(fetches.load(std::sync::atomic::Ordering::Relaxed), 9);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

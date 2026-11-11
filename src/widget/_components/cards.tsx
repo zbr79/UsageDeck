@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { Badge, HIT_24 } from "@/ui/controls";
 import { CopyIcon, EyeOffIcon } from "@/ui/Icons";
 import { WIDGET_SPEND_TONE, type Tone } from "@/ui/palette";
-import { errorHint, isAuthRejected } from "@/lib/errors";
+import { cursorErrorHint, errorHint, isAuthRejected } from "@/lib/errors";
 import {
   capitalize,
   claudePlanLabel,
@@ -18,6 +18,7 @@ import type {
   ClaudePace,
   ClaudeUsage,
   CodexUsage,
+  CursorAttemptNote,
   CursorUsage,
   GrokUsage,
   OpenCodeAccountUsage,
@@ -101,12 +102,13 @@ function SlotHints<T>({ slot, how }: { slot: ProviderSlot<T>; how: string }) {
  * Cursor's rejected sign-in as a button: Cursor renews its own token when it runs, so starting it
  * is the fix. The 24 px hit area overflows the 16 px line.
  */
-function OpenCursorHint({ onClick }: { onClick: () => void }) {
+function OpenCursorHint({ onClick, reason }: { onClick: () => void; reason?: string | null }) {
+  const how = "Open Cursor to renew its sign-in; this card updates by itself.";
   return (
     <button
       type="button"
       onClick={onClick}
-      title="Cursor's sign-in expired. Open Cursor to renew it; this card updates by itself."
+      title={reason ? `${reason}\n${how}` : `Cursor's sign-in expired. ${how}`}
       className={`${HIT_24} shrink-0 rounded-[3px] px-1 -mx-1 text-[11px] leading-4 font-medium whitespace-nowrap text-(--w-warn) hover:bg-(--w-hover) hover:underline transition-colors`}
     >
       Open Cursor
@@ -309,6 +311,7 @@ export function CursorCard({
   multiple = false,
   onHide,
   onOpenCursor,
+  note = null,
   extras,
 }: {
   slot: ProviderSlot<CursorUsage>;
@@ -321,6 +324,8 @@ export function CursorCard({
   onHide?: (until: number) => void;
   /** widget: a rejected sign-in shows an "Open Cursor" button that calls this */
   onOpenCursor?: () => void;
+  /** why the last attempt failed: the tooltip of whichever hint the card shows */
+  note?: CursorAttemptNote | null;
   /** settings-only additions; the widget passes none */
   extras?: CardExtras;
 }) {
@@ -337,6 +342,7 @@ export function CursorCard({
   );
   const cyclePassed = slot.stale && isPassed(c?.resetsAt, now);
   const used = signedOut ? null : usedUp("cursor", { usage: c, stale: slot.stale }, now);
+  const failure = cursorErrorHint(slot.error, note);
   return (
     <Card
       extras={extras}
@@ -348,9 +354,17 @@ export function CursorCard({
       titleAction={<HideButton name={title} used={used} now={now} onHide={onHide} />}
       hints={
         signedOut && onOpenCursor ? (
-          <OpenCursorHint onClick={onOpenCursor} />
+          <OpenCursorHint onClick={onOpenCursor} reason={note?.reason} />
+        ) : signedOut ? (
+          <Hint color="warn" title={note?.reason ?? "Sign-in expired · open Cursor to refresh it"}>
+            re-auth
+          </Hint>
         ) : (
-          <SlotHints slot={slot} how="open Cursor" />
+          failure && (
+            <Hint color="warn" title={failure.long}>
+              {failure.short}
+            </Hint>
+          )
         )
       }
       badges={

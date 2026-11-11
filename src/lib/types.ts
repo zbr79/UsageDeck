@@ -46,7 +46,17 @@ export type ProviderErrorKind =
   | "network"
   | "http"
   | "schema-changed"
-  | "locked";
+  | "locked"
+  /** the app's sign-in is there but could not be read or decrypted */
+  | "sign-in-unreadable";
+
+/** Why the last Cursor attempt gave no fresh usage, from `/api/cursor` (`attempt`). */
+export interface CursorAttemptNote {
+  /** one line for the card's tooltip; null when the attempt worked */
+  reason: string | null;
+  /** failed attempts in a row */
+  failures: number;
+}
 
 /** JSON shape of a one-account provider response. */
 export interface ProviderResponse<T> {
