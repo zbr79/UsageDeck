@@ -15,6 +15,8 @@ no Electron, no Node at runtime.
 Other apps' sign-ins are **read, never written**: UsageDeck never refreshes or rewrites another
 app's tokens (doing so rotates their refresh tokens and logs them out). If a sign-in has expired,
 the card shows the last known numbers with a `re-auth` hint — open that app once to refresh it.
+For Cursor the numbers turn gray and the hint is an **Open Cursor** button: it starts Cursor,
+which renews its own sign-in, and the card shows live numbers again within about 10 seconds of that.
 See [SECURITY.md](SECURITY.md) for exactly what is read, stored and sent.
 
 ---
@@ -147,7 +149,7 @@ uninstaller to also remove settings, logs and the stored OpenCode keys (details 
   usage, with no "cached" or "updated … ago" note; a window whose stored reset time has passed
   shows `--` until fresh data arrives
 - **States, consistently on every card** — a card shows text only when you must act: loading,
-  unavailable, `re-auth`, `key rejected` (OpenCode 401 / 403), `not signed in`, exhausted (red).
+  unavailable, `re-auth` (Cursor: an `Open Cursor` button, numbers in gray), `key rejected` (OpenCode 401 / 403), `not signed in`, exhausted (red).
   Passing failures (rate limit, network, service error, busy, changed reply format) show nothing
   on the card; they stay in the log and `--dump`
 - **Hide until reset** — a used-up (red) card has a small eye-slash button next to its name. Click

@@ -45,6 +45,18 @@ refreshes or deletes them** — refreshing would rotate their refresh tokens and
 When a token has expired or is rejected, the card shows `re-auth` and the last known numbers
 instead. No token-refresh endpoint is ever called.
 
+**Cursor.** UsageDeck reads only `cursorAuth/accessToken` and the account name
+(`cursorAuth/cachedEmail`, else `cursorAuth/cachedScopedProfile`) from `state.vscdb`. It never reads
+`cursorAuth/refreshToken` and never calls `https://api2.cursor.sh/oauth/token`: Cursor stores each
+renewed access token as its refresh token too, and whether a refresh retires the token it was given
+is not known, so a refresh from UsageDeck could log Cursor out. When Cursor's API rejects the access
+token (401), the card shows its last numbers in gray with an **Open Cursor** button. The button
+starts `Cursor.exe`, which renews its own token. UsageDeck looks for it in
+`%LOCALAPPDATA%\Programs\cursor`, then `%ProgramFiles%\cursor`, then in the `InstallLocation` or
+`DisplayIcon` of a "Cursor" entry under the `HKCU` / `HKLM` `…\CurrentVersion\Uninstall` registry
+keys (read-only). While the token stays rejected, every poll reads `state.vscdb` again (read-only),
+so the renewed token is used as soon as Cursor writes it. The rejected token is kept in memory only.
+
 | App            | What is read (read-only)                                                                                    |
 | -------------- | ----------------------------------------------------------------------------------------------------------- |
 | Claude Code    | `~/.claude/.credentials.json` (`claudeAiOauth`), `~/.claude.json` (account email / plan)                    |
