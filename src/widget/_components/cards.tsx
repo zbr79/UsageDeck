@@ -97,6 +97,23 @@ function SlotHints<T>({ slot, how }: { slot: ProviderSlot<T>; how: string }) {
   );
 }
 
+/**
+ * Cursor's rejected sign-in as a button: Cursor renews its own token when it runs, so starting it
+ * is the fix. The 24 px hit area overflows the 16 px line.
+ */
+function OpenCursorHint({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title="Cursor's sign-in expired. Open Cursor to renew it; this card updates by itself."
+      className={`${HIT_24} shrink-0 rounded-[3px] px-1 -mx-1 text-[11px] leading-4 font-medium whitespace-nowrap text-(--w-warn) hover:bg-(--w-hover) hover:underline transition-colors`}
+    >
+      Open Cursor
+    </button>
+  );
+}
+
 function planTone(plan: string): Tone {
   const normalized = plan.toLowerCase();
   if (normalized === "free") return "green";
@@ -291,6 +308,7 @@ export function CursorCard({
   accountLabel = null,
   multiple = false,
   onHide,
+  onOpenCursor,
   extras,
 }: {
   slot: ProviderSlot<CursorUsage>;
@@ -301,10 +319,14 @@ export function CursorCard({
   multiple?: boolean;
   /** widget: hide this used-up card until the given time */
   onHide?: (until: number) => void;
+  /** widget: a rejected sign-in shows an "Open Cursor" button that calls this */
+  onOpenCursor?: () => void;
   /** settings-only additions; the widget passes none */
   extras?: CardExtras;
 }) {
   const c = slot.data;
+  // Signed out: the numbers are the last ones seen, so they read gray, never red or "used up".
+  const signedOut = isAuthRejected(slot.authExpired, slot.error);
   const title = accountTitle(
     settings,
     "cursor",
@@ -314,7 +336,7 @@ export function CursorCard({
     multiple,
   );
   const cyclePassed = slot.stale && isPassed(c?.billingCycleEnd, now);
-  const used = usedUp("cursor", { usage: c, stale: slot.stale }, now);
+  const used = signedOut ? null : usedUp("cursor", { usage: c, stale: slot.stale }, now);
   return (
     <Card
       extras={extras}
@@ -324,7 +346,13 @@ export function CursorCard({
       titleHint={c?.accountName ?? undefined}
       state={used ? "exhausted" : "normal"}
       titleAction={<HideButton name={title} used={used} now={now} onHide={onHide} />}
-      hints={<SlotHints slot={slot} how="open Cursor" />}
+      hints={
+        signedOut && onOpenCursor ? (
+          <OpenCursorHint onClick={onOpenCursor} />
+        ) : (
+          <SlotHints slot={slot} how="open Cursor" />
+        )
+      }
       badges={
         c?.planName ? (
           <Badge scope="w" tone="blue">
@@ -341,8 +369,15 @@ export function CursorCard({
               name="First-party usage"
               percent={c.autoPercentUsed}
               unknown={cyclePassed}
+              dimmed={signedOut}
             />
-            <Meter label="API" name="API usage" percent={c.apiPercentUsed} unknown={cyclePassed} />
+            <Meter
+              label="API"
+              name="API usage"
+              percent={c.apiPercentUsed}
+              unknown={cyclePassed}
+              dimmed={signedOut}
+            />
           </div>
           {c.billingCycleEnd && !cyclePassed && (
             <ResetLine>Resets {formatUntil(c.billingCycleEnd, now)}</ResetLine>

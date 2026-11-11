@@ -175,6 +175,25 @@ const providers: Record<string, unknown> = {
   ),
 };
 
+// `?cursorAuth=rejected` shows Cursor's sign-in as expired, its last usage cached and full (browser
+// preview only). "Open Cursor" then brings it back a few seconds later, as Cursor renewing it would.
+const cursorRow = (providers.cursor as { accounts: TrackedAccount<CursorUsage>[] }).accounts[0];
+if (query().get("cursorAuth") === "rejected") {
+  Object.assign(cursorRow, {
+    authExpired: true,
+    error: "auth-rejected",
+    stale: true,
+    usage: { ...cursorRow.usage, autoPercentUsed: 100, totalPercentUsed: 100 },
+  });
+}
+
+/** Browser stand-in for the Rust `open_cursor` command. */
+export function mockOpenCursor(): void {
+  setTimeout(() => {
+    Object.assign(cursorRow, { authExpired: false, error: null, stale: false, cachedAt: null });
+  }, 3_000);
+}
+
 // A remembered Codex account whose sign-in file is gone (not the signed-in one: no hint).
 (providers.codex as { accounts: TrackedAccount<CodexUsage>[] }).accounts.push(
   tracked<CodexUsage | null>("old@example.com", null, {
