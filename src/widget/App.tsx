@@ -29,7 +29,7 @@ import { openCodeUsedUp, usedUp, type UsageOf } from "@/lib/used-up";
 import { ClaudeCard, CodexCard, CursorCard, GrokCard, OpenCodeCard } from "./_components/cards";
 import { nextBrightness, resolveWidgetTheme } from "./_lib/theme";
 import { menuNavIndex } from "./_lib/menu-nav";
-import { snoozedCards, snoozeSummary } from "./_lib/snooze";
+import { snoozedCards } from "./_lib/snooze";
 import { slotFromAccount, useWidgetData, type AccountList } from "./_lib/useWidgetData";
 
 const WIDTH = 238;
@@ -113,7 +113,6 @@ export default function WidgetPage() {
     now,
   );
   const snoozedKeys = new Set(snoozed.map((card) => card.key));
-  const summary = snoozeSummary(snoozed, now);
   const nextBack = snoozed.length ? Math.min(...snoozed.map((card) => card.until)) : null;
   const hide = (provider: WidgetProvider, id: string) => (until: number) =>
     void updateSettings({ snoozedUntil: { [accountKey(provider, id)]: until } }).catch(() => {});
@@ -453,18 +452,6 @@ export default function WidgetPage() {
             </div>
           )}
           {settings.providerOrder.map((id) => renderProvider(id))}
-          {summary && (
-            <button
-              type="button"
-              onClick={showSnoozed}
-              aria-label={summary.label}
-              title={summary.label}
-              className="flex w-full items-center gap-1.5 rounded-lg border border-(--w-cardBorder) bg-(--w-card) px-2 py-1 text-left text-[11px] leading-4 text-(--w-muted) hover:bg-(--w-hover) hover:text-(--w-text) transition-colors"
-            >
-              <EyeOffIcon size={12} className="shrink-0" />
-              <span className="truncate min-w-0">{summary.text}</span>
-            </button>
-          )}
         </div>
       )}
       {menuOpen && (
@@ -512,6 +499,21 @@ export default function WidgetPage() {
             <GearIcon size={14} />
             Settings
           </button>
+          {snoozed.length > 0 && (
+            <button
+              type="button"
+              role="menuitem"
+              tabIndex={-1}
+              onClick={() => {
+                setMenuOpen(false);
+                showSnoozed();
+              }}
+              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] hover:bg-(--w-hover) focus-visible:bg-(--w-hover)"
+            >
+              <EyeOffIcon size={14} />
+              Show hidden ({snoozed.length})
+            </button>
+          )}
           <div role="separator" className="my-1 border-t border-(--w-cardBorder)" />
           <button
             type="button"

@@ -137,8 +137,8 @@ uninstaller to also remove settings, logs and the stored OpenCode keys (details 
 - **Hide until reset** — a used-up (red) card has a small eye-slash button next to its name. Click
   it to hide the card until it can be used again: the latest reset among its full windows (5-hour
   and weekly both full waits for the weekly reset). The card comes back on its own at that time,
-  or sooner if usage drops. While cards are hidden, one line such as "Codex hidden · back in 1h
-  21m" stays on the widget; click it to show them again
+  or sooner if usage drops. A hidden card leaves nothing on the widget; right-click → **Show
+  hidden** brings it back early
 - **Unavailable banner** — "Usage unavailable · updated 3m ago" with Retry
 - **Copy key** — hover the OpenCode icon on a card (a copy glyph appears) and click; the key is
   copied by the Rust side and never passes through the page
