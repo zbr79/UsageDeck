@@ -7,10 +7,10 @@ no Electron, no Node at runtime.
 | Provider        | What's shown                                                                             | Data source                                                                   |
 | --------------- | ---------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
 | **OpenCode Go** | Rolling / Weekly / Monthly usage per account, reset countdowns, DeepSeek peak-hour timer | `opencode.ai/zen/go/v1/usage` (API key you add in Settings)                   |
-| **Cursor**      | First Party & API usage, plan badge, billing-cycle reset                                 | Cursor's local sign-in → `api2.cursor.sh`, else `cursor.com/api/usage-summary`    |
+| **Cursor**      | First Party & API usage, plan badge, billing-cycle reset; API dollars this cycle and the models they went to | Cursor's local sign-in → `api2.cursor.sh`, else `cursor.com/api/usage-summary`; API dollars from `cursor.com/api/dashboard/get-filtered-usage-events` |
 | **Grok Bot**    | Weekly usage %, plan badge, reset countdown                                              | Grok Bot's own sign-in (falls back to Cursor's) → `api2.cursor.sh` sand usage |
 | **Codex**       | Usage %, plan badge (Free/Plus/Pro), reset credits, reset countdown                      | Codex CLI sign-in → ChatGPT `wham/usage`                                      |
-| **Claude**      | 5-hour and weekly usage, plan badge, reset countdowns; spend rate ($/h) and pace (%/h, projected limit time) | Claude desktop / Claude Code sign-in → Anthropic OAuth usage; dollars from the Claude Code logs on this PC (usage fields only) |
+| **Claude**      | 5-hour and weekly usage, plus a model's own weekly limit (Fable) when the plan has one, plan badge, reset countdowns; spend rate ($/h) and pace (%/h, projected limit time) | Claude desktop / Claude Code sign-in → Anthropic OAuth usage; dollars from the Claude Code logs on this PC (usage fields only) |
 
 Other apps' sign-ins are **read, never written**: UsageDeck never refreshes or rewrites another
 app's tokens (doing so rotates their refresh tokens and logs them out). If a sign-in has expired,
@@ -27,6 +27,15 @@ Whenever the card has no fresh numbers, its header says so (`Open Cursor`, `can'
 in Settings → Cursor → Diagnostics (see [Diagnostics](#diagnostics)).
 The Cursor card turns red when both included buckets are at 100% and on-demand usage is off (or its
 monthly limit is spent); with on-demand budget left it stays usable.
+When the API bucket has spend, the reset line adds it (`Resets 9d · API $10.80 / $20`: the dollars
+Cursor took for API models this billing cycle, and the plan's included usage). The API meter's
+tooltip and Settings → Cursor name the three largest models, the rest as "other". The numbers are
+summed from the cycle's usage events, read at most every five minutes; if they cannot be read, the
+card shows the percentages alone.
+
+When Anthropic gives a model a weekly limit of its own (Fable), the Claude card shows it as a third
+bar: `5h | W | Fable`, like the OpenCode card's three bars. A full Fable limit turns only that bar
+red: the other models still work, so the card is not used up.
 See [SECURITY.md](SECURITY.md) for exactly what is read, stored and sent.
 
 ---
