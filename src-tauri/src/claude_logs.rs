@@ -8,20 +8,21 @@
 //!
 //! Replies are deduplicated by `message.id` + `requestId` (Claude Code writes one line per content
 //! block, each with the same usage, and resumed sessions copy earlier lines) with a seen-set of
-//! 64-bit hashes covering 8 days. Token counts go into one-minute buckets per model in
-//! `spend-buckets.json` (8 days); dollars are computed from them at read time.
+//! 64-bit hashes covering 8 days. Token counts go into one-minute buckets per model and price
+//! tier in `spend-buckets.json` (8 days); dollars are computed from them at read time. The tier is
+//! the one thing priced per reply: it depends on that reply's prompt size (Haiku 5.5 over 100K).
 //!
 //! Port of the read-only probe the plan's numbers came from (scratch `spend.mjs`).
 
 use crate::history::{self, HISTORY_FILE, HOUR_MS, MINUTE_MS};
-use crate::pricing::{cost, price_of, Tokens};
+use crate::pricing::{cost, price_of, tier_of, Tier, Tokens};
 use crate::store::write_json_atomic;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use chrono::{Local, TimeZone, Timelike};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -31,7 +32,9 @@ pub const INDEX_FILE: &str = "claude-logs-index.json";
 pub const BUCKETS_FILE: &str = "spend-buckets.json";
 /// Backfill depth, seen-set and bucket retention.
 const KEEP_MS: i64 = 8 * history::DAY_MS;
-const FORMAT_VERSION: u32 = 1;
+/// 2: bucket rows carry the price tier. Files of another version are dropped and the transcripts
+/// read again.
+const FORMAT_VERSION: u32 = 2;
 /// A model id longer than this is not a model id: the reply is skipped.
 const MAX_MODEL_LEN: usize = 100;
 
@@ -236,8 +239,8 @@ struct IndexFile {
     seen: String,
 }
 
-/// (minute, model, input, output, cache read, cache write 5m, cache write 1h, replies)
-type BucketRow = (i64, String, u64, u64, u64, u64, u64, u64);
+/// (minute, model, tier, input, output, cache read, cache write 5m, cache write 1h, replies)
+type BucketRow = (i64, String, Tier, u64, u64, u64, u64, u64, u64);
 
 #[derive(Default, Serialize, Deserialize)]
 struct BucketsFile {
@@ -251,8 +254,8 @@ struct Bucket {
     replies: u64,
 }
 
-/// minute (ms epoch / 60 000) -> model -> bucket
-type Buckets = BTreeMap<i64, BTreeMap<String, Bucket>>;
+/// minute (ms epoch / 60 000) -> (model, price tier) -> bucket
+type Buckets = BTreeMap<i64, BTreeMap<(String, Tier), Bucket>>;
 
 #[derive(Default)]
 struct ScanState {
@@ -331,9 +334,9 @@ impl SpendEngine {
                     .ok()
                     .and_then(|b| serde_json::from_slice(&b).ok());
                 if let Some(f) = file.filter(|f| f.version == FORMAT_VERSION) {
-                    for (minute, model, i, o, cr, w5, w1, n) in f.rows {
+                    for (minute, model, tier, i, o, cr, w5, w1, n) in f.rows {
                         s.buckets.entry(minute).or_default().insert(
-                            model,
+                            (model, tier),
                             Bucket {
                                 tokens: Tokens {
                                     input: i,
@@ -458,7 +461,7 @@ impl SpendEngine {
                     .buckets
                     .entry(r.t / MINUTE_MS)
                     .or_default()
-                    .entry(r.model.clone())
+                    .entry((r.model.clone(), tier_of(&r.model, &r.tokens)))
                     .or_default();
                 b.tokens.add(&r.tokens);
                 b.replies += 1;
@@ -468,11 +471,12 @@ impl SpendEngine {
             s.buckets
                 .iter()
                 .flat_map(|(minute, models)| {
-                    models.iter().map(move |(model, b)| {
+                    models.iter().map(move |((model, tier), b)| {
                         let t = b.tokens;
                         (
                             *minute,
                             model.clone(),
+                            *tier,
                             t.input,
                             t.output,
                             t.cache_read,
@@ -553,10 +557,10 @@ fn sum_where(buckets: &Buckets, keep: impl Fn(i64) -> bool) -> f64 {
         if !keep(mid(*minute)) {
             continue;
         }
-        for (model, b) in models {
+        for ((model, tier), b) in models {
             if let Some(p) = *prices
-                .entry(model.as_str())
-                .or_insert_with(|| price_of(model))
+                .entry((model.as_str(), *tier))
+                .or_insert_with(|| price_of(model, *tier))
             {
                 usd += cost(&p, &b.tokens);
             }
@@ -583,7 +587,11 @@ pub struct Spend {
     pub rate15m: f64,
     pub by_model: Vec<ModelSpend>,
     pub hourly: Vec<f64>,
+    /// Replies, last 7 days, on models missing from the price table; none of their tokens are in
+    /// the dollar figures. Replies without tokens (`<synthetic>`) cost nothing and are left out.
     pub unpriced_replies: u64,
+    /// Those models' ids, sorted.
+    pub unpriced_models: Vec<String>,
     pub scanned_at: Option<i64>,
     pub backfilling: bool,
     /// diagnostics for `--pace` only; not part of the API body
@@ -608,11 +616,13 @@ fn summarize(
         by_model: Vec::new(),
         hourly: vec![0.0; 24],
         unpriced_replies: 0,
+        unpriced_models: Vec::new(),
         scanned_at,
         backfilling: scanned_at.is_none(),
         last24h: 0.0,
     };
     let mut by_model: BTreeMap<&str, f64> = BTreeMap::new();
+    let mut unpriced: BTreeSet<&str> = BTreeSet::new();
     let mut last15 = 0.0;
     let since = |hours: i64, m: i64| m > now - hours * HOUR_MS && m <= now + MINUTE_MS;
     for (minute, models) in buckets.range((now - 7 * history::DAY_MS) / MINUTE_MS - 1..) {
@@ -620,9 +630,12 @@ fn summarize(
         if !since(7 * 24, m) {
             continue;
         }
-        for (model, b) in models {
-            let Some(price) = price_of(model) else {
-                out.unpriced_replies += b.replies;
+        for ((model, tier), b) in models {
+            let Some(price) = price_of(model, *tier) else {
+                if !b.tokens.is_empty() {
+                    out.unpriced_replies += b.replies;
+                    unpriced.insert(model);
+                }
                 continue;
             };
             let usd = cost(&price, &b.tokens);
@@ -664,6 +677,7 @@ fn summarize(
         })
         .collect();
     out.by_model.sort_by(|a, b| b.usd24h.total_cmp(&a.usd24h));
+    out.unpriced_models = unpriced.into_iter().map(str::to_string).collect();
     out
 }
 
@@ -793,14 +807,16 @@ mod tests {
         let engine = SpendEngine::new(dir.clone(), root.clone());
         assert!(engine.spend(NOW).backfilling);
 
-        // msg_1 three times over two files, msg_2, msg_3 (unpriced); msg_4 is still partial
+        // msg_1 three times over two files, msg_2, msg_3 (<synthetic>); msg_4 is still partial
         let s = engine.scan_once(NOW);
         assert_eq!((s.files, s.files_read, s.new_replies), (2, 2, 3));
         let spend = engine.spend(NOW);
         assert!(!spend.backfilling && spend.scanned_at == Some(NOW));
         assert!(close(spend.last_hour, MSG1 + MSG2), "{}", spend.last_hour);
         assert!(close(spend.last7d, MSG1 + MSG2));
-        assert_eq!(spend.unpriced_replies, 1);
+        // <synthetic> has no tokens: nothing is missing from the dollars
+        assert_eq!(spend.unpriced_replies, 0);
+        assert!(spend.unpriced_models.is_empty());
         let models: Vec<&str> = spend.by_model.iter().map(|m| m.model.as_str()).collect();
         assert_eq!(models, ["claude-opus-5-5", "claude-sonnet-5-5"]);
         assert_eq!(spend.hourly.len(), 24);
@@ -858,7 +874,7 @@ mod tests {
         let add = |b: &mut Buckets, mins_ago: i64, out: u64| {
             b.entry((NOW - mins_ago * MINUTE_MS) / MINUTE_MS)
                 .or_default()
-                .entry("claude-opus-5-5".into())
+                .entry(("claude-opus-5-5".into(), Tier::Standard))
                 .or_default()
                 .tokens
                 .output += out;
@@ -878,5 +894,62 @@ mod tests {
         // 5 and 30 min ago are in the current hour (10:00-10:30); 120 min ago is 08:30 -> index 2
         assert!(close(s.hourly[0], 2.0) && close(s.hourly[2], 2.0));
         assert!(close(s.by_model[0].usd24h, 4.0));
+    }
+
+    #[test]
+    fn unpriced_models_are_named_and_kept_out_of_the_dollars() {
+        let mut b = Buckets::new();
+        let minute = (NOW - 10 * MINUTE_MS) / MINUTE_MS;
+        let mut add = |model: &str, output: u64, replies: u64| {
+            let bucket = b
+                .entry(minute)
+                .or_default()
+                .entry((model.into(), Tier::Standard))
+                .or_default();
+            bucket.tokens.output += output;
+            bucket.replies += replies;
+        };
+        add("claude-opus-5-5", 50_000, 1); // $1
+        add("claude-mystery-9", 1_000, 2);
+        add("claude-fable-9", 10, 1);
+        add("<synthetic>", 0, 3);
+        let s = summarize(&b, NOW, NOW - HOUR_MS, NOW - 30 * MINUTE_MS, Some(NOW));
+        assert!(close(s.last7d, 1.0), "{}", s.last7d);
+        assert_eq!(s.unpriced_replies, 3);
+        assert_eq!(s.unpriced_models, ["claude-fable-9", "claude-mystery-9"]);
+        let body = serde_json::to_value(&s).unwrap();
+        assert_eq!(
+            body["unpricedModels"],
+            json!(["claude-fable-9", "claude-mystery-9"])
+        );
+    }
+
+    #[test]
+    fn long_haiku_prompts_are_priced_per_reply() {
+        let (root, dir) = (temp("haiku-root"), temp("haiku-data"));
+        let line = |id: &str, input: u64| {
+            format!(
+                "{{\"type\":\"assistant\",\"message\":{{\"id\":\"{id}\",\"model\":\"claude-haiku-5-5\",\"usage\":{{\"input_tokens\":{input},\"output_tokens\":0}}}},\"requestId\":\"r-{id}\",\"timestamp\":\"2026-10-17T10:20:00.000Z\"}}\n"
+            )
+        };
+        // same minute, same model: one prompt under 100K tokens, one over
+        let text = line("h1", 50_000) + &line("h2", 150_000);
+        std::fs::write(root.join("h.jsonl"), text).unwrap();
+        let engine = SpendEngine::new(dir.clone(), root.clone());
+        assert_eq!(engine.scan_once(NOW).new_replies, 2);
+        // 50 000 x $0.10 + 150 000 x $0.50, per million; a merged bucket would give $0.02
+        let spend = engine.spend(NOW);
+        assert!(close(spend.last_hour, 0.005 + 0.075), "{}", spend.last_hour);
+        assert_eq!(
+            spend.by_model.len(),
+            1,
+            "one row per model, whatever the tier"
+        );
+        assert!(close(spend.by_model[0].usd24h, 0.08));
+        // and after a restart, from the saved buckets
+        let again = SpendEngine::new(dir.clone(), root.clone());
+        assert!(close(again.spend(NOW).last_hour, 0.08));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
