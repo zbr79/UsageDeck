@@ -38,9 +38,23 @@ interface LimitWindow {
   resetsAt: string | null | undefined;
 }
 
+/**
+ * Cursor stops when every included bucket it reports is at 100% and on-demand usage cannot take
+ * over: it is off, its monthly limit is spent, or Cursor did not say.
+ */
+function cursorUsedUp(c: CursorUsage): boolean {
+  const buckets = [c.cursorModelsPercentUsed, c.otherModelsPercentUsed].filter(
+    (p): p is number => p != null,
+  );
+  const od = c.onDemand;
+  const onDemandLeft =
+    od?.state === "enabled" && (od.limitUsd == null || od.spentUsd < od.limitUsd);
+  return buckets.length > 0 && buckets.every((p) => p >= 100) && !onDemandLeft;
+}
+
 /** The windows that can stop each provider. */
 const WINDOWS: { [P in ProviderId]: (usage: UsageOf[P]) => LimitWindow[] } = {
-  cursor: (c) => [{ full: (c.totalPercentUsed ?? 0) >= 100, resetsAt: c.billingCycleEnd }],
+  cursor: (c) => [{ full: cursorUsedUp(c), resetsAt: c.resetsAt }],
   grok: (g) => [{ full: (g.percentUsed ?? 0) >= 100, resetsAt: g.resetAt }],
   codex: (x) => [
     { full: x.limitReached || (x.usedPercent ?? 0) >= 100, resetsAt: x.resetAt },

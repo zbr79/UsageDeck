@@ -111,13 +111,10 @@ const providers: Record<string, unknown> = {
   cursor: tracked<CursorUsage>(
     "dev@example.com",
     {
-      autoPercentUsed: 86,
-      apiPercentUsed: 54,
-      totalPercentUsed: 70,
-      billingCycleEnd: iso(10 * 24 * H),
-      totalSpend: null,
-      limit: null,
-      bonusSpend: null,
+      cursorModelsPercentUsed: 86,
+      otherModelsPercentUsed: 54,
+      resetsAt: iso(10 * 24 * H),
+      onDemand: { state: "enabled", spentUsd: 12.4, limitUsd: 50 },
       accountName: "dev@example.com",
       planName: "Pro",
     } as CursorUsage,
@@ -175,7 +172,7 @@ const providers: Record<string, unknown> = {
   ),
 };
 
-// `?cursorAuth=rejected` shows Cursor's sign-in as expired, its last usage cached and full (browser
+// `?cursorAuth=rejected` shows Cursor's sign-in as expired, its last usage cached and used up (browser
 // preview only). "Open Cursor" then brings it back a few seconds later, as Cursor renewing it would.
 const cursorRow = (providers.cursor as { accounts: TrackedAccount<CursorUsage>[] }).accounts[0];
 if (query().get("cursorAuth") === "rejected") {
@@ -183,7 +180,12 @@ if (query().get("cursorAuth") === "rejected") {
     authExpired: true,
     error: "auth-rejected",
     stale: true,
-    usage: { ...cursorRow.usage, autoPercentUsed: 100, totalPercentUsed: 100 },
+    usage: {
+      ...cursorRow.usage,
+      cursorModelsPercentUsed: 100,
+      otherModelsPercentUsed: 100,
+      onDemand: { state: "disabled" },
+    },
   });
 }
 

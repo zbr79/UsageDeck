@@ -9,13 +9,13 @@
 //! starts Cursor for the widget's "Open Cursor" button.
 
 use super::cursor_signin::{exe_candidates, reuse_state};
-use super::util::{number_or_null, string_or_null, to_iso};
+pub use super::cursor_usage::CursorUsage;
+use super::cursor_usage::{cursor_usage, failure_detail, UsageReply};
 use super::{
     collect_accounts, parse_reply, CachedProvider, FetchError, LiveAccount, ProviderError,
 };
 use crate::Core;
 use rusqlite::{ErrorCode, OpenFlags, OptionalExtension};
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -27,70 +27,16 @@ const SECTION: &str = "cursor";
 const BUSY_TIMEOUT: Duration = Duration::from_secs(2);
 const STATE_TTL: Duration = Duration::from_secs(60);
 
-/// `CursorUsage` in lib/types.ts.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CursorUsage {
-    pub auto_percent_used: Option<f64>,
-    pub api_percent_used: Option<f64>,
-    pub total_percent_used: Option<f64>,
-    pub billing_cycle_end: Option<String>,
-    pub total_spend: Option<f64>,
-    pub limit: Option<f64>,
-    pub bonus_spend: Option<f64>,
-    pub account_name: Option<String>,
-    pub plan_name: Option<String>,
-}
-
-/// GetCurrentPeriodUsage reply: `planUsage` must be an object; its fields stay lenient.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RawUsage {
-    plan_usage: serde_json::Map<String, Value>,
-    #[serde(default)]
-    billing_cycle_end: Value,
-}
-
-/// "20" followed by a non-word character or the end (the `\$?\s*20(?:\.00)?\b` of the old code).
-fn mentions_twenty(s: &str) -> bool {
-    let b = s.as_bytes();
-    (0..b.len().saturating_sub(1)).any(|i| {
-        b[i] == b'2'
-            && b[i + 1] == b'0'
-            && b.get(i + 2)
-                .is_none_or(|c| !(c.is_ascii_alphanumeric() || *c == b'_'))
-    })
-}
-
-fn cursor_plan_name(value: &Value) -> Option<String> {
-    let plan = string_or_null(value)?;
-    let lower = plan.to_lowercase();
-    Some(if lower.contains("pro") || mentions_twenty(&lower) {
-        "Pro".into()
-    } else {
-        plan
-    })
-}
-
-/// Port of `parseCursorUsage`. The plan reply is optional (a failed plan call is `None`).
+/// GetCurrentPeriodUsage, GetPlanInfo and GetHardLimit read together. A failed plan or limit
+/// call leaves its part unknown; a reply of the wrong shape is `SchemaChanged`.
 pub fn parse_cursor_usage(
     usage: &[u8],
     plan: Option<&Value>,
+    hard_limit: Option<&Value>,
     account_name: Option<String>,
 ) -> Result<CursorUsage, ProviderError> {
-    let raw: RawUsage = parse_reply(usage)?;
-    let pu = |k: &str| number_or_null(raw.plan_usage.get(k).unwrap_or(&Value::Null));
-    Ok(CursorUsage {
-        auto_percent_used: pu("autoPercentUsed"),
-        api_percent_used: pu("apiPercentUsed"),
-        total_percent_used: pu("totalPercentUsed"),
-        billing_cycle_end: to_iso(&raw.billing_cycle_end),
-        total_spend: pu("totalSpend"),
-        limit: pu("limit"),
-        bonus_spend: pu("bonusSpend"),
-        account_name,
-        plan_name: plan.and_then(|p| cursor_plan_name(&p["planInfo"]["planName"])),
-    })
+    let reply: UsageReply = parse_reply(usage)?;
+    Ok(cursor_usage(&reply, plan, hard_limit, account_name))
 }
 
 // ---- state.vscdb ----------------------------------------------------------------------------
@@ -278,41 +224,82 @@ pub fn open_cursor() -> Result<(), String> {
 static CACHE: LazyLock<CachedProvider<CursorUsage>> =
     LazyLock::new(|| CachedProvider::new(SECTION, Duration::from_secs(30), None));
 
-fn post(http: &reqwest::Client, token: &str, method: &str) -> reqwest::RequestBuilder {
+/// A Connect unary call to Cursor's DashboardService, sent the way current trackers send it:
+/// bearer token, JSON body, `Connect-Protocol-Version: 1`.
+pub(crate) fn dashboard_post(
+    http: &reqwest::Client,
+    token: &str,
+    method: &str,
+) -> reqwest::RequestBuilder {
     http.post(format!("{API}/{method}"))
         .bearer_auth(token)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .header(reqwest::header::ACCEPT, "application/json")
-        .header(reqwest::header::USER_AGENT, "Mozilla/5.0")
+        .header("Connect-Protocol-Version", "1")
         .body("{}")
         .timeout(Duration::from_secs(10))
+}
+
+/// A failing reply: its status and the `exp` claim of the token it was sent with.
+type Failure = (u16, Option<i64>);
+
+/// The last failure per method, so a reply that keeps failing the same way is logged once.
+static FAILING: LazyLock<Mutex<HashMap<&'static str, Failure>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// One DashboardService call: the reply body, or the error its status maps to. A failing status
+/// is logged with the endpoint (never the token).
+async fn call(
+    http: &reqwest::Client,
+    token: &str,
+    method: &'static str,
+) -> Result<Vec<u8>, ProviderError> {
+    let resp = dashboard_post(http, token, method)
+        .send()
+        .await
+        .map_err(|e| {
+            log::warn!("cursor {method}: request failed: {}", e.without_url());
+            ProviderError::Network
+        })?;
+    super::note_retry_after(&resp);
+    let status = resp.status().as_u16();
+    let body = resp.bytes().await.map_err(|_| ProviderError::Network)?;
+    if (200..300).contains(&status) {
+        FAILING.lock().unwrap().remove(method);
+        return Ok(body.to_vec());
+    }
+    let exp = super::codex::jwt_payload(token).and_then(|p| p["exp"].as_i64());
+    if FAILING.lock().unwrap().insert(method, (status, exp)) != Some((status, exp)) {
+        let detail = failure_detail(status, &body, exp, chrono::Utc::now().timestamp());
+        log::warn!("cursor {API}/{method}: HTTP {status}{detail}");
+    }
+    Err(match status {
+        401 => ProviderError::AuthRejected,
+        429 => ProviderError::RateLimited,
+        s => ProviderError::Http(s),
+    })
 }
 
 async fn fetch_usage(
     http: &reqwest::Client,
     account: &CursorAccount,
 ) -> Result<CursorUsage, ProviderError> {
-    let (usage, plan) = tokio::join!(
-        post(http, &account.token, "GetCurrentPeriodUsage").send(),
-        post(http, &account.token, "GetPlanInfo").send()
+    let token = account.token.as_str();
+    let (usage, plan, hard_limit) = tokio::join!(
+        call(http, token, "GetCurrentPeriodUsage"),
+        call(http, token, "GetPlanInfo"),
+        call(http, token, "GetHardLimit")
     );
-    let usage = usage.map_err(|e| {
-        log::warn!("cursor request failed: {}", e.without_url());
-        ProviderError::Network
-    })?;
-    super::note_retry_after(&usage);
-    match usage.status().as_u16() {
-        401 => return Err(ProviderError::AuthRejected),
-        429 => return Err(ProviderError::RateLimited),
-        s if !(200..300).contains(&s) => return Err(ProviderError::Http(s)),
-        _ => {}
-    }
-    let bytes = usage.bytes().await.map_err(|_| ProviderError::Network)?;
-    let plan = match plan {
-        Ok(r) if r.status().is_success() => r.json::<Value>().await.ok(),
-        _ => None,
+    let json = |reply: Result<Vec<u8>, ProviderError>| {
+        reply
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
     };
-    parse_cursor_usage(&bytes, plan.as_ref(), account.label.clone())
+    parse_cursor_usage(
+        &usage?,
+        json(plan).as_ref(),
+        json(hard_limit).as_ref(),
+        account.label.clone(),
+    )
 }
 
 /// Rows for the `accounts` array of the old route's JSON body (`TrackedAccount<CursorUsage>` each).
@@ -416,41 +403,11 @@ mod tests {
         dir
     }
 
-    #[test]
-    fn cursor_ok_fixture_parses() {
-        let (usage, plan) = split(OK);
-        let u = parse_cursor_usage(&usage, Some(&plan), Some("user@example.com".into())).unwrap();
-        assert_eq!(u.auto_percent_used, Some(100.0));
-        assert!((u.api_percent_used.unwrap() - 18.977777777777778).abs() < 1e-9);
-        assert!((u.total_percent_used.unwrap() - 59.711111111111116).abs() < 1e-9);
-        assert_eq!(u.total_spend, Some(5374.0));
-        assert_eq!(u.limit, Some(2000.0));
-        assert_eq!(u.bonus_spend, Some(3374.0));
-        assert_eq!(
-            u.billing_cycle_end.as_deref(),
-            Some("2026-11-11T22:16:13.000Z")
-        );
-        assert_eq!(u.plan_name.as_deref(), Some("Pro"));
-        assert_eq!(u.account_name.as_deref(), Some("user@example.com"));
-        assert_eq!(
-            cursor_plan_name(&Value::from("$20/mo")).as_deref(),
-            Some("Pro")
-        );
-        assert_eq!(
-            cursor_plan_name(&Value::from("Business")).as_deref(),
-            Some("Business")
-        );
-        assert_eq!(
-            cursor_plan_name(&Value::from("plan 200")).as_deref(),
-            Some("plan 200")
-        );
-    }
-
     #[tokio::test]
     async fn cursor_invalid_fixture_is_schema_changed_and_keeps_last_good() {
         let (bad, _) = split(INVALID);
         assert_eq!(
-            parse_cursor_usage(&bad, None, None),
+            parse_cursor_usage(&bad, None, None, None),
             Err(ProviderError::SchemaChanged)
         );
         let dir = temp_dir("invalid");
@@ -460,13 +417,13 @@ mod tests {
         let (usage, plan) = split(OK);
         let good = p
             .get(&cache, "k", |_| async {
-                parse_cursor_usage(&usage, Some(&plan), None).map_err(FetchError::from)
+                parse_cursor_usage(&usage, Some(&plan), None, None).map_err(FetchError::from)
             })
             .await;
         p.invalidate(None);
         let stale = p
             .get(&cache, "k", |_| async {
-                parse_cursor_usage(&bad, None, None).map_err(FetchError::from)
+                parse_cursor_usage(&bad, None, None, None).map_err(FetchError::from)
             })
             .await;
         assert_eq!(stale.usage, good.usage);
@@ -511,7 +468,7 @@ mod tests {
         // fresh run, locked DB, nothing in memory: the remembered account keeps its cached usage
         let core = Core::new(Store::new(dir.clone(), Box::new(MemoryVault::default())));
         let cached = CursorUsage {
-            total_percent_used: Some(42.0),
+            cursor_models_percent_used: Some(42.0),
             ..Default::default()
         };
         core.cache.write(SECTION, "user@example.com", &cached).await;
@@ -529,7 +486,7 @@ mod tests {
         assert_eq!(rows[0]["id"], "user@example.com");
         assert_eq!(rows[0]["active"], true);
         assert_eq!(rows[0]["stale"], true);
-        assert_eq!(rows[0]["usage"]["totalPercentUsed"], 42.0);
+        assert_eq!(rows[0]["usage"]["cursorModelsPercentUsed"], 42.0);
         drop(holder);
 
         // a good read is remembered; a later locked read serves it instead of "no account"
@@ -559,12 +516,12 @@ mod tests {
         };
         match fetch_usage(&reqwest::Client::new(), &account).await {
             Ok(u) => println!(
-                "cursor live: plan={:?} total={:?}% auto={:?}% api={:?}% cycleEnd={:?}",
+                "cursor live: plan={:?} cursorModels={:?}% otherModels={:?}% resetsAt={:?} onDemand={:?}",
                 u.plan_name,
-                u.total_percent_used,
-                u.auto_percent_used,
-                u.api_percent_used,
-                u.billing_cycle_end
+                u.cursor_models_percent_used,
+                u.other_models_percent_used,
+                u.resets_at,
+                u.on_demand
             ),
             Err(e) => println!("cursor live: {e}"),
         }

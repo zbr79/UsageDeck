@@ -12,6 +12,7 @@ pub mod claude;
 pub mod codex;
 pub mod cursor;
 pub mod cursor_signin;
+pub mod cursor_usage;
 pub mod grok;
 pub mod opencode;
 pub mod util;

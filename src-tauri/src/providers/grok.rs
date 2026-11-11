@@ -16,7 +16,6 @@ use std::path::PathBuf;
 use std::sync::LazyLock;
 use std::time::Duration;
 
-pub const SAND_URL: &str = "https://api2.cursor.sh/aiserver.v1.DashboardService/GetSandUsageStatus";
 const SECTION: &str = "grokbot";
 const PROVIDER: &str = "grok";
 
@@ -191,19 +190,12 @@ fn read_accounts() -> Vec<GrokAccount> {
     }]
 }
 
-/// POST the usage request (Cursor's headers). 401/403 -> AuthRejected, 429 -> RateLimited.
+/// POST GetSandUsageStatus with Cursor's request. 401/403 -> AuthRejected, 429 -> RateLimited.
 pub async fn fetch_reply(
     http: &reqwest::Client,
     token: &str,
 ) -> Result<(SandReply, Vec<u8>), ProviderError> {
-    let resp = http
-        .post(SAND_URL)
-        .bearer_auth(token)
-        .header("Content-Type", "application/json")
-        .header("Accept", "application/json")
-        .header("User-Agent", "Mozilla/5.0")
-        .body("{}")
-        .timeout(Duration::from_secs(10))
+    let resp = super::cursor::dashboard_post(http, token, "GetSandUsageStatus")
         .send()
         .await
         .map_err(|e| {

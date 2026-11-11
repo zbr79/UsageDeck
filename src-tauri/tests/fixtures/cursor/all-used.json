@@ -1,0 +1,49 @@
+{
+  "usage": {
+    "billingCycleStart": "1791756973000",
+    "billingCycleEnd": "1794435373000",
+    "planUsage": {
+      "totalSpend": 2000,
+      "includedSpend": 2000,
+      "limit": 2000,
+      "remainingBonus": false,
+      "bonusTooltip": "We work with model providers to give you free usage beyond what you've purchased. Amounts may vary.",
+      "autoPercentUsed": 100,
+      "apiPercentUsed": 100,
+      "totalPercentUsed": 100
+    },
+    "spendLimitUsage": {
+      "limitType": "user"
+    },
+    "displayThreshold": 200,
+    "enabled": true,
+    "displayMessage": "You've hit your usage limit",
+    "autoModelSelectedDisplayMessage": "You've used 100% of your included total usage",
+    "namedModelSelectedDisplayMessage": "You've used 100% of your included API usage",
+    "autoBucketModels": [
+      "default",
+      "composer-1.5",
+      "composer-2"
+    ]
+  },
+  "plan": {
+    "planInfo": {
+      "planName": "Pro",
+      "price": "$20/mo",
+      "billingCycleEnd": "1794435373000",
+      "planOwner": "PLAN_OWNER_STRIPE",
+      "includedUsagePeriod": "INCLUDED_USAGE_PERIOD_MONTHLY"
+    },
+    "nextUpgrade": {
+      "tier": "pro_plus",
+      "name": "Pro+",
+      "includedAmountCents": 7000,
+      "price": "$60/mo",
+      "description": "Unlock 3x more usage on Agent & more",
+      "includedUsagePeriod": "INCLUDED_USAGE_PERIOD_MONTHLY"
+    }
+  },
+  "hardLimit": {
+    "noUsageBasedAllowed": true
+  }
+}

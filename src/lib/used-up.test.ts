@@ -68,16 +68,44 @@ describe("usedUp", () => {
     expect(usedUp("claude", fresh(null), NOW)).toBeNull();
   });
 
-  it("cursor and grok: one window each", () => {
-    const cursor = { totalPercentUsed: 100, billingCycleEnd: at(5 * 24 * H) } as CursorUsage;
-    expect(usedUp("cursor", fresh(cursor), NOW)).toEqual({ until: NOW + 5 * 24 * H });
+  it("cursor: every included bucket full and no on-demand budget left", () => {
+    const full = {
+      cursorModelsPercentUsed: 100,
+      otherModelsPercentUsed: 100,
+      resetsAt: at(5 * 24 * H),
+      onDemand: { state: "disabled" },
+    } as CursorUsage;
+    const usable = (c: Partial<CursorUsage>) =>
+      usedUp("cursor", fresh({ ...full, ...c }), NOW) === null;
+    expect(usedUp("cursor", fresh(full), NOW)).toEqual({ until: NOW + 5 * 24 * H });
+    expect(usable({ otherModelsPercentUsed: 99 }), "Other Models left").toBe(true);
+    expect(usable({ cursorModelsPercentUsed: 40 }), "Cursor Models left").toBe(true);
+    expect(usable({ otherModelsPercentUsed: null }), "one bucket reported, full").toBe(false);
+    expect(usable({ onDemand: null }), "on-demand unknown").toBe(false);
+    const enabled = (spentUsd: number, limitUsd: number | null) =>
+      ({ state: "enabled", spentUsd, limitUsd }) as const;
+    expect(usable({ onDemand: enabled(12, 50) }), "on-demand budget left").toBe(true);
+    expect(usable({ onDemand: enabled(900, null) }), "on-demand without a limit").toBe(true);
+    expect(usable({ onDemand: enabled(50, 50) }), "on-demand limit spent").toBe(false);
+    expect(
+      usable({ cursorModelsPercentUsed: null, otherModelsPercentUsed: null }),
+      "nothing reported",
+    ).toBe(true);
+  });
+
+  it("grok: one window", () => {
     const grok = { percentUsed: 100, resetAt: at(H) } as GrokUsage;
     expect(usedUp("grok", fresh(grok), NOW)).toEqual({ until: NOW + H });
     expect(usedUp("grok", fresh({ ...grok, percentUsed: 50 }), NOW)).toBeNull();
   });
 
   it("full with no known reset time: used up, but no time to wait for", () => {
-    const cursor = { totalPercentUsed: 100, billingCycleEnd: null } as CursorUsage;
+    const cursor = {
+      cursorModelsPercentUsed: 100,
+      otherModelsPercentUsed: 100,
+      resetsAt: null,
+      onDemand: null,
+    } as CursorUsage;
     expect(usedUp("cursor", fresh(cursor), NOW)).toEqual({ until: null });
   });
 });

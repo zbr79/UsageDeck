@@ -43,5 +43,8 @@
       "description": "Unlock 3x more usage on Agent & more",
       "includedUsagePeriod": "INCLUDED_USAGE_PERIOD_MONTHLY"
     }
+  },
+  "hardLimit": {
+    "hardLimit": 50
   }
 }
