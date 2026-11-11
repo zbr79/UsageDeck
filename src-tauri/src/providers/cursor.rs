@@ -3,7 +3,12 @@
 //! The sign-in is read from Cursor's `state.vscdb`, opened READ-ONLY. A busy or locked DB is
 //! `ProviderError::Locked`: the last good sign-in (or, after a restart, the newest remembered
 //! account and its cached usage) is served instead, so the card never disappears.
+//!
+//! UsageDeck never refreshes Cursor's token: only Cursor does, when it runs. While the API rejects
+//! the token, every poll re-reads the DB so the token Cursor renews is used at once; `open_cursor`
+//! starts Cursor for the widget's "Open Cursor" button.
 
+use super::cursor_signin::{exe_candidates, reuse_state};
 use super::util::{number_or_null, string_or_null, to_iso};
 use super::{
     collect_accounts, parse_reply, CachedProvider, FetchError, LiveAccount, ProviderError,
@@ -183,6 +188,9 @@ type StateCache = HashMap<PathBuf, (Instant, Option<CursorState>)>;
 /// Last good read per DB path. A locked read never replaces it.
 static STATE: LazyLock<Mutex<StateCache>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// The access token the API last answered 401 for, until a fetch with a token works again.
+static REJECTED: Mutex<Option<String>> = Mutex::new(None);
+
 /// `current_state` on the blocking pool: the SQLite read can wait up to `busy` on a locked DB and
 /// must not stall the async runtime.
 async fn current_state_off_runtime(
@@ -200,7 +208,13 @@ async fn current_state_off_runtime(
 
 fn current_state(db: &Path, busy: Duration) -> Result<Option<CursorState>, ProviderError> {
     if let Some((at, state)) = STATE.lock().unwrap().get(db) {
-        if at.elapsed() < STATE_TTL {
+        let cached = state.as_ref().and_then(|s| s.token.as_deref());
+        if reuse_state(
+            at.elapsed(),
+            STATE_TTL,
+            cached,
+            REJECTED.lock().unwrap().as_deref(),
+        ) {
             return Ok(state.clone());
         }
     }
@@ -234,6 +248,29 @@ fn account_of(state: Option<CursorState>) -> Option<CursorAccount> {
         label,
         token,
     })
+}
+
+// ---- Open Cursor ----------------------------------------------------------------------------
+
+/// Start Cursor so it renews its own sign-in (the widget's "Open Cursor" button). Cursor.exe is
+/// looked for in its default per-user and per-machine folders, then in the uninstall entries.
+pub fn open_cursor() -> Result<(), String> {
+    let env = |name: &str| std::env::var_os(name).map(PathBuf::from);
+    let candidates = exe_candidates(
+        env("LOCALAPPDATA").as_deref(),
+        env("ProgramFiles").as_deref(),
+        &crate::win::uninstall::uninstall_entries(),
+    );
+    let Some(exe) = candidates.into_iter().find(|p| p.is_file()) else {
+        log::warn!("open cursor: Cursor.exe not found");
+        return Err("Cursor is not installed".into());
+    };
+    std::process::Command::new(&exe).spawn().map_err(|e| {
+        log::warn!("open cursor: could not start {}: {e}", exe.display());
+        "Cursor could not be started".to_string()
+    })?;
+    log::info!("open cursor: started {}", exe.display());
+    Ok(())
 }
 
 // ---- fetch ----------------------------------------------------------------------------------
@@ -288,6 +325,13 @@ async fn accounts_from(core: &Core, db: &Path, busy: Duration) -> Vec<Value> {
         Ok(state) => match account_of(state) {
             Some(account) => {
                 let key = account.id.clone();
+                // Cursor renewed the rejected token: drop the cached 401 so this poll uses it.
+                let mut rejected = REJECTED.lock().unwrap();
+                if rejected.as_deref().is_some_and(|t| t != account.token) {
+                    *rejected = None;
+                    CACHE.invalidate(Some(&key));
+                }
+                drop(rejected);
                 vec![LiveAccount {
                     id: account.id.clone(),
                     label: account.label.clone(),
@@ -295,9 +339,15 @@ async fn accounts_from(core: &Core, db: &Path, busy: Duration) -> Vec<Value> {
                     load: Box::pin(async move {
                         CACHE
                             .get(&core.cache, &key, |_| async move {
-                                fetch_usage(&core.http, &account)
-                                    .await
-                                    .map_err(FetchError::from)
+                                let result = fetch_usage(&core.http, &account).await;
+                                match &result {
+                                    Err(ProviderError::AuthRejected) => {
+                                        *REJECTED.lock().unwrap() = Some(account.token.clone())
+                                    }
+                                    Ok(_) => *REJECTED.lock().unwrap() = None,
+                                    Err(_) => {}
+                                }
+                                result.map_err(FetchError::from)
                             })
                             .await
                     }),
