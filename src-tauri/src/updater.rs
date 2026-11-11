@@ -55,17 +55,14 @@ impl Updater {
 }
 
 /// Apply `change` and tell every window when the status changed. Returns what `change` returned.
+/// The event goes out under the lock, so windows get the changes in the order they happened.
 fn update<T>(app: &AppHandle, change: impl FnOnce(&mut Machine) -> T) -> T {
     let updater = app.state::<Updater>();
-    let (result, changed) = {
-        let mut machine = updater.lock();
-        let before = machine.status().clone();
-        let result = change(&mut machine);
-        let after = machine.status();
-        (result, (*after != before).then(|| after.clone()))
-    };
-    if let Some(status) = changed {
-        if let Err(e) = app.emit(EVENT_STATUS, status) {
+    let mut machine = updater.lock();
+    let before = machine.status().clone();
+    let result = change(&mut machine);
+    if *machine.status() != before {
+        if let Err(e) = app.emit(EVENT_STATUS, machine.status()) {
             log::warn!("could not send the update status: {e}");
         }
     }
