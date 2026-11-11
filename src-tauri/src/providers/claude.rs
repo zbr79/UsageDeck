@@ -66,10 +66,23 @@ pub struct ClaudeUsage {
     pub weekly: ClaudeWindow,
     pub weekly_opus: Option<ClaudeWindow>,
     pub weekly_sonnet: Option<ClaudeWindow>,
+    /// The weekly limits of single models (`limits[].kind == "weekly_scoped"`), in reply order.
+    #[serde(default)]
+    pub weekly_scoped: Vec<ClaudeScopedWindow>,
     pub reset_credits: Option<i64>,
     pub billing_type: Option<String>,
     pub rate_limit_tier: Option<String>,
     pub org_uuid: Option<String>,
+}
+
+/// A weekly limit of its own for one model, e.g. Fable.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeScopedWindow {
+    /// The model's display name, else its id, else "Model".
+    pub label: String,
+    pub percent: Option<f64>,
+    pub resets_at: Option<String>,
 }
 
 // ---- the usage reply ------------------------------------------------------------------------
@@ -141,6 +154,39 @@ fn window_of(w: Option<&WindowReply>) -> ClaudeWindow {
         percent: w.utilization.or(w.percent),
         resets_at,
     }
+}
+
+/// Every `weekly_scoped` entry of the reply's `limits`. Read leniently from the untyped rest of
+/// the reply: an entry of an unknown shape is skipped, never a failed reply.
+fn scoped_limits_of(rest: &Map<String, Value>) -> Vec<ClaudeScopedWindow> {
+    let Some(limits) = rest.get("limits").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    limits
+        .iter()
+        .filter(|l| l.get("kind").and_then(Value::as_str) == Some("weekly_scoped"))
+        .filter_map(|l| {
+            let window = window_of(Some(
+                &serde_json::from_value::<WindowReply>(l.clone()).ok()?,
+            ));
+            let model = l.pointer("/scope/model");
+            let name = |k: &str| {
+                model
+                    .and_then(|m| m.get(k))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+            };
+            Some(ClaudeScopedWindow {
+                label: name("display_name")
+                    .or_else(|| name("id"))
+                    .unwrap_or("Model")
+                    .to_string(),
+                percent: window.percent,
+                resets_at: window.resets_at,
+            })
+        })
+        .collect()
 }
 
 fn reset_credits_of(rest: &Map<String, Value>) -> Option<i64> {
@@ -445,6 +491,7 @@ pub fn build_usage(
         weekly_sonnet: reply
             .and_then(|r| r.seven_day_sonnet.as_ref())
             .map(|w| window_of(Some(w))),
+        weekly_scoped: reply.map_or_else(Vec::new, |r| scoped_limits_of(&r.rest)),
         reset_credits: reply.and_then(|r| reset_credits_of(&r.rest)),
         billing_type: account.billing_type.clone(),
         rate_limit_tier,
@@ -820,6 +867,8 @@ mod tests {
 
     const OK: &[u8] = include_bytes!("../../tests/fixtures/claude/ok.json");
     const INVALID: &[u8] = include_bytes!("../../tests/fixtures/claude/invalid.json");
+    const FABLE: &[u8] = include_bytes!("../../tests/fixtures/claude/ok-fable.json");
+    const NO_SCOPED: &[u8] = include_bytes!("../../tests/fixtures/claude/ok-no-scoped.json");
 
     fn token(name: &str) -> ClaudeToken {
         ClaudeToken {
@@ -897,6 +946,56 @@ mod tests {
         assert_eq!(usage.weekly_opus, None);
         assert_eq!(usage.reset_credits, None);
         assert_eq!(v["fiveHour"]["resetsAt"], json!("2026-10-19T00:49:59.594Z"));
+    }
+
+    #[test]
+    fn a_weekly_scoped_limit_is_its_models_own_window() {
+        let usage = |bytes| {
+            build_usage(
+                &cli_account("u1"),
+                Some(&token("t")),
+                Some(&parse_usage_reply(bytes).unwrap()),
+            )
+        };
+        let fable = ClaudeScopedWindow {
+            label: "Fable".into(),
+            percent: Some(23.0),
+            resets_at: Some("2026-10-21T05:00:00.000Z".into()),
+        };
+        assert_eq!(usage(FABLE).weekly_scoped, vec![fable]);
+        assert_eq!(usage(OK).weekly_scoped[0].label, "REDACTED");
+        assert_eq!(usage(NO_SCOPED).weekly_scoped, vec![]);
+        // the legacy per-model windows are read as before
+        assert_eq!(usage(FABLE).weekly_opus, None);
+        assert_eq!(usage(FABLE).weekly.percent, Some(47.0));
+        let v = serde_json::to_value(usage(FABLE)).unwrap();
+        assert_eq!(
+            v["weeklyScoped"],
+            json!([{ "label": "Fable", "percent": 23.0, "resetsAt": "2026-10-21T05:00:00.000Z" }])
+        );
+    }
+
+    #[test]
+    fn a_scoped_limit_is_named_by_its_model_name_then_id_and_odd_entries_are_skipped() {
+        let reply = json!({ "five_hour": { "utilization": 1 }, "limits": [
+            { "kind": "weekly_scoped", "percent": 5, "scope": { "model": { "id": "claude-x", "display_name": " " } } },
+            { "kind": "weekly_scoped", "percent": 6, "scope": null },
+            { "kind": "weekly_scoped", "percent": "lots" },
+            { "kind": "session", "percent": 9 },
+            "not an object"
+        ] });
+        let reply = parse_usage_reply(&serde_json::to_vec(&reply).unwrap()).unwrap();
+        let scoped = build_usage(&cli_account("u1"), None, Some(&reply)).weekly_scoped;
+        let labels: Vec<_> = scoped
+            .iter()
+            .map(|w| (w.label.as_str(), w.percent))
+            .collect();
+        assert_eq!(labels, vec![("claude-x", Some(5.0)), ("Model", Some(6.0))]);
+        // usage cached before 1.4.6 has no scoped limits
+        let mut old = serde_json::to_value(build_usage(&cli_account("u1"), None, None)).unwrap();
+        old.as_object_mut().unwrap().remove("weeklyScoped");
+        let old: ClaudeUsage = serde_json::from_value(old).unwrap();
+        assert!(old.weekly_scoped.is_empty());
     }
 
     #[test]
