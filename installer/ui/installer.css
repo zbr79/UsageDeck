@@ -1,0 +1,519 @@
+/* Colours are the app's dark panel palette (src/ui/palette.ts PANEL_PALETTES.dark). */
+:root {
+  --bg: #18181b;
+  --surface: #27272a;
+  --surface-hover: #3f3f46;
+  --border: rgba(255, 255, 255, 0.12);
+  --text: #f4f4f5;
+  --text-secondary: #d4d4d8;
+  --muted: #9f9fa9;
+  --input-border: #71717b;
+  --accent: #00d492;
+  --switch-on: #009966;
+  --focus: #8ec5ff;
+  --primary-bg: #e4e4e7;
+  --primary-fg: #18181b;
+  --primary-hover: #d4d4d8;
+  --success: #5ee9b5;
+  --danger: #ffa2a2;
+  --radius: 14px;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+}
+
+body {
+  color: var(--text);
+  font-family: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 1.4;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.card {
+  position: relative;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 28px 32px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background:
+    radial-gradient(120% 70% at 50% -10%, rgba(0, 212, 146, 0.12), transparent 60%), var(--bg);
+  overflow: hidden;
+  animation: card-in 320ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition:
+    background 120ms,
+    color 120ms;
+}
+
+.close:hover {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.close:disabled {
+  opacity: 0.35;
+  cursor: default;
+  background: transparent;
+}
+
+.close svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.brand img {
+  width: 60px;
+  height: 60px;
+  border-radius: 14px;
+  flex: none;
+}
+
+h1 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-family: "Segoe UI Variable Display", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.15;
+}
+
+.version {
+  padding: 1px 7px;
+  border: 1px solid rgba(113, 113, 123, 0.3);
+  border-radius: 999px;
+  background: rgba(113, 113, 123, 0.15);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.version:empty {
+  display: none;
+}
+
+.tagline {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.view {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  animation: view-in 260ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.view[hidden] {
+  display: none;
+}
+
+button {
+  font: inherit;
+}
+
+.primary,
+.secondary {
+  height: 42px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: 9px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background 120ms,
+    transform 120ms;
+}
+
+.primary {
+  width: 100%;
+  background: var(--primary-bg);
+  color: var(--primary-fg);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.4) inset;
+}
+
+.primary:hover {
+  background: var(--primary-hover);
+}
+
+.primary:active,
+.secondary:active {
+  transform: scale(0.985);
+}
+
+.secondary {
+  flex: none;
+  border: 1px solid var(--surface-hover);
+  background: var(--surface);
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.secondary:hover {
+  background: var(--surface-hover);
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+}
+
+.row .primary {
+  flex: 1;
+}
+
+.note,
+.hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.note {
+  text-align: center;
+}
+
+.disclosure {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-start;
+  margin-left: -6px;
+  padding: 3px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.disclosure:hover {
+  color: var(--text);
+}
+
+.disclosure svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 200ms;
+}
+
+.disclosure[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+
+.options {
+  display: grid;
+  grid-template-rows: 0fr;
+  margin-top: -10px;
+  opacity: 0;
+  transition:
+    grid-template-rows 240ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    opacity 200ms,
+    margin-top 240ms;
+}
+
+.options.open {
+  grid-template-rows: 1fr;
+  margin-top: 0;
+  opacity: 1;
+}
+
+.options-inner {
+  overflow: hidden;
+}
+
+.option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 2px;
+  color: var(--text-secondary);
+}
+
+.option + .option {
+  border-top: 1px solid var(--surface);
+}
+
+/* WinUI ToggleSwitch, as in the app (src/ui/Toggle.tsx). */
+.switch {
+  position: relative;
+  flex: none;
+  width: 40px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--input-border);
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+  transition:
+    background 150ms,
+    border-color 150ms;
+}
+
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 3px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+  transform: translateY(-50%);
+  transition:
+    left 150ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    width 120ms,
+    height 120ms,
+    background 150ms;
+}
+
+.switch:hover {
+  background: var(--surface-hover);
+}
+
+.switch:hover::after {
+  width: 14px;
+  height: 14px;
+}
+
+.switch[aria-checked="true"] {
+  border-color: var(--switch-on);
+  background: var(--switch-on);
+}
+
+.switch[aria-checked="true"]::after {
+  left: calc(100% - 15px);
+  background: #fff;
+}
+
+.switch[aria-checked="true"]:hover::after {
+  left: calc(100% - 17px);
+}
+
+.progress {
+  position: relative;
+  height: 6px;
+  margin-top: 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+
+.progress-bar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 40%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, transparent, var(--accent) 35%, #5ee9b5 65%, transparent);
+  animation: indeterminate 1.4s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.status svg {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.check {
+  stroke: var(--success);
+}
+
+.check circle {
+  stroke-dasharray: 63;
+  stroke-dashoffset: 63;
+  animation: draw 420ms ease-out forwards;
+}
+
+.check path {
+  stroke-dasharray: 16;
+  stroke-dashoffset: 16;
+  animation: draw 280ms 300ms ease-out forwards;
+}
+
+.success {
+  margin-bottom: 2px;
+}
+
+.alert {
+  stroke: var(--danger);
+}
+
+.error {
+  align-items: flex-start;
+  font-weight: 400;
+}
+
+.details {
+  max-height: 64px;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--surface-hover);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text-secondary);
+  font:
+    11px/1.45 "Cascadia Mono",
+    Consolas,
+    ui-monospace,
+    monospace;
+  white-space: pre-wrap;
+  overflow: auto;
+  user-select: text;
+}
+
+.details[hidden] {
+  display: none;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+@keyframes card-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+
+@keyframes view-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+@keyframes indeterminate {
+  from {
+    left: -40%;
+  }
+  to {
+    left: 100%;
+  }
+}
+
+@keyframes pulse {
+  from {
+    opacity: 0.35;
+  }
+  to {
+    opacity: 0.9;
+  }
+}
+
+@keyframes draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+    transition-duration: 0.01ms !important;
+  }
+  /* no sweep: the full bar fades gently so the window still reads as busy */
+  .progress-bar {
+    width: 100%;
+    left: 0;
+    background: var(--switch-on);
+    animation: pulse 1.6s ease-in-out infinite alternate !important;
+  }
+}
+
+@media (forced-colors: active) {
+  .card {
+    border-color: CanvasText;
+  }
+  .switch[aria-checked="true"] {
+    background: Highlight;
+  }
+  .progress-bar {
+    background: Highlight;
+  }
+}

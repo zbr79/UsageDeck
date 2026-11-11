@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>UsageDeck Setup</title>
+    <link rel="stylesheet" href="installer.css" />
+    <script type="module" src="installer.js"></script>
+  </head>
+  <body>
+    <main class="card" data-state="idle" data-tauri-drag-region>
+      <button type="button" class="close" id="close" aria-label="Close" title="Close">
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M4 4l8 8M12 4l-8 8" />
+        </svg>
+      </button>
+
+      <div class="content" data-tauri-drag-region>
+        <header class="brand" data-tauri-drag-region>
+          <img src="icon.png" width="60" height="60" alt="" draggable="false" />
+          <div data-tauri-drag-region>
+            <h1 data-tauri-drag-region>UsageDeck <span class="version" id="version"></span></h1>
+            <p class="tagline" data-tauri-drag-region>AI usage, always in view</p>
+          </div>
+        </header>
+
+        <section class="view" id="view-idle">
+          <button type="button" class="primary" id="install">Install</button>
+          <p class="note" id="note" hidden></p>
+          <button
+            type="button"
+            class="disclosure"
+            id="options-toggle"
+            aria-expanded="false"
+            aria-controls="options"
+          >
+            Options
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4" /></svg>
+          </button>
+          <div class="options" id="options" inert>
+            <div class="options-inner">
+              <div class="option">
+                <span id="opt-desktop-label">Create desktop shortcut</span>
+                <button
+                  type="button"
+                  class="switch"
+                  role="switch"
+                  id="opt-desktop"
+                  aria-checked="true"
+                  aria-labelledby="opt-desktop-label"
+                ></button>
+              </div>
+              <div class="option">
+                <span id="opt-autostart-label">Start UsageDeck with Windows</span>
+                <button
+                  type="button"
+                  class="switch"
+                  role="switch"
+                  id="opt-autostart"
+                  aria-checked="true"
+                  aria-labelledby="opt-autostart-label"
+                ></button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="view-installing" hidden>
+          <div class="progress" role="progressbar" aria-labelledby="installing-label">
+            <div class="progress-bar"></div>
+          </div>
+          <p class="status" id="installing-label">Installing UsageDeck…</p>
+          <p class="hint">This takes a few seconds.</p>
+        </section>
+
+        <section class="view" id="view-success" hidden>
+          <p class="status success">
+            <svg class="check" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="10" />
+              <path d="M7.5 12.5l3 3 6-6.5" />
+            </svg>
+            <span id="success-text">UsageDeck is installed</span>
+          </p>
+          <button type="button" class="primary" id="launch">Launch UsageDeck</button>
+          <p class="hint" id="success-note" hidden></p>
+        </section>
+
+        <section class="view" id="view-error" hidden>
+          <p class="status error">
+            <svg class="alert" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="10" />
+              <path d="M12 7.5v5.5M12 16.5v.01" />
+            </svg>
+            <span id="error-text">UsageDeck could not be installed.</span>
+          </p>
+          <div class="row">
+            <button type="button" class="primary" id="retry">Try again</button>
+            <button
+              type="button"
+              class="secondary"
+              id="details-toggle"
+              aria-expanded="false"
+              aria-controls="details"
+            >
+              Show details
+            </button>
+          </div>
+          <pre class="details" id="details" hidden></pre>
+        </section>
+
+        <p class="sr-only" id="live" aria-live="polite"></p>
+      </div>
+    </main>
+  </body>
+</html>

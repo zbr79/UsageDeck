@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The installer window: dragging by its data-tauri-drag-region areas.",
+  "windows": ["main"],
+  "permissions": ["core:window:allow-start-dragging"]
+}
