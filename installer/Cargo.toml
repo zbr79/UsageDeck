@@ -1,6 +1,6 @@
 [package]
 name = "usagedeck-installer"
-version = "1.4.4"
+version = "1.4.5"
 description = "UsageDeck Setup: the installer window around the NSIS installer"
 edition = "2021"
 publish = false
