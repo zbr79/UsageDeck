@@ -50,9 +50,18 @@ pub fn classify(raw: &str) -> StoredToken<'_> {
 pub fn decode_value(bytes: &[u8]) -> Option<String> {
     let utf16 = bytes.len() >= 2
         && bytes.len().is_multiple_of(2)
-        && bytes.chunks_exact(2).all(|c| c[0] != 0 && c[1] == 0);
+        && bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .all(|[lo, hi]| *lo != 0 && *hi == 0);
     if utf16 {
-        let units: Vec<u16> = bytes.chunks_exact(2).map(|c| u16::from(c[0])).collect();
+        let units: Vec<u16> = bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|[lo, _]| u16::from(*lo))
+            .collect();
         return String::from_utf16(&units).ok();
     }
     String::from_utf8(bytes.to_vec()).ok()
