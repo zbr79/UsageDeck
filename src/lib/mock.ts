@@ -13,6 +13,7 @@ import type {
   Settings,
   TrackedAccount,
 } from "./types";
+import type { UpdatePhase, UpdateStatus } from "./updates";
 
 const NOW = Date.now();
 const H = 3_600_000;
@@ -389,3 +390,69 @@ export async function mockApi(method: string, path: string, body: unknown): Prom
       return json({ error: "not found" }, 404);
   }
 }
+
+// ---- updater ----------------------------------------------------------------
+
+const MOCK_VERSION = "1.4.0";
+const MOCK_NEXT = "1.5.0";
+const MOCK_STEP_MS = 1200;
+const MOCK_PHASES: Record<string, UpdatePhase> = {
+  idle: { state: "idle" },
+  checking: { state: "checking" },
+  downloading: { state: "downloading", version: MOCK_NEXT },
+  upToDate: { state: "upToDate" },
+  failed: { state: "failed", message: "network error: could not reach api.github.com" },
+  ready: { state: "ready", version: MOCK_NEXT, dismissed: false },
+};
+// `?update=ready` starts the preview in that phase (idle, checking, downloading, upToDate, failed,
+// ready; `never` is idle with no check yet). `?updateResult=ready` (or upToDate, failed) is what
+// "Check for updates" finds; default upToDate. Browser preview only.
+const updateQuery = query().get("update") ?? "idle";
+let updateStatus: UpdateStatus = {
+  ...(MOCK_PHASES[updateQuery] ?? MOCK_PHASES.idle),
+  lastChecked: updateQuery === "never" ? null : NOW - 5 * 60_000,
+  currentVersion: MOCK_VERSION,
+};
+const updateListeners = new Set<(status: UpdateStatus) => void>();
+
+function setUpdatePhase(phase: UpdatePhase, checked = false) {
+  updateStatus = {
+    ...phase,
+    lastChecked: checked ? Date.now() : updateStatus.lastChecked,
+    currentVersion: MOCK_VERSION,
+  };
+  for (const cb of updateListeners) cb(updateStatus);
+}
+
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Browser stand-in for the Rust updater commands and the `update-status` event. */
+export const mockUpdates = {
+  status: async () => updateStatus,
+  subscribe(cb: (status: UpdateStatus) => void) {
+    updateListeners.add(cb);
+    return () => void updateListeners.delete(cb);
+  },
+  async check() {
+    if (updateStatus.state === "ready") {
+      setUpdatePhase({ ...updateStatus, dismissed: false });
+      return;
+    }
+    setUpdatePhase(MOCK_PHASES.checking);
+    await wait(MOCK_STEP_MS);
+    const result = query().get("updateResult") ?? "upToDate";
+    if (result === "ready") {
+      setUpdatePhase(MOCK_PHASES.downloading);
+      await wait(MOCK_STEP_MS);
+    }
+    setUpdatePhase(MOCK_PHASES[result] ?? MOCK_PHASES.upToDate, true);
+  },
+  async install() {
+    if (updateStatus.state !== "ready") throw new Error("no update is ready to install");
+    console.info("mock install_update: the app would restart into the installer");
+  },
+  async dismiss() {
+    console.info("mock dismiss_update");
+    if (updateStatus.state === "ready") setUpdatePhase({ ...updateStatus, dismissed: true });
+  },
+};

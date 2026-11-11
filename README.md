@@ -42,10 +42,25 @@ For scripted installs, `UsageDeck-Setup.exe` accepts the NSIS installer's own sw
 shows no window: `/S` installs silently, `/D=<folder>` (last) picks the folder, and `/NS` skips
 all shortcuts. Each release also has the plain NSIS installer, `UsageDeck_<version>_x64-setup.exe`.
 
-Updates install themselves. The app checks GitHub 15 seconds after it starts and then every 6
-hours. When a newer version is out, it downloads the installer, checks its size and SHA-256
-against the release, and asks "UsageDeck X is ready to install. Restart now?". To check at once,
-use the tray menu → **Check for updates**. The tray menu's first line shows the installed version.
+### Updates
+
+UsageDeck checks GitHub 15 seconds after it starts and then every hour. When a newer version is
+out, it downloads the installer in the background and checks its size and SHA-256 against the
+release. Then a banner at the top of the widget says "Update X is ready":
+
+- **Restart** installs the update silently and starts the new version. No installer window
+  opens; the widget disappears for a few seconds and comes back updated.
+- **Later** hides the banner until a newer version comes out or UsageDeck restarts. The download
+  is kept, so Restart later does not download again.
+
+Background checks show nothing else: no "up to date" note and no errors. To check at once, use
+**Check for updates** in any of these places. The result shows in the widget's banner.
+
+- the widget's right-click menu;
+- Settings → General → Updates, which also shows the installed version and when UsageDeck last
+  checked, and offers **Restart to update** once an update is ready;
+- the tray menu, which also brings up the widget. The tray menu's first line shows the installed
+  version.
 
 ### Coming from UsageDeck 1.0.x
 
@@ -122,7 +137,8 @@ uninstaller to also remove settings, logs and the stored OpenCode keys (details 
 ### Widget
 
 - Compact panel with the active OpenCode account plus every enabled provider; right-click (or the
-  tray menu) → _Expand_ / _Collapse_ for all OpenCode accounts, _Refresh_, _Settings_, _Quit_
+  tray menu) → _Expand_ / _Collapse_ for all OpenCode accounts, _Refresh_, _Settings_, _Check for
+  updates_, _Quit_
 - **Adaptive theme** — in `auto`, samples the screen around the widget and switches card style
   with hysteresis; `light` and `dark` are fixed (no sampling)
 - **Change detection** — when an account's usage rises, a ▲ shows for 20 s and the most recently
@@ -140,6 +156,8 @@ uninstaller to also remove settings, logs and the stored OpenCode keys (details 
   or sooner if usage drops. A hidden card leaves nothing on the widget; right-click → **Show
   hidden** brings it back early
 - **Unavailable banner** — "Usage unavailable · updated 3m ago" with Retry
+- **Update banner** — "Update X is ready" with Restart and Later, and the progress and result of a
+  check you started (see [Updates](#updates))
 - **Copy key** — hover the OpenCode icon on a card (a copy glyph appears) and click; the key is
   copied by the Rust side and never passes through the page
 - Settings changes apply live; right-click or **Shift+F10** opens the menu
@@ -148,7 +166,8 @@ uninstaller to also remove settings, logs and the stored OpenCode keys (details 
 
 - A normal window with a title bar and a taskbar button (960x680, resizable). It reopens where you
   left it, kept on a visible monitor, and closes only when asked: the X, Alt+F4, Ctrl+W or Esc
-- General: start with Windows, DeepSeek peak-hour warning
+- General: start with Windows, hide during full-screen apps, DeepSeek peak-hour warning, and
+  Updates (installed version, last check, Check for updates, Restart to update)
 - Appearance: settings theme, widget theme, show provider names
 - Widget: provider order (drag the grip, or Move up / Move down) and a "Show on widget" switch per
   provider
@@ -169,6 +188,9 @@ uninstaller to also remove settings, logs and the stored OpenCode keys (details 
   page directly (browser preview: add `&panel=light` or `&panel=dark`)
 - Browser preview of spend and pace: add `?pace=<lasts|limit|weekly|measuring|backfill|unpriced|fail>`
   to `widget.html` or `settings.html`
+- Browser preview of the updater: add `?update=<idle|never|checking|downloading|upToDate|failed|ready>`
+  for the starting state and `&updateResult=<ready|upToDate|failed>` for what Check for updates
+  finds
 
 ### Ranking rules
 
@@ -231,10 +253,12 @@ The **Release** workflow (`.github/workflows/release.yml`) runs when `tauri.conf
 (`installer/`) with that NSIS installer inside and uploads it as `UsageDeck-Setup.exe`. The
 permanent download link and the in-app updater both use `UsageDeck-Setup.exe`.
 
-The updater in installed copies (1.1.0 and later) runs `UsageDeck-Setup.exe /P /R /UPDATE`.
-Started with any arguments, the installer window shows nothing and runs the NSIS installer inside
-with exactly those arguments, so older copies update as before. Keep that behaviour
-(`installer/src/decide.rs`, `launch`) for as long as those copies exist.
+The updater in installed copies runs `UsageDeck-Setup.exe /S /R /UPDATE` (1.4.0 and later) or
+`/P /R /UPDATE` (1.1.0 to 1.3.1). Started with any arguments, the installer window shows nothing
+and runs the NSIS installer inside with the same arguments, with one change: when `/UPDATE` is
+present, `/P` (passive mode, which shows a progress window) becomes `/S`, so updates from older
+copies install silently too. Keep that behaviour (`installer/src/decide.rs`, `launch` and
+`nsis_args`) for as long as those copies exist.
 
 A version whose release already has `UsageDeck-Setup.exe` is skipped, so other edits to
 `tauri.conf.json` publish nothing. A release missing it, from a run that failed after publishing,

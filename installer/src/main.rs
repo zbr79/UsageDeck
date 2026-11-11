@@ -12,8 +12,8 @@ fn main() {
     let args = decide::command_line_args(&command_line);
     let nsis_args = match decide::launch(args, system::webview2_installed()) {
         Launch::CustomUi => return ui::run(),
-        Launch::NsisUi => "",
+        Launch::NsisUi => "".into(),
         Launch::PassThrough(args) => args,
     };
-    std::process::exit(system::run_nsis(nsis_args).unwrap_or(1));
+    std::process::exit(system::run_nsis(&nsis_args).unwrap_or(1));
 }

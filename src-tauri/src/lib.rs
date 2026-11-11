@@ -270,7 +270,11 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 let _ = app.emit_to(WIDGET, EVENT_REFRESH, ());
             }
             "settings" => show_settings(app),
-            "update" => updater::check_now(app),
+            // The result shows in the widget's banner, so bring the widget up with it.
+            "update" => {
+                updater::check_now(app);
+                show_widget(app);
+            }
             "logs" => open_log_folder(app),
             "quit" => app.exit(0),
             _ => {}
@@ -344,7 +348,11 @@ pub fn run() {
             open_settings,
             close_settings,
             settings_window::open_about_link,
-            quit_app
+            quit_app,
+            updater::get_update_status,
+            updater::check_for_updates,
+            updater::install_update,
+            updater::dismiss_update
         ])
         .setup(|app| {
             if let Ok(dir) = app.path().app_log_dir() {
@@ -354,6 +362,7 @@ pub fn run() {
             app.manage(Core::new(Store::new(dir, Box::new(CredentialVault))));
             claude_logs::start_scanner(app.state::<Core>().spend.clone());
             app.manage(PosSaver(AtomicU64::new(0)));
+            app.manage(updater::Updater::new(app.handle()));
 
             // Start at login follows the setting (default on).
             let start_at_login = app.state::<Core>().store.get_settings().start_at_login;
@@ -370,7 +379,7 @@ pub fn run() {
             }
             build_tray(app)?;
             // Same rule as the Run key: a dev or cargo-target build never updates itself in
-            // the background (the tray's "Check for updates" still works).
+            // the background ("Check for updates" still works).
             if cfg!(debug_assertions) || running_from_cargo_target() {
                 log::info!("background update checks off (dev build)");
             } else {

@@ -2,12 +2,14 @@ import { useEffect, useRef, useState, type PointerEvent } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { inTauri } from "@/lib/bridge";
+import { formatAgo } from "@/lib/format";
+import { checkForUpdates, installUpdate, useUpdateStatus, type UpdateStatus } from "@/lib/updates";
 import type { PanelTheme, Settings, ThemeMode, WidgetProvider } from "@/lib/types";
 import { Toggle } from "@/ui/Toggle";
 import appIcon from "../../../src-tauri/icons/128x128.png";
 import { moveItem, PAGE_TITLES, PROVIDER_ICONS } from "../_lib/pages";
 import { usePanelTheme } from "../_lib/theme";
-import { Page, Section, secondaryButton, selectClass, SettingRow } from "./fields";
+import { Page, primaryButton, Section, secondaryButton, selectClass, SettingRow } from "./fields";
 
 type Update = (patch: Partial<Settings>, success?: string) => Promise<boolean>;
 type Props = { settings: Settings; update: Update };
@@ -75,7 +77,78 @@ export function GeneralPage({ settings, update }: Props) {
           )}
         />
       </Section>
+      <UpdatesSection />
     </Page>
+  );
+}
+
+/** The update row's description: the last check's result, or when it ran. */
+export function updateDescription(status: UpdateStatus, now: number): string {
+  const checked = status.lastChecked == null ? null : formatAgo(status.lastChecked, now);
+  switch (status.state) {
+    case "checking":
+      return "Checking for updates…";
+    case "downloading":
+      return `Downloading ${status.version}…`;
+    case "upToDate":
+      return `You're up to date · checked ${checked ?? "just now"}`;
+    case "failed":
+      return `Couldn't check for updates: ${status.message}`;
+    case "ready":
+      return `Version ${status.version} is downloaded and ready to install`;
+    case "idle":
+      return checked ? `Last checked ${checked}` : "Not checked yet";
+  }
+}
+
+function UpdatesSection() {
+  const status = useUpdateStatus();
+  const [now, setNow] = useState(() => Date.now());
+  const [restarting, setRestarting] = useState(false);
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(id);
+  }, []);
+  // "just now" right after a check, not the minute-old clock
+  useEffect(() => setNow(Date.now()), [status]);
+  if (!status) return null;
+  const busy = status.state === "checking" || status.state === "downloading";
+  const restart = () => {
+    setRestarting(true);
+    installUpdate().catch(() => setRestarting(false));
+  };
+  return (
+    <Section title="Updates">
+      <SettingRow
+        title={`UsageDeck ${status.currentVersion}`}
+        description={updateDescription(status, now)}
+        live
+        icon={<img src={appIcon} alt="" className="size-5" />}
+        control={(labelId, descId) =>
+          status.state === "ready" ? (
+            <button
+              type="button"
+              aria-describedby={descId}
+              disabled={restarting}
+              onClick={restart}
+              className={primaryButton}
+            >
+              {restarting ? "Restarting…" : "Restart to update"}
+            </button>
+          ) : (
+            <button
+              type="button"
+              aria-describedby={descId ?? labelId}
+              disabled={busy}
+              onClick={checkForUpdates}
+              className={secondaryButton}
+            >
+              Check for updates
+            </button>
+          )
+        }
+      />
+    </Section>
   );
 }
 
