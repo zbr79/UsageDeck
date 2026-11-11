@@ -3,6 +3,8 @@ name: Release
 # Publishes release v<version> when src-tauri/tauri.conf.json reaches main with a version that
 # has no complete release yet. The installed app's updater (src-tauri/src/updater.rs) reads the
 # latest release and installs its UsageDeck-Setup.exe, so that asset name must not change.
+# UsageDeck-Setup.exe is the installer window (installer/) with tauri-action's NSIS installer
+# inside; it runs that installer unchanged when started with the updater's /P /R /UPDATE.
 on:
   push:
     branches: [main]
@@ -61,7 +63,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/bin
             src-tauri/target
-          key: cargo-release-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+            installer/target
+          key: cargo-release-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock', 'installer/Cargo.lock') }}
           restore-keys: |
             cargo-release-${{ runner.os }}-
             cargo-${{ runner.os }}-
@@ -79,14 +82,13 @@ jobs:
           releaseName: UsageDeck v__VERSION__
           releaseBody: |
             Download UsageDeck-Setup.exe and run it. Installed copies update themselves.
+            UsageDeck_${{ steps.version.outputs.version }}_x64-setup.exe is the plain NSIS installer, for scripted installs.
           releaseDraft: false
           prerelease: false
 
       - if: steps.version.outputs.publish == 'true'
-        name: Upload the installer as UsageDeck-Setup.exe
+        name: Build the installer window around the NSIS installer
         env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.version.outputs.tag }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           # The cached target folder can hold installers of earlier versions, so match this one.
@@ -96,5 +98,14 @@ jobs:
             echo "Expected one NSIS installer for $VERSION, found: ${setups[*]:-none}"
             exit 1
           fi
-          cp "${setups[0]}" UsageDeck-Setup.exe
-          gh release upload "$TAG" UsageDeck-Setup.exe --clobber
+          # installer/build.rs embeds this file and fails unless its name carries $VERSION.
+          USAGEDECK_NSIS_PATH="$(cygpath -w "$PWD/${setups[0]}")" \
+            cargo build --release --locked --manifest-path installer/Cargo.toml
+          cp installer/target/release/usagedeck-installer.exe UsageDeck-Setup.exe
+
+      - if: steps.version.outputs.publish == 'true'
+        name: Upload the installer window as UsageDeck-Setup.exe
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: gh release upload "$TAG" UsageDeck-Setup.exe --clobber
