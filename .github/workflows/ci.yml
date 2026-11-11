@@ -33,7 +33,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/bin
             src-tauri/target
-          key: cargo-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+            installer/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock', 'installer/Cargo.lock') }}
           restore-keys: cargo-${{ runner.os }}-
       - run: npm ci
       - run: npm run build
@@ -48,6 +49,17 @@ jobs:
       - name: cargo test
         working-directory: src-tauri
         run: cargo test
+      # The installer window (installer/). Debug builds embed an empty payload instead of the
+      # NSIS installer, which only the release workflow has.
+      - name: cargo fmt (installer)
+        working-directory: installer
+        run: cargo fmt --check
+      - name: cargo clippy (installer)
+        working-directory: installer
+        run: cargo clippy --all-targets -- -D warnings
+      - name: cargo test (installer)
+        working-directory: installer
+        run: cargo test
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
       - name: Audit Rust dependencies
@@ -55,3 +67,6 @@ jobs:
         run: |
           cargo install cargo-audit --locked
           cargo audit
+      - name: Audit Rust dependencies (installer)
+        working-directory: installer
+        run: cargo audit
