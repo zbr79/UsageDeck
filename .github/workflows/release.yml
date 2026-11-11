@@ -3,8 +3,10 @@ name: Release
 # Publishes release v<version> when src-tauri/tauri.conf.json reaches main with a version that
 # has no complete release yet. The installed app's updater (src-tauri/src/updater.rs) reads the
 # latest release and installs its UsageDeck-Setup.exe, so that asset name must not change.
-# UsageDeck-Setup.exe is the installer window (installer/) with tauri-action's NSIS installer
-# inside; it runs that installer unchanged when started with the updater's /P /R /UPDATE.
+# UsageDeck-Setup.exe is the installer window (installer/) with the app's NSIS installer inside;
+# it runs that installer unchanged when started with the updater's /P /R /UPDATE.
+#
+# The build steps match the CI installer smoke test, which installs the result on Windows.
 on:
   push:
     branches: [main]
@@ -38,10 +40,9 @@ jobs:
           tag="v$version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          # A tag whose release lacks UsageDeck-Setup.exe (a run that failed after publishing)
-          # is built again; tauri-action reuses the release and replaces its assets.
-          if git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null \
-            && gh release view "$tag" --json assets --jq '.assets[].name' | grep -qx 'UsageDeck-Setup.exe'; then
+          # A release that exists without UsageDeck-Setup.exe is repaired: its assets are
+          # uploaded again below.
+          if gh release view "$tag" --json assets --jq '.assets[].name' 2> /dev/null | grep -qx 'UsageDeck-Setup.exe'; then
             echo "$tag is already released; nothing to do."
             echo "publish=false" >> "$GITHUB_OUTPUT"
           else
@@ -73,21 +74,11 @@ jobs:
         run: npm ci
 
       - if: steps.version.outputs.publish == 'true'
-        name: Build the installer and publish the release
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tagName: v__VERSION__
-          releaseName: UsageDeck v__VERSION__
-          releaseBody: |
-            Download UsageDeck-Setup.exe and run it. Installed copies update themselves.
-            UsageDeck_${{ steps.version.outputs.version }}_x64-setup.exe is the plain NSIS installer, for scripted installs.
-          releaseDraft: false
-          prerelease: false
+        name: Build the NSIS installer
+        run: npx tauri build --bundles nsis
 
       - if: steps.version.outputs.publish == 'true'
-        name: Build the installer window around the NSIS installer
+        name: Build the installer window around it
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
@@ -101,11 +92,24 @@ jobs:
           # installer/build.rs embeds this file and fails unless its name carries $VERSION.
           USAGEDECK_NSIS_PATH="$(cygpath -w "$PWD/${setups[0]}")" \
             cargo build --release --locked --manifest-path installer/Cargo.toml
-          cp installer/target/release/usagedeck-installer.exe UsageDeck-Setup.exe
+          mkdir -p dist-release
+          cp "${setups[0]}" "dist-release/UsageDeck_${VERSION}_x64-setup.exe"
+          cp installer/target/release/usagedeck-installer.exe dist-release/UsageDeck-Setup.exe
 
       - if: steps.version.outputs.publish == 'true'
-        name: Upload the installer window as UsageDeck-Setup.exe
+        name: Publish the release with both installers
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
-        run: gh release upload "$TAG" UsageDeck-Setup.exe --clobber
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" dist-release/* --clobber
+          else
+            # Both files go up with the release, so it is never public without UsageDeck-Setup.exe.
+            gh release create "$TAG" dist-release/* \
+              --target "$GITHUB_SHA" \
+              --title "UsageDeck v$VERSION" \
+              --notes "Download UsageDeck-Setup.exe and run it. Installed copies update themselves.
+          UsageDeck_${VERSION}_x64-setup.exe is the plain NSIS installer, for scripted installs."
+          fi
