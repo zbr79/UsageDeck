@@ -24,9 +24,23 @@ See [SECURITY.md](SECURITY.md) for exactly what is read, stored and sent.
 Download and run the installer:
 **<https://github.com/zbr79/UsageDeck/releases/latest/download/UsageDeck-Setup.exe>**
 
-This link always serves the newest version. The installer is per-user and needs no admin rights.
-It is not code-signed, so Windows SmartScreen may show "Windows protected your PC": choose
-**More info → Run anyway**.
+This link always serves the newest version. The installer is one small window: click **Install**,
+watch the progress bar, then click **Launch UsageDeck**. If UsageDeck is already installed, the
+button says **Update** or **Reinstall** instead, and your settings and keys stay. **Options** has
+two switches, both on for a new install:
+
+- **Create desktop shortcut**. The Start menu entry is always created.
+- **Start UsageDeck with Windows**. This sets the same option as Settings, so you can change it
+  later there.
+
+The installer is per-user and needs no admin rights. It is not code-signed, so Windows SmartScreen
+may show "Windows protected your PC": choose **More info → Run anyway**. On a PC without the
+WebView2 runtime, the installer shows the classic setup wizard instead, which installs WebView2
+first.
+
+For scripted installs, `UsageDeck-Setup.exe` accepts the NSIS installer's own switches and then
+shows no window: `/S` installs silently, `/D=<folder>` (last) picks the folder, and `/NS` skips
+all shortcuts. Each release also has the plain NSIS installer, `UsageDeck_<version>_x64-setup.exe`.
 
 Updates install themselves. The app checks GitHub 15 seconds after it starts and then every 6
 hours. When a newer version is out, it downloads the installer, checks its size and SHA-256
@@ -187,21 +201,44 @@ Headless: each prints a short report and exits.
 | `npm run check`        | Type-check, format check, frontend tests and `cargo test`                        |
 
 CI (GitHub Actions, Windows) runs the frontend build, tests and format check, `cargo fmt --check`,
-`cargo clippy -D warnings`, `cargo test`, and `npm audit` on every push and pull request.
+`cargo clippy -D warnings`, `cargo test` and `cargo audit` for both crates (`src-tauri/` and
+`installer/`), and `npm audit` on every push and pull request.
+
+To see the installer window with a real installer inside, build the app's NSIS installer first,
+then build the window around it:
+
+```bash
+npm run tauri build
+USAGEDECK_NSIS_PATH="$PWD/src-tauri/target/release/bundle/nsis/UsageDeck_<version>_x64-setup.exe" \
+  cargo build --release --manifest-path installer/Cargo.toml
+```
+
+A plain `cargo build` in `installer/` embeds nothing, and its Install button reports that. A
+release build fails without `USAGEDECK_NSIS_PATH`, and also when the file is not that version's
+installer.
 
 ## Releasing
 
-1. Raise the version in `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` and `package.json`,
-   then run `npm install` and `cargo check` (in `src-tauri/`) so both lock files follow.
-   `tests/version.test.ts` fails if any of the five disagree.
+1. Raise the version in `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`,
+   `installer/Cargo.toml` and `package.json`, then run `npm install` and `cargo check` (in
+   `src-tauri/` and in `installer/`) so the lock files follow. `tests/version.test.ts` fails if
+   any of the eight disagree.
 2. Merge to `main`.
 
 The **Release** workflow (`.github/workflows/release.yml`) runs when `tauri.conf.json` changes on
 `main`. If `v<version>` has no release yet, it builds the NSIS installer and publishes release
-`v<version>` with the installer under two names: the versioned file from Tauri and
-`UsageDeck-Setup.exe`. The permanent download link and the in-app updater both use
-`UsageDeck-Setup.exe`. A version that is already released is skipped, so other edits to
-`tauri.conf.json` publish nothing. The workflow can also be started by hand from the Actions tab.
+`v<version>` with it as `UsageDeck_<version>_x64-setup.exe`. It then builds the installer window
+(`installer/`) with that NSIS installer inside and uploads it as `UsageDeck-Setup.exe`. The
+permanent download link and the in-app updater both use `UsageDeck-Setup.exe`.
+
+The updater in installed copies (1.1.0 and later) runs `UsageDeck-Setup.exe /P /R /UPDATE`.
+Started with any arguments, the installer window shows nothing and runs the NSIS installer inside
+with exactly those arguments, so older copies update as before. Keep that behaviour
+(`installer/src/decide.rs`, `launch`) for as long as those copies exist.
+
+A version whose release already has `UsageDeck-Setup.exe` is skipped, so other edits to
+`tauri.conf.json` publish nothing. A release missing it, from a run that failed after publishing,
+is built again. The workflow can also be started by hand from the Actions tab.
 
 ## History
 
@@ -220,6 +257,7 @@ src/                  # React frontend
 ├── lib/              # bridge to Rust, ranking, formatting, settings rules (unit-tested)
 └── public/           # provider icons
 src-tauri/            # Rust core (providers/, win/, store, cli, tray), tauri.conf.json, icons
+installer/            # installer window (UsageDeck-Setup.exe) around the NSIS installer
 tests/                # frontend unit tests (Vitest)
 widget.html           # widget page entry
 settings.html         # settings page entry
