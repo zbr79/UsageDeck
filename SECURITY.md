@@ -129,12 +129,19 @@ data and the keys stay, so a reinstall or a manual upgrade picks them up again. 
 | Provider    | Endpoint                                                                      | Credential sent             |
 | ----------- | ----------------------------------------------------------------------------- | --------------------------- |
 | OpenCode Go | `https://opencode.ai/zen/go/v1/usage`                                         | your OpenCode API key       |
-| Cursor      | `https://api2.cursor.sh/aiserver.v1.DashboardService/…` (usage and plan)      | Cursor's access token       |
+| Cursor      | `https://api2.cursor.sh/aiserver.v1.DashboardService/` `GetCurrentPeriodUsage`, `GetPlanInfo`, `GetHardLimit` | Cursor's access token |
 | Grok Bot    | `https://api2.cursor.sh/aiserver.v1.DashboardService/GetSandUsageStatus`      | Grok Bot's (or Cursor's) token |
 | Codex       | `https://chatgpt.com/backend-api/wham/usage`                                  | Codex CLI's access token    |
 | Claude      | `https://api.anthropic.com/api/oauth/usage`                                   | Claude's OAuth access token |
 
 Each token goes only to its own provider. No telemetry, no analytics, no token-refresh endpoints.
+
+Every Cursor and Grok Bot call is a `POST` with the body `{}` and these headers:
+`Authorization: Bearer <token>`, `Content-Type: application/json`, `Connect-Protocol-Version: 1`,
+and the `Accept: */*`, `Host` and `Content-Length` that the HTTP client adds. No `User-Agent` and no
+cookie are sent. A failed Cursor call is logged with its endpoint, HTTP status, the error code and
+message from the reply and, on a 401, the expiry time from the token's `exp` claim; the token itself
+is never logged.
 
 The updater (src-tauri/src/updater.rs) sends no token and no personal data. About once an hour it
 reads `https://api.github.com/repos/zbr79/UsageDeck/releases/latest`; when a newer version exists
