@@ -121,6 +121,16 @@ const providers: Record<string, unknown> = {
       onDemand: { state: "enabled", spentUsd: 12.4, limitUsd: 50 },
       accountName: "dev@example.com",
       planName: "Pro",
+      apiSpend: {
+        spentUsd: 10.8,
+        limitUsd: 20,
+        byModel: [
+          { model: "claude-4.6-opus-high-thinking", usd: 7.42 },
+          { model: "gpt-5", usd: 2.31 },
+          { model: "gemini-3-pro", usd: 0.85 },
+          { model: "claude-4.5-sonnet", usd: 0.22 },
+        ],
+      },
     } as CursorUsage,
     { stale: true, cachedAt: NOW - 25 * 60_000, error: "network" },
   ),

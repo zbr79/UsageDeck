@@ -1,9 +1,11 @@
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 import { Badge, HIT_24 } from "@/ui/controls";
 import { CopyIcon, EyeOffIcon } from "@/ui/Icons";
 import { WIDGET_SPEND_TONE, type Tone } from "@/ui/palette";
 import { cursorErrorHint, errorHint, isAuthRejected } from "@/lib/errors";
 import {
+  apiByModel,
+  apiSpendText,
   capitalize,
   claudePlanLabel,
   formatDuration,
@@ -343,6 +345,12 @@ export function CursorCard({
   const cyclePassed = slot.stale && isPassed(c?.resetsAt, now);
   const used = signedOut ? null : usedUp("cursor", { usage: c, stale: slot.stale }, now);
   const failure = cursorErrorHint(slot.error, note);
+  // the API dollars of a past cycle say nothing about this one
+  const api = cyclePassed ? null : (c?.apiSpend ?? null);
+  const resetLine = [
+    c?.resetsAt && !cyclePassed ? `Resets ${formatUntil(c.resetsAt, now) ?? ""}` : null,
+    api ? apiSpendText(api.spentUsd, api.limitUsd) : null,
+  ].filter((part) => part !== null);
   return (
     <Card
       extras={extras}
@@ -391,10 +399,21 @@ export function CursorCard({
               percent={c.otherModelsPercentUsed}
               unknown={cyclePassed}
               dimmed={signedOut}
+              detail={api ? apiByModel(api.byModel).join(", ") : null}
             />
           </div>
-          {c.resetsAt && !cyclePassed && (
-            <ResetLine>Resets {formatUntil(c.resetsAt, now)}</ResetLine>
+          {resetLine.length > 0 && <ResetLine>{resetLine.join(" · ")}</ResetLine>}
+          {extras && api && (
+            // settings only; a wrapped line breaks between models, never inside one
+            <Note>
+              API by model:{" "}
+              {apiByModel(api.byModel).map((part, i) => (
+                <Fragment key={part}>
+                  {i > 0 && ", "}
+                  <span className="whitespace-nowrap">{part}</span>
+                </Fragment>
+              ))}
+            </Note>
           )}
         </>
       ) : (

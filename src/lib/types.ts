@@ -139,6 +139,17 @@ export interface CursorUsage {
   onDemand: CursorOnDemand | null;
   accountName: string | null;
   planName: string | null;
+  /** null when no API usage was read: none this cycle, or the usage events did not answer */
+  apiSpend: CursorApiSpend | null;
+}
+
+/** The API bucket's dollars this billing cycle and the models they went to (usage events). */
+export interface CursorApiSpend {
+  spentUsd: number;
+  /** the plan's included usage */
+  limitUsd: number | null;
+  /** largest first */
+  byModel: { model: string; usd: number }[];
 }
 
 // ---- Grok Bot -------------------------------------------------------------
