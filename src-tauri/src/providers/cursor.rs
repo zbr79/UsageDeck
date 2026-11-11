@@ -278,41 +278,106 @@ pub fn open_cursor() -> Result<(), String> {
 static CACHE: LazyLock<CachedProvider<CursorUsage>> =
     LazyLock::new(|| CachedProvider::new(SECTION, Duration::from_secs(30), None));
 
-fn post(http: &reqwest::Client, token: &str, method: &str) -> reqwest::RequestBuilder {
+/// A Connect unary call to Cursor's DashboardService, sent the way current trackers send it:
+/// bearer token, JSON body, `Connect-Protocol-Version: 1`.
+pub(crate) fn dashboard_post(
+    http: &reqwest::Client,
+    token: &str,
+    method: &str,
+) -> reqwest::RequestBuilder {
     http.post(format!("{API}/{method}"))
         .bearer_auth(token)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .header(reqwest::header::ACCEPT, "application/json")
-        .header(reqwest::header::USER_AGENT, "Mozilla/5.0")
+        .header("Connect-Protocol-Version", "1")
         .body("{}")
         .timeout(Duration::from_secs(10))
+}
+
+/// A failing reply: its status and the `exp` claim of the token it was sent with.
+type Failure = (u16, Option<i64>);
+
+/// The last failure per method, so a reply that keeps failing the same way is logged once.
+static FAILING: LazyLock<Mutex<HashMap<&'static str, Failure>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// One DashboardService call: the reply body, or the error its status maps to. A failing status
+/// is logged with the endpoint (never the token).
+async fn call(
+    http: &reqwest::Client,
+    token: &str,
+    method: &'static str,
+) -> Result<Vec<u8>, ProviderError> {
+    let resp = dashboard_post(http, token, method)
+        .send()
+        .await
+        .map_err(|e| {
+            log::warn!("cursor {method}: request failed: {}", e.without_url());
+            ProviderError::Network
+        })?;
+    super::note_retry_after(&resp);
+    let status = resp.status().as_u16();
+    let body = resp.bytes().await.map_err(|_| ProviderError::Network)?;
+    if (200..300).contains(&status) {
+        FAILING.lock().unwrap().remove(method);
+        return Ok(body.to_vec());
+    }
+    let exp = super::codex::jwt_payload(token).and_then(|p| p["exp"].as_i64());
+    if FAILING.lock().unwrap().insert(method, (status, exp)) != Some((status, exp)) {
+        let expiry = if status == 401 {
+            token_expiry(exp, chrono::Utc::now().timestamp())
+        } else {
+            String::new()
+        };
+        log::warn!(
+            "cursor {API}/{method}: HTTP {status}{}{expiry}",
+            connect_error(&body)
+        );
+    }
+    Err(match status {
+        401 => ProviderError::AuthRejected,
+        429 => ProviderError::RateLimited,
+        s => ProviderError::Http(s),
+    })
+}
+
+/// The Connect error in a failed reply, e.g. ` (unauthenticated: ...)`.
+fn connect_error(body: &[u8]) -> String {
+    let Ok(v) = serde_json::from_slice::<Value>(body) else {
+        return String::new();
+    };
+    let code = v["code"].as_str().unwrap_or("?");
+    let message: String = v["message"]
+        .as_str()
+        .unwrap_or("")
+        .chars()
+        .take(160)
+        .collect();
+    format!(" ({code}: {message})")
+}
+
+/// Whether the access token Cursor stored had expired, from its `exp` claim: an expired token says
+/// Cursor has not written a renewed one yet; a valid one says the server refused the request.
+fn token_expiry(exp: Option<i64>, now: i64) -> String {
+    match exp.and_then(|e| chrono::DateTime::from_timestamp(e, 0).map(|at| (e, at))) {
+        Some((e, at)) if e <= now => format!("; the stored access token expired at {at}"),
+        Some((_, at)) => format!("; the stored access token is valid until {at}"),
+        None => "; the stored access token has no expiry".into(),
+    }
 }
 
 async fn fetch_usage(
     http: &reqwest::Client,
     account: &CursorAccount,
 ) -> Result<CursorUsage, ProviderError> {
+    let token = account.token.as_str();
     let (usage, plan) = tokio::join!(
-        post(http, &account.token, "GetCurrentPeriodUsage").send(),
-        post(http, &account.token, "GetPlanInfo").send()
+        call(http, token, "GetCurrentPeriodUsage"),
+        call(http, token, "GetPlanInfo")
     );
-    let usage = usage.map_err(|e| {
-        log::warn!("cursor request failed: {}", e.without_url());
-        ProviderError::Network
-    })?;
-    super::note_retry_after(&usage);
-    match usage.status().as_u16() {
-        401 => return Err(ProviderError::AuthRejected),
-        429 => return Err(ProviderError::RateLimited),
-        s if !(200..300).contains(&s) => return Err(ProviderError::Http(s)),
-        _ => {}
-    }
-    let bytes = usage.bytes().await.map_err(|_| ProviderError::Network)?;
-    let plan = match plan {
-        Ok(r) if r.status().is_success() => r.json::<Value>().await.ok(),
-        _ => None,
-    };
-    parse_cursor_usage(&bytes, plan.as_ref(), account.label.clone())
+    let plan = plan
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+    parse_cursor_usage(&usage?, plan.as_ref(), account.label.clone())
 }
 
 /// Rows for the `accounts` array of the old route's JSON body (`TrackedAccount<CursorUsage>` each).

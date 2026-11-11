@@ -162,10 +162,15 @@ fn base64url_decode(s: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// Email claim from a JWT payload. The signature is not checked; this only names the account.
+/// A JWT's payload. The signature is not checked: the claims only name or describe the token.
+pub(crate) fn jwt_payload(token: &str) -> Option<Value> {
+    let part = token.split('.').nth(1)?;
+    serde_json::from_slice(&base64url_decode(part)?).ok()
+}
+
+/// Email claim from a JWT payload.
 pub fn email_from_jwt(token: Option<&str>) -> Option<String> {
-    let part = token?.split('.').nth(1)?;
-    let json: Value = serde_json::from_slice(&base64url_decode(part)?).ok()?;
+    let json = jwt_payload(token?)?;
     let email = json.get("email")?.as_str()?.trim();
     (!email.is_empty()).then(|| email.to_string())
 }
