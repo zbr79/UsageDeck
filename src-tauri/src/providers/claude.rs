@@ -13,6 +13,7 @@
 //! Over that local guess, the live token is filed under the account its `oauth/profile` reply
 //! names, with that reply's plan, and nameless "Claude desktop" rows are dropped.
 
+use super::claude_resets::{self, AtWallRead, ClaudeResets};
 use super::{
     collect_accounts, CachedProvider, FetchError, LiveAccount, ProviderError, TrackedAccount,
 };
@@ -30,6 +31,12 @@ use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 pub const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
+/// The same reply with the banked resets (`cedar_ember`), as Claude Code asks for it.
+const USAGE_WITH_RESETS_URL: &str = "https://api.anthropic.com/api/oauth/usage?cedar_ember=1";
+/// The read Claude Code makes at a limit, the only one that reports the weekly 5-hour reset.
+const USAGE_AT_LIMIT_URL: &str = "https://api.anthropic.com/api/oauth/usage?at_wall=1&skip_spend=1";
+/// Claude Code's own User-Agent; the reset programs are offered only to it.
+const USER_AGENT: &str = "claude-cli/2.1.293 (external, cli)";
 const SECTION: &str = "claude";
 const PROVIDER: &str = "claude";
 /// Account id -> email, learned from `~/.claude.json` whenever Claude Code is signed in.
@@ -69,7 +76,10 @@ pub struct ClaudeUsage {
     /// The weekly limits of single models (`limits[].kind == "weekly_scoped"`), in reply order.
     #[serde(default)]
     pub weekly_scoped: Vec<ClaudeScopedWindow>,
+    /// Resets in hand (`ClaudeResets::total`), for the card's badge. None when none are listed.
     pub reset_credits: Option<i64>,
+    #[serde(default)]
+    pub resets: Option<ClaudeResets>,
     pub billing_type: Option<String>,
     pub rate_limit_tier: Option<String>,
     pub org_uuid: Option<String>,
@@ -208,29 +218,6 @@ fn scoped_limits_of(rest: &Map<String, Value>) -> Vec<ClaudeScopedWindow> {
             })
         })
         .collect()
-}
-
-fn reset_credits_of(rest: &Map<String, Value>) -> Option<i64> {
-    for key in [
-        "cedar_ember",
-        "juniper_tide",
-        "iguana_necktie",
-        "amber_gauge",
-    ] {
-        let Some(v) = rest.get(key).and_then(Value::as_object) else {
-            continue;
-        };
-        if v.get("eligible") == Some(&Value::Bool(false)) {
-            continue;
-        }
-        if let Some(grants) = v.get("grants").and_then(Value::as_array) {
-            return Some(grants.len() as i64);
-        }
-        if let Some(available) = v.get("available").and_then(Value::as_bool) {
-            return Some(available as i64);
-        }
-    }
-    None
 }
 
 // ---- local sign-ins -------------------------------------------------------------------------
@@ -487,6 +474,7 @@ pub fn build_usage(
     reply: Option<&UsageReply>,
 ) -> ClaudeUsage {
     let subscription_type = token.and_then(|t| t.subscription_type.clone());
+    let resets = reply.and_then(|r| claude_resets::resets_of(&r.rest, Utc::now()));
     let rate_limit_tier = account
         .rate_limit_tier
         .clone()
@@ -513,7 +501,8 @@ pub fn build_usage(
             .and_then(|r| r.seven_day_sonnet.as_ref())
             .map(|w| window_of(Some(w))),
         weekly_scoped: reply.map_or_else(Vec::new, |r| scoped_limits_of(&r.rest)),
-        reset_credits: reply.and_then(|r| reset_credits_of(&r.rest)),
+        reset_credits: resets.as_ref().map(ClaudeResets::total),
+        resets,
         billing_type: account.billing_type.clone(),
         rate_limit_tier,
         org_uuid: account.org_uuid.clone(),
@@ -682,17 +671,16 @@ pub fn nameless_rows(remembered: &[super::SeenAccount], live_id: Option<&str>) -
 
 // ---- fetch ----------------------------------------------------------------------------------
 
-/// GET the usage reply. 401/403 -> AuthRejected, 429 -> RateLimited.
-pub async fn fetch_reply(
+async fn send(
     http: &reqwest::Client,
     token: &str,
-) -> Result<(UsageReply, Vec<u8>), ProviderError> {
-    let resp = http
-        .get(USAGE_URL)
+    url: &str,
+) -> Result<reqwest::Response, ProviderError> {
+    http.get(url)
         .bearer_auth(token)
         .header("anthropic-beta", "oauth-2025-04-20")
         .header("anthropic-version", "2023-06-01")
-        .header("User-Agent", "claude-cli/2.1.293")
+        .header("User-Agent", USER_AGENT)
         .header("Accept", "application/json")
         .timeout(Duration::from_secs(10))
         .send()
@@ -700,7 +688,11 @@ pub async fn fetch_reply(
         .map_err(|e| {
             log::warn!("claude usage request failed: {}", e.without_url());
             ProviderError::Network
-        })?;
+        })
+}
+
+/// The body of a 2xx reply. 401/403 -> AuthRejected, 429 -> RateLimited.
+async fn body_of(resp: reqwest::Response) -> Result<Vec<u8>, ProviderError> {
     super::note_retry_after(&resp);
     match resp.status().as_u16() {
         401 | 403 => return Err(ProviderError::AuthRejected),
@@ -708,12 +700,48 @@ pub async fn fetch_reply(
         s if !(200..300).contains(&s) => return Err(ProviderError::Http(s)),
         _ => {}
     }
-    let bytes = resp
+    Ok(resp
         .bytes()
         .await
         .map_err(|_| ProviderError::Network)?
-        .to_vec();
+        .to_vec())
+}
+
+/// GET the usage reply with its banked resets. A 400 or 403 to the reset query is asked once
+/// more without it, so a refused query never costs the usage windows.
+pub async fn fetch_reply(
+    http: &reqwest::Client,
+    token: &str,
+) -> Result<(UsageReply, Vec<u8>), ProviderError> {
+    let mut resp = send(http, token, USAGE_WITH_RESETS_URL).await?;
+    if matches!(resp.status().as_u16(), 400 | 403) {
+        log::info!(
+            "claude usage refused the reset query ({}); asking without it",
+            resp.status().as_u16()
+        );
+        resp = send(http, token, USAGE_URL).await?;
+    }
+    let bytes = body_of(resp).await?;
     Ok((parse_usage_reply(&bytes)?, bytes))
+}
+
+/// The read Claude Code makes at the 5-hour limit. Only its `juniper_tide` is used.
+async fn fetch_at_limit(http: &reqwest::Client, token: &str) -> AtWallRead {
+    let Ok(resp) = send(http, token, USAGE_AT_LIMIT_URL).await else {
+        return AtWallRead::Failed;
+    };
+    body_of(resp)
+        .await
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Map<String, Value>>(&b).ok())
+        .map_or(AtWallRead::Failed, AtWallRead::Read)
+}
+
+/// When and what the last fetch's reset fields were, for the diagnostics report.
+static LAST_RESETS: std::sync::Mutex<Option<(i64, String)>> = std::sync::Mutex::new(None);
+
+pub fn last_resets_report() -> Option<(i64, String)> {
+    LAST_RESETS.lock().ok().and_then(|r| r.clone())
 }
 
 pub const PROFILE_URL: &str = "https://api.anthropic.com/api/oauth/profile";
@@ -797,7 +825,24 @@ async fn fetch(
     if token.expired {
         return Err(fail(ProviderError::AuthRejected));
     }
-    let (reply, _) = fetch_reply(&http, &token.token).await.map_err(fail)?;
+    let (mut reply, _) = fetch_reply(&http, &token.token).await.map_err(fail)?;
+    let at_limit = window_of(reply.five_hour.as_ref())
+        .percent
+        .is_some_and(|p| p >= 100.0);
+    let at_wall = if at_limit {
+        fetch_at_limit(&http, &token.token).await
+    } else {
+        AtWallRead::NotAsked
+    };
+    let report = claude_resets::report(&reply.rest, &at_wall);
+    if let Ok(mut last) = LAST_RESETS.lock() {
+        *last = Some((Utc::now().timestamp_millis(), report));
+    }
+    if let AtWallRead::Read(wall) = at_wall {
+        if let Some(juniper) = wall.get("juniper_tide") {
+            reply.rest.insert("juniper_tide".into(), juniper.clone());
+        }
+    }
     Ok(build_usage(&live.account, Some(token), Some(&reply)))
 }
 
@@ -890,6 +935,7 @@ mod tests {
     const INVALID: &[u8] = include_bytes!("../../tests/fixtures/claude/invalid.json");
     const FABLE: &[u8] = include_bytes!("../../tests/fixtures/claude/ok-fable.json");
     const NO_SCOPED: &[u8] = include_bytes!("../../tests/fixtures/claude/ok-no-scoped.json");
+    const RESETS: &[u8] = include_bytes!("../../tests/fixtures/claude/ok-resets.json");
 
     fn token(name: &str) -> ClaudeToken {
         ClaudeToken {
@@ -967,6 +1013,24 @@ mod tests {
         assert_eq!(usage.weekly_opus, None);
         assert_eq!(usage.reset_credits, None);
         assert_eq!(v["fiveHour"]["resetsAt"], json!("2026-10-19T00:49:59.594Z"));
+    }
+
+    #[test]
+    fn banked_resets_reach_the_card_by_type_and_their_total_feeds_the_badge() {
+        let reply = parse_usage_reply(RESETS).expect("ok-resets.json parses");
+        let usage = build_usage(&cli_account("u1"), Some(&token("t")), Some(&reply));
+        let v = serde_json::to_value(&usage).unwrap();
+        assert_eq!(v["resetCredits"], json!(2));
+        assert_eq!(
+            v["resets"],
+            json!({
+                "groups": [
+                    { "kind": "full", "label": "Full reset", "count": 2, "earliestExpiry": "2099-12-03T00:00:00.000Z", "paused": false },
+                    { "kind": "fiveHour", "label": "5-hour reset", "count": 1, "earliestExpiry": null, "paused": true },
+                ],
+                "weeklyFiveHourAvailable": null,
+            })
+        );
     }
 
     #[test]
@@ -1097,9 +1161,6 @@ mod tests {
             Some("odd_org")
         );
         assert_eq!(plan_name_of(None, None, None), None);
-        let rest =
-            json!({ "cedar_ember": { "eligible": false }, "juniper_tide": { "grants": [1, 2] } });
-        assert_eq!(reset_credits_of(rest.as_object().unwrap()), Some(2));
     }
 
     #[test]
