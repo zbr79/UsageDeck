@@ -196,6 +196,10 @@ export interface ClaudeWindow {
 export interface ClaudeScopedWindow extends ClaudeWindow {
   /** the model's display name, else its id, else "Model" */
   label: string;
+  /** the model's use in percentage points of the overall weekly bar (not a share of the weekly use) */
+  sharePctOfWeekly: number | null;
+  /** how much of the weekly limit the model may use, in percent of weekly */
+  allowancePctOfWeekly: number | null;
 }
 
 export interface ClaudeUsage {
@@ -251,9 +255,17 @@ export interface PaceSpend {
   backfilling: boolean;
 }
 
+/** One model family's API-equivalent dollars beside all dollars, over the same span. */
+export interface ModelShare {
+  usd: number;
+  totalUsd: number;
+}
+
 export interface ClaudePace {
   spend: PaceSpend;
   windows: { fiveHour: PaceWindow | null; weekly: PaceWindow | null };
+  /** Fable's dollars in the current 5-hour window; null without any */
+  fableFiveHour: ModelShare | null;
   calibration: { usdPerWeeklyPct: number | null };
   coverage: "claude-code-this-pc";
 }

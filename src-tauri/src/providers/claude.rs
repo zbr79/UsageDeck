@@ -83,6 +83,12 @@ pub struct ClaudeScopedWindow {
     pub label: String,
     pub percent: Option<f64>,
     pub resets_at: Option<String>,
+    /// The model's use in percentage points of the overall weekly bar
+    /// (`weekly_scoped_shares[].used_percent_of_weekly`). Not a share of the weekly use: the reply
+    /// that showed Fable at 23% of an allowance of 50% of weekly said 12 (23 x 50 / 100 = 11.5).
+    pub share_pct_of_weekly: Option<f64>,
+    /// How much of the weekly limit the model may use, in percent of weekly.
+    pub allowance_pct_of_weekly: Option<f64>,
 }
 
 // ---- the usage reply ------------------------------------------------------------------------
@@ -156,16 +162,29 @@ fn window_of(w: Option<&WindowReply>) -> ClaudeWindow {
     }
 }
 
-/// Every `weekly_scoped` entry of the reply's `limits`. Read leniently from the untyped rest of
+/// Every `weekly_scoped` entry of the reply's `limits`, with its `weekly_scoped_shares` entry
+/// (matched by `limit_index`, an index into `limits`). Read leniently from the untyped rest of
 /// the reply: an entry of an unknown shape is skipped, never a failed reply.
 fn scoped_limits_of(rest: &Map<String, Value>) -> Vec<ClaudeScopedWindow> {
     let Some(limits) = rest.get("limits").and_then(Value::as_array) else {
         return Vec::new();
     };
+    let shares = rest
+        .get("weekly_scoped_shares")
+        .and_then(Value::as_array)
+        .map_or(&[][..], Vec::as_slice);
+    let share_of = |index: usize, key: &str| {
+        shares
+            .iter()
+            .find(|s| s.get("limit_index").and_then(Value::as_u64) == Some(index as u64))
+            .and_then(|s| s.get(key))
+            .and_then(Value::as_f64)
+    };
     limits
         .iter()
-        .filter(|l| l.get("kind").and_then(Value::as_str) == Some("weekly_scoped"))
-        .filter_map(|l| {
+        .enumerate()
+        .filter(|(_, l)| l.get("kind").and_then(Value::as_str) == Some("weekly_scoped"))
+        .filter_map(|(index, l)| {
             let window = window_of(Some(
                 &serde_json::from_value::<WindowReply>(l.clone()).ok()?,
             ));
@@ -184,6 +203,8 @@ fn scoped_limits_of(rest: &Map<String, Value>) -> Vec<ClaudeScopedWindow> {
                     .to_string(),
                 percent: window.percent,
                 resets_at: window.resets_at,
+                share_pct_of_weekly: share_of(index, "used_percent_of_weekly"),
+                allowance_pct_of_weekly: share_of(index, "allowance_percent_of_weekly"),
             })
         })
         .collect()
@@ -961,9 +982,12 @@ mod tests {
             label: "Fable".into(),
             percent: Some(23.0),
             resets_at: Some("2026-10-21T05:00:00.000Z".into()),
+            share_pct_of_weekly: Some(12.0),
+            allowance_pct_of_weekly: Some(50.0),
         };
         assert_eq!(usage(FABLE).weekly_scoped, vec![fable]);
         assert_eq!(usage(OK).weekly_scoped[0].label, "REDACTED");
+        assert_eq!(usage(OK).weekly_scoped[0].share_pct_of_weekly, Some(0.0));
         assert_eq!(usage(NO_SCOPED).weekly_scoped, vec![]);
         // the legacy per-model windows are read as before
         assert_eq!(usage(FABLE).weekly_opus, None);
@@ -971,8 +995,46 @@ mod tests {
         let v = serde_json::to_value(usage(FABLE)).unwrap();
         assert_eq!(
             v["weeklyScoped"],
-            json!([{ "label": "Fable", "percent": 23.0, "resetsAt": "2026-10-21T05:00:00.000Z" }])
+            json!([{
+                "label": "Fable",
+                "percent": 23.0,
+                "resetsAt": "2026-10-21T05:00:00.000Z",
+                "sharePctOfWeekly": 12.0,
+                "allowancePctOfWeekly": 50.0
+            }])
         );
+    }
+
+    #[test]
+    fn a_scoped_share_is_matched_by_its_index_into_limits_and_read_leniently() {
+        let reply = json!({ "five_hour": { "utilization": 1 }, "limits": [
+            { "kind": "weekly_all", "percent": 60 },
+            { "kind": "weekly_scoped", "percent": 36, "scope": { "model": { "display_name": "Fable" } } },
+            { "kind": "weekly_scoped", "percent": 4, "scope": { "model": { "display_name": "Other" } } }
+        ], "weekly_scoped_shares": [
+            { "limit_index": 0, "used_percent_of_weekly": 99 },
+            { "limit_index": 1, "used_percent_of_weekly": 18, "allowance_percent_of_weekly": 50 },
+            { "limit_index": 2, "used_percent_of_weekly": "lots" },
+            "not an object"
+        ] });
+        let reply = parse_usage_reply(&serde_json::to_vec(&reply).unwrap()).unwrap();
+        let scoped = build_usage(&cli_account("u1"), None, Some(&reply)).weekly_scoped;
+        let shares: Vec<_> = scoped
+            .iter()
+            .map(|w| (w.share_pct_of_weekly, w.allowance_pct_of_weekly))
+            .collect();
+        assert_eq!(shares, vec![(Some(18.0), Some(50.0)), (None, None)]);
+        // no shares at all, or of the wrong type, still reads the limits
+        let mut bare = serde_json::to_value(&reply.rest).unwrap();
+        bare["weekly_scoped_shares"] = json!({ "1": 18 });
+        let rest: Map<String, Value> = serde_json::from_value(bare).unwrap();
+        assert_eq!(scoped_limits_of(&rest)[0].share_pct_of_weekly, None);
+        assert_eq!(scoped_limits_of(&rest)[0].percent, Some(36.0));
+        // usage cached by 1.4.6 and 1.4.7 has no shares
+        let cached: ClaudeScopedWindow =
+            serde_json::from_value(json!({ "label": "Fable", "percent": 23, "resetsAt": null }))
+                .unwrap();
+        assert_eq!(cached.share_pct_of_weekly, None);
     }
 
     #[test]

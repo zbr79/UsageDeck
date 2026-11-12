@@ -1,7 +1,7 @@
 import type { CSSProperties, ReactNode } from "react";
 import { EyeOffIcon } from "@/ui/Icons";
 import { formatPercent } from "@/lib/format";
-import { usageSeverity, type MeterSeverity } from "@/lib/pace";
+import { usageSeverity, type MeterSegment, type MeterSeverity } from "@/lib/pace";
 
 export type CardState = "normal" | "active" | "exhausted";
 
@@ -159,6 +159,9 @@ const SEVERITY_FILL: Record<MeterSeverity, string> = {
   danger: "var(--w-barDanger)",
 };
 
+/** How much of the fill colour a meter segment keeps; the rest is black. */
+const SEGMENT_MIX = "65%";
+
 /** Usage meter: label, percent, bar, optional even-pace tick, optional reset countdown. */
 export function Meter({
   label,
@@ -171,6 +174,7 @@ export function Meter({
   pacePct = null,
   severity,
   detail = null,
+  segment = null,
 }: {
   label: string;
   /** full name, spoken and shown as the tooltip, e.g. "Rolling 5-hour window" */
@@ -186,17 +190,21 @@ export function Meter({
   severity?: MeterSeverity;
   /** pace details, added to the tooltip and the spoken value */
   detail?: string | null;
+  /** one model's part of the fill, drawn darker from the left; null draws the plain fill */
+  segment?: MeterSegment | null;
 }) {
   const known = !unknown && percent != null;
   const value = known ? Math.max(0, percent) : 0;
   const fill =
     !known || dimmed ? "var(--w-barDim)" : SEVERITY_FILL[severity ?? usageSeverity(value)];
+  const part = known && !dimmed && segment && value > 0 ? segment : null;
+  const details = [detail, part?.title].filter(Boolean).join(" · ");
   const valueText = known
-    ? `${formatPercent(value)}%${reset ? `, resets in ${reset}` : ""}${detail ? `. ${detail}` : ""}`
+    ? `${formatPercent(value)}%${reset ? `, resets in ${reset}` : ""}${details ? `. ${details}` : ""}`
     : "unknown";
   const tick = known && !dimmed && pacePct != null ? Math.min(100, Math.max(0, pacePct)) : null;
   return (
-    <div className="flex-1 min-w-0" title={known && detail ? `${name}: ${detail}` : name}>
+    <div className="flex-1 min-w-0" title={known && details ? `${name}: ${details}` : name}>
       {/* the meter below speaks the full name, value and reset, so the compact text is hidden */}
       <div
         aria-hidden="true"
@@ -235,7 +243,19 @@ export function Meter({
           <div
             className="h-full rounded-full transition-colors duration-700"
             style={{ width: `${known ? Math.min(value, 100) : 0}%`, background: fill }}
-          />
+          >
+            {part && (
+              // sized against the fill, so it never runs past it
+              <div
+                data-testid="meter-segment"
+                className="h-full rounded-full transition-colors duration-700"
+                style={{
+                  width: `${Math.min(100, (Math.max(0, part.pct) / Math.min(value, 100)) * 100)}%`,
+                  background: `color-mix(in srgb, ${fill} ${SEGMENT_MIX}, black)`,
+                }}
+              />
+            )}
+          </div>
         </div>
         {tick != null && (
           // 2 px wide, 8 px tall over the 4 px bar; kept inside the bar's ends

@@ -58,6 +58,7 @@ const pace = (over: Partial<ClaudePace["spend"]> = {}, windows?: ClaudePace["win
       ...over,
     },
     windows: windows ?? { fiveHour: win(), weekly: win({ pct: 47, pctPerHour: 1 }) },
+    fableFiveHour: null,
     calibration: { usdPerWeeklyPct: 185 },
     coverage: "claude-code-this-pc",
   }) satisfies ClaudePace;

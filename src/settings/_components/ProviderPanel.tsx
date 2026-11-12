@@ -7,6 +7,7 @@ import type {
   CursorAttemptNote,
   CursorUsage,
   GrokUsage,
+  ModelShare,
   ProviderId,
   Settings,
   TrackedAccount,
@@ -23,7 +24,7 @@ import { AccountCell, CardGrid, EmptyState, ProviderLogo, useNow } from "./CardG
 import BarsSection from "./BarsSection";
 import { RenameDialog } from "./dialogs";
 import { CursorDiagnostics } from "./Diagnostics";
-import PaceSection from "./PaceSection";
+import PaceSection, { usePace } from "./PaceSection";
 import { Page } from "./fields";
 
 type Update = (patch: SettingsPatch, success?: string) => Promise<boolean>;
@@ -55,6 +56,7 @@ function providerCard(
   hidden: boolean,
   light: boolean,
   cursorNote: CursorAttemptNote | null,
+  fableFiveHour: ModelShare | null,
 ) {
   // Cached usage looks like fresh usage: no status note and no dimming. A hidden account is gray.
   const extras = { active: account.active, dimmed: hidden, hidden, ...header };
@@ -93,7 +95,13 @@ function providerCard(
     case "claude": {
       const a = account as TrackedAccount<ClaudeUsage>;
       return (
-        <ClaudeCard slot={slotFromAccount(a)} accountLabel={label ?? a.usage?.email} {...common} />
+        <ClaudeCard
+          slot={slotFromAccount(a)}
+          accountLabel={label ?? a.usage?.email}
+          // the logs are this PC's: only the account signed in now gets the 5-hour estimate
+          fableFiveHour={a.active ? fableFiveHour : null}
+          {...common}
+        />
       );
     }
   }
@@ -120,6 +128,7 @@ export default function ProviderPanel({
   const now = useNow();
   const light = usePanelTheme() === "light";
   const [renaming, setRenaming] = useState<string | null>(null);
+  const pace = usePace(id === "claude");
   const name = PAGE_TITLES[id];
   const accounts = summaries[id]?.accounts ?? null;
   const hidden = (accountId: string) =>
@@ -184,6 +193,7 @@ export default function ProviderPanel({
                     isHidden,
                     light,
                     summaries.cursor?.attempt ?? null,
+                    pace.pace?.fableFiveHour ?? null,
                   )
                 }
               />
@@ -198,7 +208,9 @@ export default function ProviderPanel({
         scopedName={scopedLabel && `${scopedLabel} weekly`}
       />
       {id === "cursor" && <CursorDiagnostics />}
-      {id === "claude" && <PaceSection target={settings.claudeHourlyTarget} update={update} />}
+      {id === "claude" && (
+        <PaceSection target={settings.claudeHourlyTarget} update={update} state={pace} />
+      )}
       {renameAccount && (
         <RenameDialog
           name={labelOf(id, renameAccount)}
