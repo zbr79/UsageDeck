@@ -1,11 +1,5 @@
 import type { ClaudeResetGroup, ClaudeResetKind, ClaudeResets } from "./types";
 
-const NOUN: Record<ClaudeResetKind, string> = {
-  full: "full reset",
-  fiveHour: "five-hour reset",
-  weekly: "weekly reset",
-  other: "reset",
-};
 const DEFAULT_LABEL: Record<ClaudeResetKind, string> = {
   full: "full reset",
   fiveHour: "5-hour reset",
@@ -16,36 +10,7 @@ const DEFAULT_LABEL: Record<ClaudeResetKind, string> = {
 const day = (iso: string) =>
   new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 
-/** "full reset" for Claude's own names, else its label: "Welcome back" reads `"Welcome back" reset`. */
-function noun(g: ClaudeResetGroup): string {
-  const label = g.label.trim();
-  if (label.toLowerCase() === DEFAULT_LABEL[g.kind]) return NOUN[g.kind];
-  if (/reset$/i.test(label)) return label.charAt(0).toLowerCase() + label.slice(1);
-  return `"${label}" reset`;
-}
-
-/** "2 full resets (earliest ends Dec 3)", "1 five-hour reset (paused)". */
-function groupText(g: ClaudeResetGroup): string {
-  const notes = [
-    g.paused && "paused",
-    g.earliestExpiry && `${g.count > 1 ? "earliest ends" : "ends"} ${day(g.earliestExpiry)}`,
-  ].filter(Boolean);
-  const text = `${g.count} ${noun(g)}${g.count === 1 ? "" : "s"}`;
-  return notes.length ? `${text} (${notes.join(", ")})` : text;
-}
-
-/** Each kind of reset with its count and nearest expiry, joined by " · ". */
-export function claudeResetsText(resets: ClaudeResets): string {
-  const parts = resets.groups.map(groupText);
-  if (resets.weeklyFiveHourAvailable !== null) {
-    parts.push(
-      `weekly 5-hour reset ${resets.weeklyFiveHourAvailable ? "available" : "used this week"}`,
-    );
-  }
-  return parts.join(" · ");
-}
-
-/** One row of Settings' Resets section: the reset's name, and how many with when they end. */
+/** One row of an account's resets in Settings: the reset's name, and how many with when they end. */
 export interface ResetRow {
   key: string;
   title: string;
@@ -81,32 +46,26 @@ export function claudeResetRows(resets: ClaudeResets): ResetRow[] {
   return rows;
 }
 
-/** One reset pill on a Claude card: how many of one kind, named in its tooltip. */
-export interface ResetChip {
-  key: string;
-  count: number;
-  /** "Free limit reset: 1 left · ends Dec 15" */
-  label: string;
-  /** paused grants, or nothing usable: drawn gray */
-  muted: boolean;
+const SHORT: Record<ClaudeResetKind, string> = {
+  full: "Full reset",
+  fiveHour: "5-hour reset",
+  weekly: "Weekly reset",
+  other: "Reset",
+};
+
+/** "Fable reset" when the grant names a model, else its kind: "Full reset". */
+function shortName(g: ClaudeResetGroup): string {
+  const model = /\b(fable|opus|sonnet|haiku)\b/i.exec(g.label)?.[1];
+  if (model) return `${model.charAt(0).toUpperCase()}${model.slice(1).toLowerCase()} reset`;
+  return SHORT[g.kind];
 }
 
-/** A pill per kind of reset in hand; the weekly 5-hour reset only while it is available. */
-export function claudeResetChips(resets: ClaudeResets): ResetChip[] {
-  const rows = claudeResetRows(resets);
-  const chips = resets.groups.map((g, i) => ({
-    key: rows[i]!.key,
-    count: g.count,
-    label: `${rows[i]!.title}: ${rows[i]!.detail}`,
-    muted: g.paused || g.count === 0,
-  }));
-  if (resets.weeklyFiveHourAvailable) {
-    chips.push({
-      key: "weekly-five-hour",
-      count: 1,
-      label: "Weekly 5-hour reset: Available",
-      muted: false,
-    });
-  }
-  return chips;
+/** The reset pill's tooltip: "1 Fable reset · 2 Full resets · 1 5-hour reset (paused)". */
+export function claudeResetsSummary(resets: ClaudeResets): string {
+  const parts = resets.groups.map((g) => {
+    const name = `${g.count} ${shortName(g)}${g.count === 1 ? "" : "s"}`;
+    return g.paused ? `${name} (paused)` : name;
+  });
+  if (resets.weeklyFiveHourAvailable) parts.push("1 weekly 5-hour reset");
+  return parts.join(" · ");
 }
