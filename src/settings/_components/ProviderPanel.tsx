@@ -137,6 +137,13 @@ export default function ProviderPanel({
   const sorted = accounts ? orderTracked(id, accounts, hidden, settings.hiddenBars, now) : null;
   const nickname = (accountId: string) => settings.displayNames[accountKey(id, accountId)] ?? "";
   const renameAccount = accounts?.find((a) => a.id === renaming) ?? null;
+  const resetLines =
+    id === "claude" && sorted
+      ? sorted.flatMap((a) => {
+          const resets = (a.usage as ClaudeUsage | null)?.resets;
+          return resets ? [{ id: a.id, name: nickname(a.id) || labelOf(id, a), resets }] : [];
+        })
+      : [];
   const scopedLabel =
     id === "claude"
       ? accounts?.map((a) => (a.usage as ClaudeUsage | null)?.weeklyScoped[0]?.label).find(Boolean)
@@ -161,7 +168,6 @@ export default function ProviderPanel({
             const key = accountKey(id, account.id);
             const isHidden = hidden(account.id);
             const shownName = nickname(account.id) || labelOf(id, account);
-            const resets = id === "claude" ? (account.usage as ClaudeUsage | null)?.resets : null;
             return (
               <AccountCell
                 key={account.id}
@@ -185,7 +191,6 @@ export default function ProviderPanel({
                     onSelect: () => refreshWidget(summaries.reloadAll),
                   },
                 ]}
-                footer={resets && `Resets: ${claudeResetsText(resets)}`}
                 card={(header) =>
                   providerCard(
                     id,
@@ -204,6 +209,12 @@ export default function ProviderPanel({
           })}
         </CardGrid>
       )}
+      {resetLines.map((line) => (
+        <p key={line.id} className="mt-2 px-1 text-xs text-(--p-muted)">
+          {(sorted?.length ?? 0) > 1 ? `Resets for ${line.name}: ` : "Resets: "}
+          {claudeResetsText(line.resets)}
+        </p>
+      ))}
       <BarsSection
         provider={id}
         settings={settings}

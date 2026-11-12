@@ -44,7 +44,7 @@ Fable's share of the dollars Claude Code on this PC spent in the current 5-hour 
 claude.ai or other PCs is not in those logs, and only the account signed in now gets it.
 
 When Claude has banked limit resets for the account, the Claude card shows a `↺ N` badge with the
-number in hand. Its tooltip, and a line under the card in Settings → Claude, lists each kind with
+number in hand. Its tooltip, and a line under the cards in Settings → Claude, lists each kind with
 its count and nearest expiry (`2 full resets (earliest ends Dec 3) · 1 five-hour reset`), paused
 grants marked `paused`. At the 5-hour limit it also says whether the weekly free 5-hour reset is
 available; an available one counts toward N. UsageDeck only reads resets: redeem them in Claude.

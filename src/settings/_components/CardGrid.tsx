@@ -37,7 +37,6 @@ export function AccountCell({
   onShownChange,
   menuItems,
   card,
-  footer,
 }: {
   /** the card's title (nickname, or else the email) */
   name: string;
@@ -45,8 +44,6 @@ export function AccountCell({
   onShownChange: (next: boolean) => void;
   menuItems: MenuItem[];
   card: (header: CardHeader) => ReactNode;
-  /** a muted line under the card */
-  footer?: ReactNode;
 }) {
   const more = useRef<HTMLButtonElement>(null);
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
@@ -95,7 +92,6 @@ export function AccountCell({
       }}
     >
       {card({ headerActions: actions })}
-      {footer && <p className="mt-1.5 px-1 text-xs text-(--p-muted)">{footer}</p>}
       {menuAt && (
         <Menu
           label={`Options for ${name}`}
