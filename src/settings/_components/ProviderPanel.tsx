@@ -14,7 +14,6 @@ import type {
 } from "@/lib/types";
 import { ClaudeCard, CodexCard, CursorCard, GrokCard } from "@/widget/_components/cards";
 import { slotFromAccount as widgetSlot } from "@/widget/_lib/useWidgetData";
-import { claudeResetsText } from "@/lib/claude-resets";
 import { cardErrorKind } from "@/lib/errors";
 import type { SettingsPatch } from "@/lib/settings-schema";
 import { PAGE_TITLES, PROVIDER_ICONS } from "../_lib/pages";
@@ -23,6 +22,7 @@ import { orderTracked } from "../_lib/order";
 import { usePanelTheme } from "../_lib/theme";
 import { AccountCell, CardGrid, EmptyState, ProviderLogo, useNow } from "./CardGrid";
 import BarsSection from "./BarsSection";
+import ResetsSection from "./ResetsSection";
 import { RenameDialog } from "./dialogs";
 import { CursorDiagnostics } from "./Diagnostics";
 import PaceSection, { usePace } from "./PaceSection";
@@ -209,12 +209,7 @@ export default function ProviderPanel({
           })}
         </CardGrid>
       )}
-      {resetLines.map((line) => (
-        <p key={line.id} className="mt-2 px-1 text-xs text-(--p-muted)">
-          {(sorted?.length ?? 0) > 1 ? `Resets for ${line.name}: ` : "Resets: "}
-          {claudeResetsText(line.resets)}
-        </p>
-      ))}
+      <ResetsSection accounts={resetLines} />
       <BarsSection
         provider={id}
         settings={settings}

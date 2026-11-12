@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { claudeResetsText } from "@/lib/claude-resets";
+import { claudeResetRows, claudeResetsText } from "@/lib/claude-resets";
 import { DEFAULT_SETTINGS } from "@/lib/settings-schema";
 import type { ClaudeResetGroup, ClaudeResets, ClaudeUsage } from "@/lib/types";
 import { ClaudeCard } from "@/widget/_components/cards";
@@ -105,5 +105,22 @@ describe("Claude card reset badge", () => {
 
   it("shows no badge when Claude lists no resets", () => {
     expect(card(null, null)).not.toContain("↺");
+  });
+});
+
+describe("claudeResetRows", () => {
+  it("gives one row per kind with its own label, count and expiry, then the weekly reset", () => {
+    const resets: ClaudeResets = {
+      groups: [
+        group({ label: "free limit reset", count: 2, earliestExpiry: "2026-12-15T12:00:00Z" }),
+        group({ kind: "fiveHour", label: "", paused: true }),
+      ],
+      weeklyFiveHourAvailable: false,
+    };
+    expect(claudeResetRows(resets).map(({ title, detail }) => [title, detail])).toEqual([
+      ["Free limit reset", "2 left · earliest ends Dec 15"],
+      ["5-hour reset", "1 left · paused"],
+      ["Weekly 5-hour reset", "Used this week"],
+    ]);
   });
 });
