@@ -44,6 +44,7 @@ let settings: Settings = {
   snoozedUntil: query().get("snoozed")
     ? { "cursor:dev@example.com": NOW + 200 * 60_000, "opencode:main@example.com": NOW + 26 * H }
     : {},
+  hiddenBars: {},
 };
 
 const win = (percent: number, resetsIn: number) => ({

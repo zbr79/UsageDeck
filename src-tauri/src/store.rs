@@ -371,7 +371,7 @@ pub enum PanelTheme {
     System,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum WidgetProvider {
     Opencode,
@@ -391,6 +391,17 @@ impl WidgetProvider {
             "claude" => Self::Claude,
             _ => return None,
         })
+    }
+
+    /// The usage bars its cards can show, in card order (`BARS` in lib/bars.ts).
+    fn bars(self) -> &'static [&'static str] {
+        match self {
+            Self::Opencode => &["rolling", "weekly", "monthly"],
+            Self::Cursor => &["firstParty", "api"],
+            Self::Grok => &["weekly"],
+            Self::Codex => &["fiveHour", "weekly"],
+            Self::Claude => &["fiveHour", "weekly", "scoped"],
+        }
     }
 }
 
@@ -433,6 +444,8 @@ pub struct Settings {
     pub claude_hourly_target: Option<u32>,
     /// used-up cards hidden from the widget until they reset: account key -> epoch ms
     pub snoozed_until: BTreeMap<String, u64>,
+    /// usage bars turned off on each provider's cards; never every bar of a provider
+    pub hidden_bars: BTreeMap<WidgetProvider, Vec<String>>,
 }
 
 impl Default for Settings {
@@ -454,6 +467,7 @@ impl Default for Settings {
             start_at_login: true,
             claude_hourly_target: None,
             snoozed_until: BTreeMap::new(),
+            hidden_bars: BTreeMap::new(),
         }
     }
 }
@@ -581,6 +595,39 @@ pub fn merge_snoozed_until(
         .collect()
 }
 
+/// Merge bar changes: a provider's list replaces its own, an empty list turns its bars back on.
+/// Unknown providers and bar ids are dropped, and a list that would hide every bar of a provider is
+/// ignored: the provider's own switch hides the whole card.
+pub fn merge_hidden_bars(
+    current: &BTreeMap<WidgetProvider, Vec<String>>,
+    changes: Option<&Value>,
+) -> BTreeMap<WidgetProvider, Vec<String>> {
+    let mut out = current.clone();
+    let Some(changes) = changes.and_then(Value::as_object) else {
+        return out;
+    };
+    for (key, list) in changes {
+        let (Some(provider), Some(list)) = (WidgetProvider::parse(key), list.as_array()) else {
+            continue;
+        };
+        let all = provider.bars();
+        let ids: Vec<String> = all
+            .iter()
+            .filter(|id| list.iter().any(|v| v.as_str() == Some(**id)))
+            .map(|id| (*id).to_string())
+            .collect();
+        if ids.len() == all.len() {
+            continue;
+        }
+        if ids.is_empty() {
+            out.remove(&provider);
+        } else {
+            out.insert(provider, ids);
+        }
+    }
+    out
+}
+
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -659,6 +706,7 @@ pub fn apply_settings_patch_at(current: &Settings, patch: &Value, now_ms: u64) -
     }
     next.snoozed_until =
         merge_snoozed_until(&current.snoozed_until, obj.get("snoozedUntil"), now_ms);
+    next.hidden_bars = merge_hidden_bars(&current.hidden_bars, obj.get("hiddenBars"));
     next
 }
 
@@ -836,6 +884,88 @@ mod tests {
         // serialised as camelCase, numbers in ms
         let out = serde_json::to_value(with(&[("codex:a", NOW + H)])).unwrap();
         assert_eq!(out["snoozedUntil"], json!({ "codex:a": NOW + H }));
+    }
+
+    #[test]
+    fn hidden_bars_patch_rules() {
+        let with = |entries: &[(WidgetProvider, &[&str])]| Settings {
+            hidden_bars: entries
+                .iter()
+                .map(|(p, ids)| (*p, ids.iter().map(|id| id.to_string()).collect()))
+                .collect(),
+            ..Settings::default()
+        };
+        let patch = |current: &Settings, change: Value| {
+            apply_settings_patch(current, &json!({ "hiddenBars": change })).hidden_bars
+        };
+        let map = |entries: &[(WidgetProvider, &[&str])]| with(entries).hidden_bars;
+        use WidgetProvider::{Claude, Codex, Cursor, Opencode};
+
+        // every bar shows by default
+        assert!(Settings::default().hidden_bars.is_empty());
+        assert!(normalize_settings(Some(&json!({}))).hidden_bars.is_empty());
+
+        // a provider's list replaces its own, an empty one turns its bars back on
+        let current = with(&[(Opencode, &["rolling"]), (Claude, &["scoped"])]);
+        assert_eq!(
+            patch(
+                &current,
+                json!({ "claude": ["weekly"], "codex": ["fiveHour"] })
+            ),
+            map(&[
+                (Opencode, &["rolling"]),
+                (Codex, &["fiveHour"]),
+                (Claude, &["weekly"])
+            ])
+        );
+        assert_eq!(
+            patch(&current, json!({ "opencode": [] })),
+            map(&[(Claude, &["scoped"])])
+        );
+
+        // unknown providers and ids are dropped, duplicates collapse, card order is kept
+        let change = json!({
+            "opencode": ["monthly", "rolling", "monthly", "hourly", 3],
+            "gemini": ["weekly"],
+            "__proto__": ["weekly"],
+            "cursor": "api"
+        });
+        assert_eq!(
+            patch(&Settings::default(), change),
+            map(&[(Opencode, &["rolling", "monthly"])])
+        );
+        assert_eq!(
+            patch(&with(&[(Claude, &["scoped"])]), json!("nope")),
+            map(&[(Claude, &["scoped"])])
+        );
+
+        // a list that would hide every bar of a provider is ignored
+        assert_eq!(
+            patch(
+                &with(&[(Claude, &["scoped"])]),
+                json!({ "claude": ["fiveHour", "weekly", "scoped"] })
+            ),
+            map(&[(Claude, &["scoped"])])
+        );
+        assert!(patch(
+            &Settings::default(),
+            json!({ "grok": ["weekly"], "cursor": ["api", "firstParty"] })
+        )
+        .is_empty());
+        assert_eq!(
+            normalize_settings(Some(
+                &json!({ "hiddenBars": { "codex": ["weekly", "fiveHour"], "cursor": ["api"] } })
+            ))
+            .hidden_bars,
+            map(&[(Cursor, &["api"])])
+        );
+
+        // serialised as camelCase with lowercase provider keys, like lib/types.ts
+        let out = serde_json::to_value(with(&[(Cursor, &["api"]), (Claude, &["scoped"])])).unwrap();
+        assert_eq!(
+            out["hiddenBars"],
+            json!({ "cursor": ["api"], "claude": ["scoped"] })
+        );
     }
 
     #[test]

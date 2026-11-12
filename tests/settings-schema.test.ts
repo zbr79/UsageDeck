@@ -8,6 +8,7 @@ import {
   normalizeSettings,
 } from "@/lib/settings-schema";
 import { resolvePanelTheme } from "@/settings/_lib/theme";
+import type { HiddenBars } from "@/lib/bars";
 
 describe("applySettingsPatch", () => {
   it("applies only valid, known fields", () => {
@@ -188,5 +189,49 @@ describe("snoozedUntil", () => {
       ).snoozedUntil,
     ).toEqual({ "codex:later": NOW + H });
     expect(normalizeSettings({ snoozedUntil: { "codex:x": 1 } }).snoozedUntil).toEqual({});
+  });
+});
+
+describe("hiddenBars", () => {
+  const patch = (current: HiddenBars, change: unknown) =>
+    applySettingsPatch({ ...DEFAULT_SETTINGS, hiddenBars: current }, { hiddenBars: change })
+      .hiddenBars;
+
+  it("shows every bar by default", () => {
+    expect(DEFAULT_SETTINGS.hiddenBars).toEqual({});
+    expect(normalizeSettings({}).hiddenBars).toEqual({});
+  });
+  it("replaces one provider's list and keeps the others", () => {
+    const current: HiddenBars = { opencode: ["rolling"], claude: ["scoped"] };
+    expect(patch(current, { claude: ["weekly"], codex: ["fiveHour"] })).toEqual({
+      opencode: ["rolling"],
+      codex: ["fiveHour"],
+      claude: ["weekly"],
+    });
+    expect(patch(current, { opencode: [] })).toEqual({ claude: ["scoped"] });
+  });
+  it("drops unknown providers and ids, dedupes, and keeps card order", () => {
+    expect(
+      patch(
+        {},
+        {
+          opencode: ["monthly", "rolling", "monthly", "hourly", 3],
+          gemini: ["weekly"],
+          ["__proto__"]: ["weekly"],
+          cursor: "api",
+        },
+      ),
+    ).toEqual({ opencode: ["rolling", "monthly"] });
+    expect(patch({ claude: ["scoped"] }, "nope")).toEqual({ claude: ["scoped"] });
+  });
+  it("never hides every bar of a provider: such a list is ignored", () => {
+    expect(patch({ claude: ["scoped"] }, { claude: ["fiveHour", "weekly", "scoped"] })).toEqual({
+      claude: ["scoped"],
+    });
+    expect(patch({}, { grok: ["weekly"], cursor: ["api", "firstParty"] })).toEqual({});
+    expect(
+      normalizeSettings({ hiddenBars: { codex: ["weekly", "fiveHour"], cursor: ["api"] } })
+        .hiddenBars,
+    ).toEqual({ cursor: ["api"] });
   });
 });
