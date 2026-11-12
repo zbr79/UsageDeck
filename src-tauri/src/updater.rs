@@ -5,13 +5,14 @@
 //! The release workflow (.github/workflows/release.yml) uploads that installer to every release.
 //! Background checks run 15 s after startup and then every hour; "Check for updates" in the tray
 //! and the settings window runs one on demand. Installing runs the installer
-//! silently and quits; the installer starts the new version.
+//! silently and quits; the installer starts the new version. With "Install updates
+//! automatically" on, a ready update is installed the same way once the user is away.
 
 mod release;
 mod status;
 
 use release::{is_newer, parse_release, verify, Release, UpdateError, Version};
-use status::{Machine, Outcome, Trigger};
+use status::{decide_auto_install, AutoInstall, Machine, Outcome, Trigger};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -25,6 +26,7 @@ const USER_AGENT: &str = "UsageDeck-updater";
 const FIRST_CHECK: Duration = Duration::from_secs(15);
 const CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const API_TIMEOUT: Duration = Duration::from_secs(30);
+const AUTO_INSTALL_POLL: Duration = Duration::from_secs(30);
 pub const EVENT_STATUS: &str = "update-status";
 /// Flags read by Tauri's NSIS template (tauri-bundler 2.10.3): `/S` is NSIS's silent mode, in
 /// which a running UsageDeck is closed without asking (utils.nsh CheckIfAppIsRunning:
@@ -35,22 +37,53 @@ pub const EVENT_STATUS: &str = "update-status";
 const INSTALLER_ARGS: [&str; 3] = ["/S", "/R", "/UPDATE"];
 
 /// The updater's shared state, managed by Tauri.
-pub struct Updater(Mutex<Machine>);
+pub struct Updater {
+    machine: Mutex<Machine>,
+    /// the auto-install watcher's last decision; None before its first look
+    auto_install: Mutex<Option<AutoInstall>>,
+}
 
 impl Updater {
     /// Built before any window exists, so a page's first `get_update_status` always finds it.
     pub fn new(current_version: String) -> Self {
-        Self(Mutex::new(Machine::new(current_version)))
+        Self {
+            machine: Mutex::new(Machine::new(current_version)),
+            auto_install: Mutex::new(None),
+        }
     }
 
     pub fn status(&self) -> UpdateStatus {
         self.lock().status().clone()
     }
 
+    /// The auto-install line of the diagnostics report.
+    pub fn auto_install_report(&self) -> String {
+        let last = self
+            .auto_install
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match &*last {
+            Some(decision) => format!("Auto-install: {decision}"),
+            None => "Auto-install: not decided yet".into(),
+        }
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Machine> {
-        self.0
+        self.machine
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Record the watcher's decision, logging it when it changed.
+    fn decided(&self, decision: &AutoInstall) {
+        let mut last = self
+            .auto_install
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if last.as_ref() != Some(decision) {
+            log::info!("auto-install: {decision}");
+            *last = Some(decision.clone());
+        }
     }
 }
 
@@ -80,6 +113,37 @@ pub fn start(app: AppHandle) {
                 log::info!("update check already in progress");
             }
             tokio::time::sleep(CHECK_INTERVAL).await;
+        }
+    });
+}
+
+/// Every 30 s for the life of the app: install the ready update when "Install updates
+/// automatically" is on and the user is away. A failed start leaves the Ready phase, so it is
+/// not retried until a check finds the update again.
+pub fn watch_auto_install(app: AppHandle, dev_build: bool) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let setting_on = app
+                .try_state::<crate::Core>()
+                .is_some_and(|core| core.store.get_settings().auto_install_updates);
+            let ready = app
+                .state::<Updater>()
+                .lock()
+                .ready_version()
+                .map(str::to_string);
+            let decision = decide_auto_install(
+                setting_on,
+                ready.as_deref(),
+                crate::win::idle::idle_time(),
+                crate::win::idle::workstation_locked(),
+                dev_build,
+            );
+            app.state::<Updater>().decided(&decision);
+            if matches!(decision, AutoInstall::Install { .. }) {
+                // on success the app exits; a failure is already recorded as the status
+                let _ = install_update(app.clone());
+            }
+            tokio::time::sleep(AUTO_INSTALL_POLL).await;
         }
     });
 }

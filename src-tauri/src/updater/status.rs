@@ -5,7 +5,9 @@
 //! nothing until it has a verified installer: its "up to date" and its failures leave `Idle`.
 
 use serde::Serialize;
+use std::fmt;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "state", rename_all = "camelCase")]
@@ -197,9 +199,76 @@ impl Machine {
         }
     }
 
+    /// The version whose verified installer is on disk, when an update is ready.
+    pub fn ready_version(&self) -> Option<&str> {
+        match &self.status.phase {
+            Phase::Ready { version, .. } => Some(version),
+            _ => None,
+        }
+    }
+
     /// The installer could not be started.
     pub fn install_failed(&mut self, message: String) {
         self.status.phase = Phase::Failed { message };
+    }
+}
+
+/// No keyboard or mouse input for this long counts as away.
+pub const AWAY_AFTER: Duration = Duration::from_secs(2 * 60);
+
+/// What the auto-install watcher decided on its last look.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AutoInstall {
+    /// "Install updates automatically" is off.
+    Off,
+    /// A development or cargo-target build never replaces itself.
+    DevBuild,
+    NothingReady,
+    WaitingForIdle {
+        version: String,
+    },
+    Install {
+        version: String,
+    },
+}
+
+impl fmt::Display for AutoInstall {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Off => f.write_str("off"),
+            Self::DevBuild => f.write_str("on, but never in a development build"),
+            Self::NothingReady => f.write_str("on, no update ready"),
+            Self::WaitingForIdle { version } => {
+                write!(f, "waiting for idle (2 min) or a lock to install {version}")
+            }
+            Self::Install { version } => write!(f, "installing {version}"),
+        }
+    }
+}
+
+/// Install the ready update only when the user turned this on and is away: idle for
+/// [`AWAY_AFTER`], or the workstation is locked.
+pub fn decide_auto_install(
+    setting_on: bool,
+    ready: Option<&str>,
+    idle: Duration,
+    locked: bool,
+    dev_build: bool,
+) -> AutoInstall {
+    if !setting_on {
+        return AutoInstall::Off;
+    }
+    if dev_build {
+        return AutoInstall::DevBuild;
+    }
+    let Some(version) = ready else {
+        return AutoInstall::NothingReady;
+    };
+    let version = version.to_string();
+    if locked || idle >= AWAY_AFTER {
+        AutoInstall::Install { version }
+    } else {
+        AutoInstall::WaitingForIdle { version }
     }
 }
 
@@ -381,6 +450,84 @@ mod tests {
         assert!(m.installer().is_some());
         m.install_failed("access denied".into());
         assert_eq!(m.installer(), None);
+    }
+
+    #[test]
+    fn auto_install_waits_until_the_user_is_away() {
+        let secs = Duration::from_secs;
+        let install = AutoInstall::Install {
+            version: "1.5.3".into(),
+        };
+        let wait = AutoInstall::WaitingForIdle {
+            version: "1.5.3".into(),
+        };
+        let ready = Some("1.5.3");
+        assert_eq!(
+            decide_auto_install(true, ready, secs(0), false, false),
+            wait
+        );
+        assert_eq!(
+            decide_auto_install(true, ready, secs(119), false, false),
+            wait
+        );
+        assert_eq!(
+            decide_auto_install(true, ready, secs(120), false, false),
+            install
+        );
+        assert_eq!(
+            decide_auto_install(true, ready, secs(0), true, false),
+            install,
+            "locked"
+        );
+    }
+
+    #[test]
+    fn auto_install_never_runs_off_without_an_update_or_in_a_dev_build() {
+        let away = Duration::from_secs(3600);
+        assert_eq!(
+            decide_auto_install(false, Some("1.5.3"), away, true, false),
+            AutoInstall::Off
+        );
+        assert_eq!(
+            decide_auto_install(true, None, away, true, false),
+            AutoInstall::NothingReady
+        );
+        assert_eq!(
+            decide_auto_install(true, Some("1.5.3"), away, true, true),
+            AutoInstall::DevBuild
+        );
+    }
+
+    #[test]
+    fn auto_install_stops_once_the_update_is_no_longer_ready() {
+        let mut m = machine();
+        assert_eq!(m.ready_version(), None);
+        check(&mut m, Trigger::Background, ready("1.5.3"));
+        assert_eq!(m.ready_version(), Some("1.5.3"));
+        // a failed start of the installer is not retried until a check finds the update again
+        m.install_failed("access denied".into());
+        assert_eq!(m.ready_version(), None);
+        let away = Duration::from_secs(600);
+        assert_eq!(
+            decide_auto_install(true, m.ready_version(), away, true, false),
+            AutoInstall::NothingReady
+        );
+        check(&mut m, Trigger::Background, ready("1.5.3"));
+        assert_eq!(m.ready_version(), Some("1.5.3"));
+    }
+
+    #[test]
+    fn auto_install_decisions_read_as_log_lines() {
+        let v = || "1.5.3".to_string();
+        assert_eq!(
+            AutoInstall::WaitingForIdle { version: v() }.to_string(),
+            "waiting for idle (2 min) or a lock to install 1.5.3"
+        );
+        assert_eq!(
+            AutoInstall::Install { version: v() }.to_string(),
+            "installing 1.5.3"
+        );
+        assert_eq!(AutoInstall::Off.to_string(), "off");
     }
 
     #[test]
