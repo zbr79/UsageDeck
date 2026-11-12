@@ -50,7 +50,7 @@ function NavItem({
   );
 }
 
-/** Left navigation: General, Appearance, Widget, Accounts (one item per provider), About. */
+/** Left navigation: General, Widget, Accounts (one item per provider), About. */
 export function Nav({
   current,
   onSelect,
@@ -81,7 +81,6 @@ export function Nav({
     >
       <ul className="flex flex-col gap-0.5 p-0.5">
         {item("general")}
-        {item("appearance")}
         {item("widget")}
       </ul>
       <h2 id="nav-accounts" className="mt-4 mb-1 px-3 text-xs font-semibold text-(--p-muted)">

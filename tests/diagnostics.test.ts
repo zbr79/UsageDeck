@@ -149,7 +149,6 @@ describe("update status store rules", () => {
     expect(statusChanged(status(), status({ state: "checking" }))).toBe(true);
     expect(statusChanged(status(), status({ lastChecked: 5 }))).toBe(true);
   });
-
 });
 
 describe("hidden until reset list", () => {

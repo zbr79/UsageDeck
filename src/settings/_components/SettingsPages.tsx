@@ -3,12 +3,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { inTauri } from "@/lib/bridge";
 import { formatAgo, formatResetDuration } from "@/lib/format";
-import {
-  checkForUpdates,
-  installUpdate,
-  useUpdateStatus,
-  type UpdateStatus,
-} from "@/lib/updates";
+import { checkForUpdates, installUpdate, useUpdateStatus, type UpdateStatus } from "@/lib/updates";
 import type { SettingsPatch } from "@/lib/settings-schema";
 import type { PanelTheme, Settings, ThemeMode, WidgetProvider } from "@/lib/types";
 import { Toggle } from "@/ui/Toggle";
@@ -28,6 +23,17 @@ const ENABLED_KEY: Record<WidgetProvider, keyof Settings & `${string}Enabled`> =
   grok: "grokEnabled",
   opencode: "opencodeEnabled",
 };
+
+const PANEL_THEMES: { value: PanelTheme; label: string }[] = [
+  { value: "light", label: "Light" },
+  { value: "dark", label: "Dark" },
+  { value: "system", label: "Use system setting" },
+];
+const WIDGET_THEMES: { value: ThemeMode; label: string }[] = [
+  { value: "auto", label: "Match the screen behind it" },
+  { value: "light", label: "Light" },
+  { value: "dark", label: "Dark" },
+];
 
 export function GeneralPage({ settings, update }: Props) {
   return (
@@ -75,6 +81,61 @@ export function GeneralPage({ settings, update }: Props) {
                 void update(
                   { deepseekPeakHourWarning },
                   deepseekPeakHourWarning ? "Peak-hour warning on" : "Peak-hour warning off",
+                )
+              }
+            />
+          )}
+        />
+      </Section>
+      <Section title="Theme">
+        <SettingRow
+          title="Settings theme"
+          control={(labelId, descId) => (
+            <select
+              aria-labelledby={labelId}
+              aria-describedby={descId}
+              value={settings.panelTheme}
+              onChange={(e) => void update({ panelTheme: e.target.value as PanelTheme })}
+              className={selectClass}
+            >
+              {PANEL_THEMES.map((t) => (
+                <option key={t.value} value={t.value}>
+                  {t.label}
+                </option>
+              ))}
+            </select>
+          )}
+        />
+        <SettingRow
+          title="Widget theme"
+          control={(labelId, descId) => (
+            <select
+              aria-labelledby={labelId}
+              aria-describedby={descId}
+              value={settings.themeMode}
+              onChange={(e) => void update({ themeMode: e.target.value as ThemeMode })}
+              className={selectClass}
+            >
+              {WIDGET_THEMES.map((t) => (
+                <option key={t.value} value={t.value}>
+                  {t.label}
+                </option>
+              ))}
+            </select>
+          )}
+        />
+      </Section>
+      <Section title="Cards">
+        <SettingRow
+          title="Show provider names"
+          control={(labelId) => (
+            <Toggle
+              labelledBy={labelId}
+              checked={settings.showProviderNames}
+              onChange={(showProviderNames) =>
+                void update(
+                  { showProviderNames },
+                  showProviderNames ? "Cards show provider names" : "Cards show nicknames",
                 )
               }
             />
@@ -175,79 +236,6 @@ function UpdatesSection({ settings, update }: Props) {
       />
       <SettingRow title="Diagnostics" control={() => <CopyDiagnosticsButton />} />
     </Section>
-  );
-}
-
-const PANEL_THEMES: { value: PanelTheme; label: string }[] = [
-  { value: "light", label: "Light" },
-  { value: "dark", label: "Dark" },
-  { value: "system", label: "Use system setting" },
-];
-const WIDGET_THEMES: { value: ThemeMode; label: string }[] = [
-  { value: "auto", label: "Match the screen behind it" },
-  { value: "light", label: "Light" },
-  { value: "dark", label: "Dark" },
-];
-
-export function AppearancePage({ settings, update }: Props) {
-  return (
-    <Page title="Appearance">
-      <Section title="Theme">
-        <SettingRow
-          title="Settings theme"
-          control={(labelId, descId) => (
-            <select
-              aria-labelledby={labelId}
-              aria-describedby={descId}
-              value={settings.panelTheme}
-              onChange={(e) => void update({ panelTheme: e.target.value as PanelTheme })}
-              className={selectClass}
-            >
-              {PANEL_THEMES.map((t) => (
-                <option key={t.value} value={t.value}>
-                  {t.label}
-                </option>
-              ))}
-            </select>
-          )}
-        />
-        <SettingRow
-          title="Widget theme"
-          control={(labelId, descId) => (
-            <select
-              aria-labelledby={labelId}
-              aria-describedby={descId}
-              value={settings.themeMode}
-              onChange={(e) => void update({ themeMode: e.target.value as ThemeMode })}
-              className={selectClass}
-            >
-              {WIDGET_THEMES.map((t) => (
-                <option key={t.value} value={t.value}>
-                  {t.label}
-                </option>
-              ))}
-            </select>
-          )}
-        />
-      </Section>
-      <Section title="Cards">
-        <SettingRow
-          title="Show provider names"
-          control={(labelId) => (
-            <Toggle
-              labelledBy={labelId}
-              checked={settings.showProviderNames}
-              onChange={(showProviderNames) =>
-                void update(
-                  { showProviderNames },
-                  showProviderNames ? "Cards show provider names" : "Cards show nicknames",
-                )
-              }
-            />
-          )}
-        />
-      </Section>
-    </Page>
   );
 }
 
@@ -456,9 +444,7 @@ export function AboutPage({ settings, update }: Props) {
           <img src={appIcon} alt="" className="size-12" />
           <div>
             <div className="text-xl leading-7 font-semibold">UsageDeck</div>
-            <div className="text-xs text-(--p-muted)">
-              Version {version ?? "unknown"}
-            </div>
+            <div className="text-xs text-(--p-muted)">Version {version ?? "unknown"}</div>
           </div>
         </div>
         <SettingRow
