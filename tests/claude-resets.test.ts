@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { claudeResetRows, claudeResetsText } from "@/lib/claude-resets";
+import { claudeResetRows } from "@/lib/claude-resets";
 import { DEFAULT_SETTINGS } from "@/lib/settings-schema";
 import type { ClaudeResetGroup, ClaudeResets, ClaudeUsage } from "@/lib/types";
 import { ClaudeCard } from "@/widget/_components/cards";
@@ -13,48 +13,6 @@ const group = (g: Partial<ClaudeResetGroup>): ClaudeResetGroup => ({
   earliestExpiry: null,
   paused: false,
   ...g,
-});
-
-describe("claudeResetsText", () => {
-  it("lists each kind with its count, nearest expiry, and the weekly 5-hour reset", () => {
-    expect(
-      claudeResetsText({
-        groups: [
-          group({ count: 2, earliestExpiry: "2026-12-03T12:00:00.000Z" }),
-          group({ kind: "fiveHour", label: "5-hour reset" }),
-        ],
-        weeklyFiveHourAvailable: true,
-      }),
-    ).toBe(
-      "2 full resets (earliest ends Dec 3) · 1 five-hour reset · weekly 5-hour reset available",
-    );
-  });
-
-  it("marks paused grants, keeps Claude's own names, and says when the weekly reset is spent", () => {
-    expect(
-      claudeResetsText({
-        groups: [
-          group({
-            kind: "fiveHour",
-            label: "5-hour reset",
-            paused: true,
-            earliestExpiry: "2026-12-01T12:00:00.000Z",
-          }),
-          group({ kind: "other", label: "Welcome back", count: 3 }),
-          group({ kind: "weekly", label: "Bonus weekly reset" }),
-        ],
-        weeklyFiveHourAvailable: false,
-      }),
-    ).toBe(
-      '1 five-hour reset (paused, ends Dec 1) · 3 "Welcome back" resets · 1 bonus weekly reset · weekly 5-hour reset used this week',
-    );
-  });
-
-  it("is only the weekly reset when no grants are banked", () => {
-    expect(claudeResetsText({ groups: [], weeklyFiveHourAvailable: true })).toBe(
-      "weekly 5-hour reset available",
-    );
-  });
 });
 
 const card = (resetCredits: number | null, resets: ClaudeResets | null) =>
@@ -92,7 +50,7 @@ const card = (resetCredits: number | null, resets: ClaudeResets | null) =>
   );
 
 describe("Claude card reset badge", () => {
-  it("shows a pill per kind, named on hover by its kind or model", () => {
+  it("shows the total; hovering lists each kind by its model or kind", () => {
     const html = card(4, {
       groups: [
         group({ label: "Free limit reset", count: 2, earliestExpiry: "2026-12-15T12:00:00Z" }),
@@ -104,11 +62,11 @@ describe("Claude card reset badge", () => {
       ],
       weeklyFiveHourAvailable: true,
     });
-    expect(html.match(/↺ /g)).toHaveLength(4);
-    expect(html).toContain('title="Full reset"');
-    expect(html).toContain('title="Fable reset"');
-    expect(html).toContain('title="5-hour reset (paused)"');
-    expect(html).toContain('title="5-hour reset"');
+    expect(html.match(/↺ /g)).toHaveLength(1);
+    expect(html).toContain("↺ 4");
+    expect(html).toContain(
+      'title="2 Full resets · 1 Fable reset · 1 5-hour reset (paused) · 1 weekly 5-hour reset"',
+    );
   });
 
   it("falls back to the total when Claude names no kinds", () => {

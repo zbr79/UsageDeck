@@ -3,7 +3,7 @@ import { Badge, HIT_24 } from "@/ui/controls";
 import { CopyIcon, EyeOffIcon } from "@/ui/Icons";
 import { WIDGET_SPEND_TONE, type Tone } from "@/ui/palette";
 import { claudeBars, codexBars, shownBars } from "@/lib/bars";
-import { claudeResetChips } from "@/lib/claude-resets";
+import { claudeResetsSummary } from "@/lib/claude-resets";
 import { cursorErrorHint, errorHint, isAuthRejected } from "@/lib/errors";
 import {
   apiByModel,
@@ -137,25 +137,18 @@ function planTone(plan: string): Tone {
   return "blue";
 }
 
-/** A pill per kind of Claude reset, "↺ 1", named on hover; "↺ 0" when none is in hand. */
+/** Claude's resets in hand, "↺ 2"; hovering names each kind: "1 Fable reset · 1 Full reset". */
 function ResetBadges({ total, resets }: { total: number; resets: ClaudeResets | null }) {
-  const chips = resets ? claudeResetChips(resets) : [];
-  if (chips.length === 0) {
-    return (
-      <Badge
-        scope="w"
-        tone={total > 0 ? "violet" : "gray"}
-        label={`Reset credits available: ${total}`}
-      >
-        ↺ {total}
-      </Badge>
-    );
-  }
-  return chips.map((chip) => (
-    <Badge key={chip.key} scope="w" tone={chip.muted ? "gray" : "violet"} label={chip.label}>
-      ↺ {chip.count}
+  const summary = resets ? claudeResetsSummary(resets) : "";
+  return (
+    <Badge
+      scope="w"
+      tone={total > 0 ? "violet" : "gray"}
+      label={summary || `Reset credits available: ${total}`}
+    >
+      ↺ {total}
     </Badge>
-  ));
+  );
 }
 
 /**
