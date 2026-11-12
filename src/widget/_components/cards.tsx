@@ -3,7 +3,7 @@ import { Badge, HIT_24 } from "@/ui/controls";
 import { CopyIcon, EyeOffIcon } from "@/ui/Icons";
 import { WIDGET_SPEND_TONE, type Tone } from "@/ui/palette";
 import { claudeBars, codexBars, shownBars } from "@/lib/bars";
-import { claudeResetsText } from "@/lib/claude-resets";
+import { claudeResetChips } from "@/lib/claude-resets";
 import { cursorErrorHint, errorHint, isAuthRejected } from "@/lib/errors";
 import {
   apiByModel,
@@ -28,6 +28,7 @@ import { isExhaustedWindow, isPassed, isUnknownWindow } from "@/lib/ranking";
 import { openCodeUsedUp, usedUp, type UsedUp } from "@/lib/used-up";
 import type {
   ClaudePace,
+  ClaudeResets,
   ModelShare,
   ClaudeUsage,
   CodexUsage,
@@ -134,6 +135,27 @@ function planTone(plan: string): Tone {
   if (normalized === "free") return "green";
   if (normalized === "ultra") return "amber";
   return "blue";
+}
+
+/** A pill per kind of Claude reset, "↺ 1", named on hover; "↺ 0" when none is in hand. */
+function ResetBadges({ total, resets }: { total: number; resets: ClaudeResets | null }) {
+  const chips = resets ? claudeResetChips(resets) : [];
+  if (chips.length === 0) {
+    return (
+      <Badge
+        scope="w"
+        tone={total > 0 ? "violet" : "gray"}
+        label={`Reset credits available: ${total}`}
+      >
+        ↺ {total}
+      </Badge>
+    );
+  }
+  return chips.map((chip) => (
+    <Badge key={chip.key} scope="w" tone={chip.muted ? "gray" : "violet"} label={chip.label}>
+      ↺ {chip.count}
+    </Badge>
+  ));
 }
 
 /**
@@ -715,18 +737,7 @@ export function ClaudeCard({
       hints={<SlotHints slot={slot} how="open Claude Code" />}
       badges={
         <>
-          {c?.resetCredits != null && (
-            <Badge
-              scope="w"
-              tone={c.resetCredits > 0 ? "violet" : "gray"}
-              label={
-                `Reset credits available: ${c.resetCredits}` +
-                (c.resets ? `. ${claudeResetsText(c.resets)}` : "")
-              }
-            >
-              ↺ {c.resetCredits}
-            </Badge>
-          )}
+          {c?.resetCredits != null && <ResetBadges total={c.resetCredits} resets={c.resets} />}
           {badge && (
             <Badge scope="w" tone={badgeTone}>
               {badge}
