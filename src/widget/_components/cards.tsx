@@ -206,6 +206,9 @@ export function OpenCodeCard({
     !!u && isUnknownWindow(u[w], row.stale, now);
   const reset = (w: "rolling" | "weekly" | "monthly", show: boolean) =>
     u && show && !unknown(w) ? formatUntil(u[w].resetsAt, now) : null;
+  // a full longer window grays the shorter ones, when its bar shows
+  const full = (w: "weekly" | "monthly") =>
+    !!u && show.has(w) && isExhaustedWindow(u[w], row.stale, now);
 
   const rejected = isAuthRejected(row.authExpired, row.error);
   const failure = errorHint(row.error, "add the key again in Settings");
@@ -273,10 +276,7 @@ export function OpenCodeCard({
               name="Rolling 5-hour window"
               percent={u.rolling.percent}
               unknown={unknown("rolling")}
-              dimmed={
-                isExhaustedWindow(u.weekly, row.stale, now) ||
-                isExhaustedWindow(u.monthly, row.stale, now)
-              }
+              dimmed={full("weekly") || full("monthly")}
               increased={increased("rolling")}
               reset={reset("rolling", primary)}
             />
@@ -287,7 +287,7 @@ export function OpenCodeCard({
               name="Weekly"
               percent={u.weekly.percent}
               unknown={unknown("weekly")}
-              dimmed={isExhaustedWindow(u.monthly, row.stale, now)}
+              dimmed={full("monthly")}
               increased={increased("weekly")}
               reset={reset("weekly", primary)}
             />
