@@ -202,6 +202,27 @@ export interface ClaudeScopedWindow extends ClaudeWindow {
   allowancePctOfWeekly: number | null;
 }
 
+/** Which limits a banked reset clears. */
+export type ClaudeResetKind = "full" | "fiveHour" | "weekly" | "other";
+
+/** Banked resets of one kind and name (Claude's `cedar_ember` grants). */
+export interface ClaudeResetGroup {
+  kind: ClaudeResetKind;
+  /** Claude's name for the grant, e.g. "Full reset" */
+  label: string;
+  count: number;
+  /** soonest expiry of the group's grants, or null when none expires */
+  earliestExpiry: string | null;
+  /** paused grants are listed but not counted in `resetCredits` */
+  paused: boolean;
+}
+
+export interface ClaudeResets {
+  groups: ClaudeResetGroup[];
+  /** the weekly free 5-hour reset: available, used this week, or not reported (null) */
+  weeklyFiveHourAvailable: boolean | null;
+}
+
 export interface ClaudeUsage {
   email: string | null;
   displayName: string | null;
@@ -214,7 +235,10 @@ export interface ClaudeUsage {
   weeklyOpus: ClaudeWindow | null;
   weeklySonnet: ClaudeWindow | null;
   weeklyScoped: ClaudeScopedWindow[];
+  /** resets in hand: unpaused banked resets plus the weekly 5-hour reset while available */
   resetCredits: number | null;
+  /** null when Claude lists no resets */
+  resets: ClaudeResets | null;
   billingType: string | null;
   rateLimitTier: string | null;
   orgUuid: string | null;

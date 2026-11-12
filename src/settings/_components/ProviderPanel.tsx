@@ -14,6 +14,7 @@ import type {
 } from "@/lib/types";
 import { ClaudeCard, CodexCard, CursorCard, GrokCard } from "@/widget/_components/cards";
 import { slotFromAccount as widgetSlot } from "@/widget/_lib/useWidgetData";
+import { claudeResetsText } from "@/lib/claude-resets";
 import { cardErrorKind } from "@/lib/errors";
 import type { SettingsPatch } from "@/lib/settings-schema";
 import { PAGE_TITLES, PROVIDER_ICONS } from "../_lib/pages";
@@ -160,6 +161,7 @@ export default function ProviderPanel({
             const key = accountKey(id, account.id);
             const isHidden = hidden(account.id);
             const shownName = nickname(account.id) || labelOf(id, account);
+            const resets = id === "claude" ? (account.usage as ClaudeUsage | null)?.resets : null;
             return (
               <AccountCell
                 key={account.id}
@@ -183,6 +185,7 @@ export default function ProviderPanel({
                     onSelect: () => refreshWidget(summaries.reloadAll),
                   },
                 ]}
+                footer={resets && `Resets: ${claudeResetsText(resets)}`}
                 card={(header) =>
                   providerCard(
                     id,

@@ -3,6 +3,7 @@ import { Badge, HIT_24 } from "@/ui/controls";
 import { CopyIcon, EyeOffIcon } from "@/ui/Icons";
 import { WIDGET_SPEND_TONE, type Tone } from "@/ui/palette";
 import { claudeBars, codexBars, shownBars } from "@/lib/bars";
+import { claudeResetsText } from "@/lib/claude-resets";
 import { cursorErrorHint, errorHint, isAuthRejected } from "@/lib/errors";
 import {
   apiByModel,
@@ -718,7 +719,10 @@ export function ClaudeCard({
             <Badge
               scope="w"
               tone={c.resetCredits > 0 ? "violet" : "gray"}
-              label={`Reset credits available: ${c.resetCredits}`}
+              label={
+                `Reset credits available: ${c.resetCredits}` +
+                (c.resets ? `. ${claudeResetsText(c.resets)}` : "")
+              }
             >
               ↺ {c.resetCredits}
             </Badge>
