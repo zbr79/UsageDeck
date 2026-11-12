@@ -134,7 +134,7 @@ export function useUpdateStatus(): UpdateStatus | null {
   return status;
 }
 
-/** The last check in words, for Settings → General → Updates; null before the first check. */
+/** The last check in words, for Settings → About → Updates; null before the first check. */
 export function lastCheckLine(status: UpdateStatus, at: (ms: number) => string): string | null {
   const check = status.lastCheck;
   if (!check || status.lastChecked == null) return null;

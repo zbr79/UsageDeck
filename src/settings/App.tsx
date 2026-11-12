@@ -91,7 +91,7 @@ export default function SettingsPage() {
   };
 
   // `select` only touches setters and refs, so the first one stays good.
-  useEffect(() => onShowUpdates(() => select("general")), []);
+  useEffect(() => onShowUpdates(() => select("about")), []);
 
   useEffect(() => {
     document.title = `${PAGE_TITLES[page]} - UsageDeck Settings`;
