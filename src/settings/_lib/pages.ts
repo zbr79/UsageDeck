@@ -1,7 +1,7 @@
 import type { WidgetProvider } from "@/lib/types";
 
-/** The settings window's pages: four fixed ones, one per provider, then About. */
-export type PageId = "general" | "appearance" | "widget" | WidgetProvider | "about";
+/** The settings window's pages: General, Widget, one per provider, then About. */
+export type PageId = "general" | "widget" | WidgetProvider | "about";
 
 export const PROVIDER_PAGES: readonly WidgetProvider[] = [
   "claude",
@@ -11,11 +11,10 @@ export const PROVIDER_PAGES: readonly WidgetProvider[] = [
   "opencode",
 ];
 
-const FIXED_PAGES = ["general", "appearance", "widget", "about"] as const;
+const FIXED_PAGES = ["general", "widget", "about"] as const;
 
 export const PAGE_TITLES: Record<PageId, string> = {
   general: "General",
-  appearance: "Appearance",
   widget: "Widget",
   about: "About",
   claude: "Claude",

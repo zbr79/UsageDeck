@@ -5,7 +5,7 @@ import { isContextMenuKey, menuFocusIndex, menuPosition } from "@/ui/menu-focus"
 
 describe("pageFromSearch", () => {
   it("opens the page named by ?page=", () => {
-    expect(pageFromSearch("?page=appearance")).toBe("appearance");
+    expect(pageFromSearch("?page=general")).toBe("general");
     expect(pageFromSearch("?page=widget&panel=light")).toBe("widget");
     expect(pageFromSearch("?panel=dark&page=opencode")).toBe("opencode");
     expect(pageFromSearch("?page=about")).toBe("about");
@@ -19,6 +19,11 @@ describe("pageFromSearch", () => {
     expect(pageFromSearch("")).toBe("general");
     expect(pageFromSearch("?page=nope")).toBe("general");
     expect(pageFromSearch("?page=")).toBe("general");
+  });
+
+  it("opens General for the Appearance page, now part of it", () => {
+    expect(pageFromSearch("?page=appearance")).toBe("general");
+    expect(pageFromSearch("?tab=appearance")).toBe("general");
   });
 
   it("keeps other parameters when the page changes", () => {

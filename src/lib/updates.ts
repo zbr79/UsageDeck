@@ -133,11 +133,3 @@ export function useUpdateStatus(): UpdateStatus | null {
   }, []);
   return status;
 }
-
-/** The last check in words, for Settings → About → Updates; null before the first check. */
-export function lastCheckLine(status: UpdateStatus, at: (ms: number) => string): string | null {
-  const check = status.lastCheck;
-  if (!check || status.lastChecked == null) return null;
-  const latest = check.latestVersion ? ` · newest release ${check.latestVersion}` : "";
-  return `Last check ${at(status.lastChecked)} (${check.trigger}): ${check.result}${latest}`;
-}

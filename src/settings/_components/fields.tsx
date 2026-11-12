@@ -74,7 +74,7 @@ export function SettingRow({
   live?: boolean;
   icon?: ReactNode;
   /** gets the ids of the title and description, for aria-labelledby / aria-describedby */
-  control: (labelId: string, descriptionId?: string) => ReactNode;
+  control?: (labelId: string, descriptionId?: string) => ReactNode;
 }) {
   const id = useId();
   const descId = useId();
@@ -95,9 +95,11 @@ export function SettingRow({
           </div>
         )}
       </div>
-      <div className="flex min-w-[120px] shrink-0 items-center justify-end gap-2">
-        {control(id, description ? descId : undefined)}
-      </div>
+      {control && (
+        <div className="flex min-w-[120px] shrink-0 items-center justify-end gap-2">
+          {control(id, description ? descId : undefined)}
+        </div>
+      )}
     </div>
   );
 }

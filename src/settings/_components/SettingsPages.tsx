@@ -3,21 +3,15 @@ import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { inTauri } from "@/lib/bridge";
 import { formatAgo, formatResetDuration } from "@/lib/format";
-import {
-  checkForUpdates,
-  installUpdate,
-  lastCheckLine,
-  useUpdateStatus,
-  type UpdateStatus,
-} from "@/lib/updates";
+import { checkForUpdates, installUpdate, useUpdateStatus, type UpdateStatus } from "@/lib/updates";
 import type { SettingsPatch } from "@/lib/settings-schema";
 import type { PanelTheme, Settings, ThemeMode, WidgetProvider } from "@/lib/types";
 import { Toggle } from "@/ui/Toggle";
 import appIcon from "../../../src-tauri/icons/128x128.png";
 import { moveItem, PAGE_TITLES, PROVIDER_ICONS } from "../_lib/pages";
 import { usePanelTheme } from "../_lib/theme";
-import { CopyDiagnosticsButton, formatAt } from "./Diagnostics";
-import { Page, primaryButton, Section, secondaryButton, selectClass, SettingRow } from "./fields";
+import { CopyDiagnosticsButton } from "./Diagnostics";
+import { Page, Section, secondaryButton, selectClass, SettingRow } from "./fields";
 
 type Update = (patch: SettingsPatch, success?: string) => Promise<boolean>;
 type Props = { settings: Settings; update: Update };
@@ -29,6 +23,17 @@ const ENABLED_KEY: Record<WidgetProvider, keyof Settings & `${string}Enabled`> =
   grok: "grokEnabled",
   opencode: "opencodeEnabled",
 };
+
+const PANEL_THEMES: { value: PanelTheme; label: string }[] = [
+  { value: "light", label: "Light" },
+  { value: "dark", label: "Dark" },
+  { value: "system", label: "Use system setting" },
+];
+const WIDGET_THEMES: { value: ThemeMode; label: string }[] = [
+  { value: "auto", label: "Match the screen behind it" },
+  { value: "light", label: "Light" },
+  { value: "dark", label: "Dark" },
+];
 
 export function GeneralPage({ settings, update }: Props) {
   return (
@@ -82,124 +87,6 @@ export function GeneralPage({ settings, update }: Props) {
           )}
         />
       </Section>
-    </Page>
-  );
-}
-
-/** The update row's description: the last check's result, or when it ran. */
-export function updateDescription(status: UpdateStatus, now: number): string {
-  const checked = status.lastChecked == null ? null : formatAgo(status.lastChecked, now);
-  switch (status.state) {
-    case "checking":
-      return "Checking for updates…";
-    case "downloading":
-      return `Downloading ${status.version}…`;
-    case "upToDate":
-      return `You're up to date · checked ${checked ?? "just now"}`;
-    case "failed":
-      return `Couldn't check for updates: ${status.message}`;
-    case "ready":
-      return `Version ${status.version} is downloaded and ready to install`;
-    case "idle":
-      return checked ? `Last checked ${checked}` : "Not checked yet";
-  }
-}
-
-function UpdatesSection({ settings, update }: Props) {
-  const status = useUpdateStatus();
-  const [now, setNow] = useState(() => Date.now());
-  const [restarting, setRestarting] = useState(false);
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 60_000);
-    return () => clearInterval(id);
-  }, []);
-  // "just now" right after a check, not the minute-old clock
-  useEffect(() => setNow(Date.now()), [status]);
-  if (!status) return null;
-  const busy = status.state === "checking" || status.state === "downloading";
-  const restart = () => {
-    setRestarting(true);
-    installUpdate().catch(() => setRestarting(false));
-  };
-  return (
-    <Section title="Updates">
-      <SettingRow
-        title={`UsageDeck ${status.currentVersion}`}
-        description={
-          updateDescription(status, now) +
-          (settings.autoInstallUpdates && status.state === "ready"
-            ? " · installs when you're away"
-            : "")
-        }
-        live
-        icon={<img src={appIcon} alt="" className="size-5" />}
-        control={(labelId, descId) =>
-          status.state === "ready" ? (
-            <button
-              type="button"
-              aria-describedby={descId}
-              disabled={restarting}
-              onClick={restart}
-              className={primaryButton}
-            >
-              {restarting ? "Restarting…" : "Restart to update"}
-            </button>
-          ) : (
-            <button
-              type="button"
-              aria-describedby={descId ?? labelId}
-              disabled={busy}
-              onClick={checkForUpdates}
-              className={secondaryButton}
-            >
-              Check for updates
-            </button>
-          )
-        }
-      />
-      <SettingRow
-        title="Install updates automatically"
-        control={(labelId) => (
-          <Toggle
-            labelledBy={labelId}
-            checked={settings.autoInstallUpdates}
-            onChange={(autoInstallUpdates) =>
-              void update(
-                { autoInstallUpdates },
-                autoInstallUpdates
-                  ? "Installs updates automatically"
-                  : "Updates wait for you to install them",
-              )
-            }
-          />
-        )}
-      />
-      <SettingRow
-        title="Diagnostics"
-        description={
-          lastCheckLine(status, (ms) => formatAt(ms, now)) ?? "No update check has finished yet"
-        }
-        live
-        control={() => <CopyDiagnosticsButton />}
-      />
-    </Section>
-  );
-}
-
-const PANEL_THEMES: { value: PanelTheme; label: string }[] = [
-  { value: "light", label: "Light" },
-  { value: "dark", label: "Dark" },
-  { value: "system", label: "Use system setting" },
-];
-const WIDGET_THEMES: { value: ThemeMode; label: string }[] = [
-  { value: "auto", label: "Match the screen behind it" },
-  { value: "light", label: "Light" },
-  { value: "dark", label: "Dark" },
-];
-
-export function AppearancePage({ settings, update }: Props) {
-  return (
-    <Page title="Appearance">
       <Section title="Theme">
         <SettingRow
           title="Settings theme"
@@ -259,44 +146,121 @@ export function AppearancePage({ settings, update }: Props) {
   );
 }
 
+/** The update row's description: the last check's result, or when it ran. */
+export function updateDescription(status: UpdateStatus, now: number): string {
+  const checked = status.lastChecked == null ? null : formatAgo(status.lastChecked, now);
+  switch (status.state) {
+    case "checking":
+      return "Checking for updates…";
+    case "downloading":
+      return `Downloading ${status.version}…`;
+    case "upToDate":
+      return `You're up to date · checked ${checked ?? "just now"}`;
+    case "failed":
+      return `Couldn't check for updates: ${status.message}`;
+    case "ready":
+      return `Version ${status.version} is downloaded and ready to install`;
+    case "idle":
+      return checked ? `Last checked ${checked}` : "Not checked yet";
+  }
+}
+
+function UpdatesSection({ settings, update }: Props) {
+  const status = useUpdateStatus();
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(id);
+  }, []);
+  // "just now" right after a check, not the minute-old clock
+  useEffect(() => setNow(Date.now()), [status]);
+  if (!status) return null;
+  return (
+    <Section title="Updates">
+      <SettingRow
+        title={`UsageDeck ${status.currentVersion}`}
+        description={
+          updateDescription(status, now) +
+          (settings.autoInstallUpdates && status.state === "ready"
+            ? " · installs when you're away"
+            : "")
+        }
+        live
+        icon={<img src={appIcon} alt="" className="size-5" />}
+      />
+      <SettingRow
+        title="Install updates automatically"
+        control={(labelId) => (
+          <Toggle
+            labelledBy={labelId}
+            checked={settings.autoInstallUpdates}
+            onChange={(autoInstallUpdates) =>
+              void update(
+                { autoInstallUpdates },
+                autoInstallUpdates
+                  ? "Installs updates automatically"
+                  : "Updates wait for you to install them",
+              )
+            }
+          />
+        )}
+      />
+      <SettingRow title="Diagnostics" control={() => <CopyDiagnosticsButton />} />
+    </Section>
+  );
+}
+
 /** Provider order (drag a row; arrow keys on its grip) and each provider's widget switch. */
 export function WidgetPage({ settings, update }: Props) {
   const light = usePanelTheme() === "light";
   const order = settings.providerOrder;
   const rows = useRef<(HTMLLIElement | null)[]>([]);
   const drag = useRef<{ id: WidgetProvider; pointerId: number } | null>(null);
-  const [dragging, setDragging] = useState<{ id: WidgetProvider; to: number } | null>(null);
+  // `gap` is where the row would land: before row `gap`, or after the last row at order.length.
+  const [dragging, setDragging] = useState<{ id: WidgetProvider; gap: number } | null>(null);
   const reorder = (from: number, to: number) => {
     if (from === to) return;
     void update({ providerOrder: moveItem(order, from, to) });
   };
-  const dropIndex = (y: number) => {
+  const dropGap = (y: number) => {
     for (let i = 0; i < order.length; i++) {
       const r = rows.current[i]?.getBoundingClientRect();
       if (r && y < r.top + r.height / 2) return i;
     }
-    return order.length - 1;
+    return order.length;
   };
   const onPointerDown = (e: PointerEvent<HTMLLIElement>, id: WidgetProvider) => {
     // The whole row drags, except its switch.
     if (e.button !== 0 || (e.target as HTMLElement).closest("button")) return;
     drag.current = { id, pointerId: e.pointerId };
     e.currentTarget.setPointerCapture(e.pointerId);
-    setDragging({ id, to: order.indexOf(id) });
+    setDragging({ id, gap: order.indexOf(id) });
   };
   const onPointerMove = (e: PointerEvent<HTMLLIElement>) => {
     const d = drag.current;
     if (!d || d.pointerId !== e.pointerId) return;
-    const to = dropIndex(e.clientY);
-    setDragging((prev) => (prev && prev.to !== to ? { ...prev, to } : prev));
+    const gap = dropGap(e.clientY);
+    setDragging((prev) => (prev && prev.gap !== gap ? { ...prev, gap } : prev));
   };
   const onPointerUp = (e: PointerEvent<HTMLLIElement>) => {
     const d = drag.current;
     if (!d || d.pointerId !== e.pointerId) return;
     drag.current = null;
     setDragging(null);
-    reorder(order.indexOf(d.id), dropIndex(e.clientY));
+    const from = order.indexOf(d.id);
+    const gap = dropGap(e.clientY);
+    reorder(from, gap > from ? gap - 1 : gap);
   };
+  const from = dragging ? order.indexOf(dragging.id) : -1;
+  const lineAt = dragging && dragging.gap !== from && dragging.gap !== from + 1 ? dragging.gap : -1;
+  const insertionLine = (edge: "top" | "bottom") => (
+    <span
+      aria-hidden="true"
+      className={`pointer-events-none absolute -inset-x-px h-0.5 rounded-full bg-(--p-accent) ${
+        edge === "top" ? "-top-[3px]" : "-bottom-[3px]"
+      }`}
+    />
+  );
 
   return (
     <Page title="Widget">
@@ -305,7 +269,7 @@ export function WidgetPage({ settings, update }: Props) {
           {order.map((id, i) => {
             const name = PAGE_TITLES[id];
             const key = ENABLED_KEY[id];
-            const target = dragging && dragging.to === i && dragging.id !== id;
+            const lifted = dragging?.id === id;
             return (
               <li
                 key={id}
@@ -319,10 +283,16 @@ export function WidgetPage({ settings, update }: Props) {
                   drag.current = null;
                   setDragging(null);
                 }}
-                className={`ud-row flex min-h-[52px] cursor-grab touch-none select-none items-center gap-3 rounded border bg-(--s-card) px-3 py-2 active:cursor-grabbing ${
-                  target ? "border-(--p-focus)" : "border-(--s-cardBorder)"
-                } ${dragging?.id === id ? "opacity-60" : ""}`}
+                className={`ud-row relative flex min-h-[52px] touch-none select-none items-center gap-3 rounded border border-(--s-cardBorder) bg-(--s-card) px-3 py-2 ${
+                  lifted
+                    ? "z-10 cursor-grabbing opacity-60 shadow-lg"
+                    : dragging
+                      ? "cursor-grabbing"
+                      : "cursor-grab hover:bg-[color-mix(in_srgb,var(--s-card),var(--p-text)_5%)]"
+                }`}
               >
+                {lineAt === i && insertionLine("top")}
+                {lineAt === order.length && i === order.length - 1 && insertionLine("bottom")}
                 <span
                   role="button"
                   tabIndex={0}
@@ -340,8 +310,8 @@ export function WidgetPage({ settings, update }: Props) {
                   <svg width="10" height="16" viewBox="0 0 10 16" fill="currentColor">
                     {[2, 8, 14].map((y) => (
                       <g key={y}>
-                        <circle cx="2.5" cy={y} r="1.3" />
-                        <circle cx="7.5" cy={y} r="1.3" />
+                        <circle cx="2.5" cy={y} r="1.6" />
+                        <circle cx="7.5" cy={y} r="1.6" />
                       </g>
                     ))}
                   </svg>
@@ -464,10 +434,7 @@ export function AboutPage({ settings, update }: Props) {
           <img src={appIcon} alt="" className="size-12" />
           <div>
             <div className="text-xl leading-7 font-semibold">UsageDeck</div>
-            <div className="text-xs text-(--p-muted)">
-              Version {version ?? "unknown"} · usage monitor for Claude, Codex, Cursor, Grok Bot and
-              OpenCode
-            </div>
+            <div className="text-xs text-(--p-muted)">Version {version ?? "unknown"}</div>
           </div>
         </div>
         <SettingRow
@@ -485,7 +452,6 @@ export function AboutPage({ settings, update }: Props) {
         />
         <SettingRow
           title="Source code"
-          description="github.com/zbr79/UsageDeck"
           control={(labelId) => (
             <button
               type="button"

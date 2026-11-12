@@ -14,7 +14,7 @@ import {
 import { Nav } from "./_components/Nav";
 import OpenCodeAccounts from "./_components/OpenCodeAccounts";
 import ProviderPanel from "./_components/ProviderPanel";
-import { AboutPage, AppearancePage, GeneralPage, WidgetPage } from "./_components/SettingsPages";
+import { AboutPage, GeneralPage, WidgetPage } from "./_components/SettingsPages";
 
 /** Settings-only surface colours (WinUI: cards sit one step off the page). */
 const SURFACES = {
@@ -102,8 +102,6 @@ export default function SettingsPage() {
     content = <p className="p-8 text-sm text-(--p-muted)">Loading…</p>;
   } else if (page === "general") {
     content = <GeneralPage settings={settings} update={update} />;
-  } else if (page === "appearance") {
-    content = <AppearancePage settings={settings} update={update} />;
   } else if (page === "widget") {
     content = <WidgetPage settings={settings} update={update} />;
   } else if (page === "about") {

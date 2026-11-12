@@ -223,10 +223,8 @@ uninstaller to also remove settings, logs and the stored OpenCode keys (details 
 
 - A normal window with a title bar and a taskbar button (960x680, resizable). It reopens where you
   left it, kept on a visible monitor, and closes only when asked: the X, Alt+F4, Ctrl+W or Esc
-- General: start with Windows, hide during full-screen apps, DeepSeek peak-hour warning, and
-  Updates (installed version, last check and its result, Check for updates, Restart to update,
-  Install updates automatically, Copy diagnostics)
-- Appearance: settings theme, widget theme, show provider names
+- General: start with Windows, hide during full-screen apps, DeepSeek peak-hour warning, settings
+  theme, widget theme, show provider names
 - Widget: provider order (drag the grip, or Move up / Move down), a "Show on widget" switch per
   provider, and **Hidden until reset**: the used-up cards you hid from the widget, each with a
   **Show** button that brings it back at once
@@ -245,10 +243,13 @@ uninstaller to also remove settings, logs and the stored OpenCode keys (details 
   "Not priced: <model ids>" line names it, and its replies stay out of the dollars
   The widget's Claude card shows the spend rate after its name (`$71/h`); its meter colours follow
   the percentage only (amber from 80%, red from 100%), and pace stays in the meter tooltip
-- About: version, log folder and the repository
+- About: version, log folder, the repository and Updates (installed version and the last check's
+  result, Install updates automatically, Copy diagnostics). **Check for updates** sits at the
+  bottom of the navigation, above About; once an update is downloaded it reads **Restart to
+  update**
 - Fully keyboard accessible: modal dialogs trap focus and Esc closes the topmost one first; menus
   use the arrow keys, Home and End; forced-colors (high contrast) is supported
-- `settings.html?page=<general|appearance|widget|claude|codex|cursor|grok|opencode|about>` opens a
+- `settings.html?page=<general|widget|claude|codex|cursor|grok|opencode|about>` opens a
   page directly (browser preview: add `&panel=light` or `&panel=dark`)
 - Browser preview of spend and pace: add `?pace=<lasts|limit|weekly|measuring|backfill|unpriced|fail>`
   to `widget.html` or `settings.html`
