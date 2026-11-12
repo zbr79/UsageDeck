@@ -184,6 +184,8 @@ export interface CodexUsage {
   weeklyResetAt: string | null;
   creditsBalance: number | null;
   resetCredits: number | null;
+  /** when each banked reset in hand expires, soonest first; absent in older caches */
+  resetExpiries?: string[];
   limitReached: boolean;
 }
 

@@ -72,34 +72,22 @@ fn stamp(ms: i64) -> String {
     )
 }
 
+/// The report: a header, then each (title, body) section after a blank line.
 fn report_text(
     app_version: &str,
     system: &str,
     generated: &str,
-    cursor: Option<&str>,
-    updater: &str,
-    claude_spend: &str,
-    claude_resets: &str,
+    sections: &[(&str, &str)],
 ) -> String {
-    let text = format!(
+    let mut text = format!(
         "UsageDeck diagnostics (holds no token, key or account name)\n\
          App: UsageDeck {app_version}\n\
          System: {system}\n\
-         Generated: {generated}\n\
-         \n\
-         Cursor\n\
-         {}\n\
-         \n\
-         Updater\n\
-         {updater}\n\
-         \n\
-         Claude spend\n\
-         {claude_spend}\n\
-         \n\
-         Claude resets\n\
-         {claude_resets}",
-        cursor.unwrap_or("No attempt yet since UsageDeck started")
+         Generated: {generated}"
     );
+    for (title, body) in sections {
+        text += &format!("\n\n{title}\n{body}");
+    }
     redact(&text)
 }
 
@@ -121,14 +109,25 @@ fn collect(app: &AppHandle) -> Diagnostics {
         || "No usage reply yet since UsageDeck started".to_string(),
         |(at, fields)| format!("Usage reply: {}\n{fields}", stamp(at)),
     );
+    let codex_resets = crate::providers::codex::last_resets_report().map_or_else(
+        || "No usage reply yet since UsageDeck started".to_string(),
+        |(at, fields)| format!("Fetched: {}\n{fields}", stamp(at)),
+    );
+    let cursor_report = cursor.as_ref().map_or_else(
+        || "No attempt yet since UsageDeck started".to_string(),
+        |c| c.report(&chrono::Local),
+    );
     let report = report_text(
         &app_version,
         &system,
         &stamp(chrono::Utc::now().timestamp_millis()),
-        cursor.as_ref().map(|c| c.report(&chrono::Local)).as_deref(),
-        &updater_report,
-        &claude_spend,
-        &claude_resets,
+        &[
+            ("Cursor", &cursor_report),
+            ("Updater", &updater_report),
+            ("Claude spend", &claude_spend),
+            ("Claude resets", &claude_resets),
+            ("Codex resets", &codex_resets),
+        ],
     );
     Diagnostics {
         cursor_reason: cursor.as_ref().and_then(|c| c.reason(&chrono::Local)),
@@ -184,20 +183,17 @@ mod tests {
             "1.4.4",
             "Windows 11 Pro 24H2 (build 26100)",
             "2026-11-11 14:03:00 +00:00",
-            Some(cursor),
-            updater,
-            "Not priced (last 7 days): claude-opus-6 (4 replies, not in the dollar figures)",
-            "Keys: cedar_ember object, juniper_tide null, iguana_necktie null, amber_gauge absent",
+            &[
+                ("Cursor", cursor),
+                ("Updater", updater),
+                ("Codex resets", "Usage reply available_count: 1"),
+            ],
         );
-        assert!(text.contains(cursor));
-        assert!(text.contains(updater));
-        assert!(text.ends_with(
-            "\n\nClaude spend\nNot priced (last 7 days): claude-opus-6 (4 replies, not in the dollar figures)\n\n\
-             Claude resets\nKeys: cedar_ember object, juniper_tide null, iguana_necktie null, amber_gauge absent"
-        ));
         assert!(text.starts_with(
             "UsageDeck diagnostics (holds no token, key or account name)\nApp: UsageDeck 1.4.4\n"
         ));
+        assert!(text.contains(&format!("\n\nCursor\n{cursor}\n\nUpdater\n{updater}")));
+        assert!(text.ends_with("\n\nCodex resets\nUsage reply available_count: 1"));
 
         let jwt =
             "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhdXRoMHx1c2VyXzAxQUJDIn0.c2lnbmF0dXJlc2lnbmF0dXJl";
@@ -205,16 +201,9 @@ mod tests {
             "1.4.4",
             "Windows",
             "now",
-            Some(&format!("oops {jwt}")),
-            updater,
-            "",
-            "",
+            &[("Cursor", &format!("oops {jwt}"))],
         );
         assert!(!leaked.contains("eyJ"));
         assert!(leaked.contains("oops [redacted]"));
-        assert!(
-            report_text("1.4.4", "Windows", "now", None, updater, "", "")
-                .contains("Cursor\nNo attempt yet since UsageDeck started")
-        );
     }
 }

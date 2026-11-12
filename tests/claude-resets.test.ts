@@ -1,9 +1,9 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { claudeResetRows } from "@/lib/claude-resets";
+import { claudeResetRows, codexResetRows } from "@/lib/claude-resets";
 import { DEFAULT_SETTINGS } from "@/lib/settings-schema";
-import type { ClaudeResetGroup, ClaudeResets, ClaudeUsage } from "@/lib/types";
+import type { ClaudeResetGroup, ClaudeResets, ClaudeUsage, CodexUsage } from "@/lib/types";
 import { ClaudeCard } from "@/widget/_components/cards";
 
 const group = (g: Partial<ClaudeResetGroup>): ClaudeResetGroup => ({
@@ -65,7 +65,7 @@ describe("Claude card reset badge", () => {
     expect(html.match(/↺ /g)).toHaveLength(1);
     expect(html).toContain("↺ 4");
     expect(html).toContain(
-      'title="2 Full resets · 1 Fable reset · 1 5-hour reset (paused) · 1 weekly 5-hour reset"',
+      'title="2 Full resets · 1 Fable reset · 1 5-hour reset (paused) · 1 5-hour reset"',
     );
   });
 
@@ -79,18 +79,41 @@ describe("Claude card reset badge", () => {
 });
 
 describe("claudeResetRows", () => {
-  it("gives one row per kind with its own label, count and expiry, then the weekly reset", () => {
+  it("names each row by type, merging grants of one type, paused ones apart", () => {
     const resets: ClaudeResets = {
       groups: [
-        group({ label: "free limit reset", count: 2, earliestExpiry: "2026-12-15T12:00:00Z" }),
+        group({ label: "Free limit reset", earliestExpiry: "2026-12-15T12:00:00Z" }),
+        group({
+          label: "One full limit reset (November 2026)",
+          earliestExpiry: "2026-12-10T12:00:00Z",
+        }),
+        group({
+          kind: "weekly",
+          label: "New model launch: one Fable reset for Max, Team Premium and Enterprise Premium",
+          earliestExpiry: "2027-03-08T12:00:00Z",
+        }),
         group({ kind: "fiveHour", label: "", paused: true }),
       ],
-      weeklyFiveHourAvailable: false,
+      weeklyFiveHourAvailable: true,
     };
     expect(claudeResetRows(resets).map(({ title, detail }) => [title, detail])).toEqual([
-      ["Free limit reset", "2 left · earliest ends Dec 15"],
+      ["Full reset", "2 left · ends Dec 10"],
+      ["Fable reset", "1 left · ends Mar 8"],
       ["5-hour reset", "1 left · paused"],
-      ["Weekly 5-hour reset", "Used this week"],
+      ["5-hour reset", "1 left"],
     ]);
+  });
+});
+
+describe("codexResetRows", () => {
+  it("is one row with the soonest expiry, and none without resets", () => {
+    const usage = (resetCredits: number | null, resetExpiries?: string[]) =>
+      ({ resetCredits, resetExpiries }) as CodexUsage;
+    expect(codexResetRows(usage(2, ["2026-12-01T12:00:00Z"]))).toEqual([
+      { key: "codex", title: "Reset", detail: "2 left · ends Dec 1" },
+    ]);
+    expect(codexResetRows(usage(1))[0]?.detail).toBe("1 left");
+    expect(codexResetRows(usage(0))).toEqual([]);
+    expect(codexResetRows(usage(null))).toEqual([]);
   });
 });

@@ -15,6 +15,8 @@ use std::sync::LazyLock;
 use std::time::Duration;
 
 const USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
+/// The banked rate-limit resets with their expiry (private, like wham/usage; read only).
+const RESETS_URL: &str = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
 const USER_AGENT: &str = "codex-cli/0.44.0";
 const SECTION: &str = "codex";
 
@@ -35,6 +37,8 @@ pub struct CodexUsage {
     pub weekly_reset_at: Option<String>,
     pub credits_balance: Option<f64>,
     pub reset_credits: Option<f64>,
+    /// when each banked reset in hand expires, soonest first (from wham/rate-limit-reset-credits)
+    pub reset_expiries: Vec<String>,
     pub limit_reached: bool,
 }
 
@@ -86,6 +90,7 @@ pub fn parse_codex_usage(bytes: &[u8]) -> Result<CodexUsage, ProviderError> {
         weekly_reset_at: to_iso(&s["reset_at"]),
         credits_balance,
         reset_credits: number_or_null(&raw.rate_limit_reset_credits["available_count"]),
+        reset_expiries: Vec::new(),
         limit_reached: rl.limit_reached == Value::Bool(true),
     })
 }
@@ -102,6 +107,133 @@ pub fn classify_reply(status: u16, bytes: &[u8]) -> Result<CodexUsage, ProviderE
         s if !(200..300).contains(&s) => Err(ProviderError::Http(s)),
         _ => parse_codex_usage(bytes),
     }
+}
+
+// ---- banked resets ---------------------------------------------------------------------------
+
+/// What the resets list said: its count, and the expiry of each reset still in hand.
+#[derive(Debug, Default, PartialEq)]
+struct ResetList {
+    available: Option<f64>,
+    expiries: Vec<String>,
+}
+
+/// A credit that was spent or expired names it in a `*_at` field or its `status`.
+fn spent(credit: &serde_json::Map<String, Value>) -> bool {
+    let used = ["redeemed_at", "consumed_at", "used_at"]
+        .iter()
+        .any(|k| credit.get(*k).is_some_and(|v| !v.is_null()));
+    let status = credit
+        .get("status")
+        .and_then(Value::as_str)
+        .map(str::to_lowercase);
+    used || matches!(
+        status.as_deref(),
+        Some("redeemed" | "consumed" | "used" | "expired")
+    )
+}
+
+fn parse_reset_list(reply: &Value, now: &str) -> ResetList {
+    let mut expiries: Vec<String> = reply["credits"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_object)
+                .filter(|c| !spent(c))
+                .filter_map(|c| to_iso(c.get("expires_at").unwrap_or(&Value::Null)))
+                .filter(|at| at.as_str() > now)
+                .collect()
+        })
+        .unwrap_or_default();
+    expiries.sort();
+    ResetList {
+        available: number_or_null(&reply["available_count"]),
+        expiries,
+    }
+}
+
+/// Names and types only: the reply's top-level keys and the first credit's keys, for diagnostics.
+fn shape(reply: &Value) -> String {
+    let keys = |v: &Value| {
+        v.as_object().map_or_else(
+            || "not an object".to_string(),
+            |o| o.keys().cloned().collect::<Vec<_>>().join(", "),
+        )
+    };
+    let first = reply["credits"].get(0).map_or("none".to_string(), keys);
+    format!("keys: {}; first credit keys: {first}", keys(reply))
+}
+
+/// When and what the last resets fetch saw, for the diagnostics report.
+static LAST_RESETS: std::sync::Mutex<Option<(i64, String)>> = std::sync::Mutex::new(None);
+
+pub fn last_resets_report() -> Option<(i64, String)> {
+    LAST_RESETS.lock().ok().and_then(|r| r.clone())
+}
+
+fn note_resets(usage_count: Option<f64>, line: String) {
+    let usage = usage_count.map_or("absent".to_string(), |n| n.to_string());
+    if let Ok(mut last) = LAST_RESETS.lock() {
+        *last = Some((
+            chrono::Utc::now().timestamp_millis(),
+            format!("Usage reply available_count: {usage}\nResets list: {line}"),
+        ));
+    }
+}
+
+/// GET the resets list. Best effort: the card keeps wham/usage's count when this fails.
+async fn fetch_resets(
+    http: &reqwest::Client,
+    account: &CodexAccount,
+    usage_count: Option<f64>,
+) -> Option<ResetList> {
+    let mut req = http
+        .get(RESETS_URL)
+        .bearer_auth(&account.token)
+        .header(reqwest::header::USER_AGENT, USER_AGENT)
+        .timeout(Duration::from_secs(10));
+    if let Some(id) = &account.account_id {
+        req = req.header("chatgpt-account-id", id);
+    }
+    let resp = match req.send().await {
+        Ok(r) => r,
+        Err(_) => {
+            note_resets(usage_count, "network error".into());
+            return None;
+        }
+    };
+    let status = resp.status().as_u16();
+    let reply = resp
+        .bytes()
+        .await
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+    let Some(reply) = reply.filter(|_| (200..300).contains(&status)) else {
+        note_resets(usage_count, format!("HTTP {status}, no JSON reply used"));
+        return None;
+    };
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let list = parse_reset_list(&reply, &now);
+    note_resets(
+        usage_count,
+        format!(
+            "HTTP {status}; available_count {}; {} in hand with an expiry; {}",
+            list.available
+                .map_or("absent".to_string(), |n| n.to_string()),
+            list.expiries.len(),
+            shape(&reply)
+        ),
+    );
+    Some(list)
+}
+
+/// The usage with the resets list's expiries, and its count when wham/usage had none.
+fn with_resets(mut usage: CodexUsage, list: Option<ResetList>) -> CodexUsage {
+    if let Some(list) = list {
+        usage.reset_credits = usage.reset_credits.or(list.available);
+        usage.reset_expiries = list.expiries;
+    }
+    usage
 }
 
 // ---- auth.json ------------------------------------------------------------------------------
@@ -242,9 +374,12 @@ pub async fn accounts(core: &Core) -> Vec<Value> {
                 load: Box::pin(async move {
                     CACHE
                         .get(&core.cache, &key, |_| async move {
-                            fetch_usage(&core.http, &account)
+                            let usage = fetch_usage(&core.http, &account)
                                 .await
-                                .map_err(FetchError::from)
+                                .map_err(FetchError::from)?;
+                            let list =
+                                fetch_resets(&core.http, &account, usage.reset_credits).await;
+                            Ok(with_resets(usage, list))
                         })
                         .await
                 }),
@@ -273,6 +408,33 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/codex/invalid.json"
     ));
+
+    #[test]
+    fn the_resets_list_keeps_unspent_unexpired_credits_soonest_first() {
+        let reply = serde_json::json!({
+            "available_count": 2,
+            "credits": [
+                { "granted_at": 1790000000, "expires_at": "2026-12-20T00:00:00Z" },
+                { "expires_at": 1796000000, "status": "available" },
+                { "expires_at": "2026-12-01T00:00:00Z", "redeemed_at": "2026-11-01T00:00:00Z" },
+                { "expires_at": "2026-11-01T00:00:00Z" },
+                { "granted_at": 1790000000 }
+            ]
+        });
+        let list = parse_reset_list(&reply, "2026-11-12T00:00:00.000Z");
+        assert_eq!(list.available, Some(2.0));
+        assert_eq!(
+            list.expiries,
+            ["2026-11-30T00:53:20.000Z", "2026-12-20T00:00:00.000Z"]
+        );
+        assert_eq!(
+            shape(&reply),
+            "keys: available_count, credits; first credit keys: expires_at, granted_at"
+        );
+        let usage = with_resets(CodexUsage::default(), Some(list));
+        assert_eq!(usage.reset_credits, Some(2.0));
+        assert_eq!(usage.reset_expiries.len(), 2);
+    }
 
     #[test]
     fn codex_ok_fixture_parses_with_weekly_window() {

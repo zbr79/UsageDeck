@@ -103,8 +103,8 @@ export function AccountCell({
       }}
     >
       {aside ? (
-        <div className="flex items-stretch gap-3">
-          <div className="min-w-0 flex-1 *:h-full">{card({ headerActions: actions })}</div>
+        <div className="grid grid-cols-[minmax(0,1fr)_15rem] gap-3 *:min-w-0">
+          <div className="*:h-full">{card({ headerActions: actions })}</div>
           {aside}
         </div>
       ) : (
