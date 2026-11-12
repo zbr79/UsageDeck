@@ -159,9 +159,6 @@ const SEVERITY_FILL: Record<MeterSeverity, string> = {
   danger: "var(--w-barDanger)",
 };
 
-/** How much of the fill colour a meter segment keeps; the rest is black. */
-const SEGMENT_MIX = "65%";
-
 /** Usage meter: label, percent, bar, optional even-pace tick, optional reset countdown. */
 export function Meter({
   label,
@@ -251,7 +248,7 @@ export function Meter({
                 className="h-full rounded-full transition-colors duration-700"
                 style={{
                   width: `${Math.min(100, (Math.max(0, part.pct) / Math.min(value, 100)) * 100)}%`,
-                  background: `color-mix(in srgb, ${fill} ${SEGMENT_MIX}, black)`,
+                  background: "var(--w-barFable)",
                 }}
               />
             )}

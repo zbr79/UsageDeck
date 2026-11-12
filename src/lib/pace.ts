@@ -243,7 +243,7 @@ export function calibrationText(usdPerWeeklyPct: number | null): string | null {
     : `1% of your weekly limit ≈ ${formatUsd(usdPerWeeklyPct)} of usage`;
 }
 
-/** A darker part at the start of a meter's fill: the points one model used, and what to say. */
+/** A purple part at the start of a meter's fill: the points one model used, and what to say. */
 export interface MeterSegment {
   pct: number;
   title: string;
