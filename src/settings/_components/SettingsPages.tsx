@@ -216,38 +216,51 @@ export function WidgetPage({ settings, update }: Props) {
   const order = settings.providerOrder;
   const rows = useRef<(HTMLLIElement | null)[]>([]);
   const drag = useRef<{ id: WidgetProvider; pointerId: number } | null>(null);
-  const [dragging, setDragging] = useState<{ id: WidgetProvider; to: number } | null>(null);
+  // `gap` is where the row would land: before row `gap`, or after the last row at order.length.
+  const [dragging, setDragging] = useState<{ id: WidgetProvider; gap: number } | null>(null);
   const reorder = (from: number, to: number) => {
     if (from === to) return;
     void update({ providerOrder: moveItem(order, from, to) });
   };
-  const dropIndex = (y: number) => {
+  const dropGap = (y: number) => {
     for (let i = 0; i < order.length; i++) {
       const r = rows.current[i]?.getBoundingClientRect();
       if (r && y < r.top + r.height / 2) return i;
     }
-    return order.length - 1;
+    return order.length;
   };
   const onPointerDown = (e: PointerEvent<HTMLLIElement>, id: WidgetProvider) => {
     // The whole row drags, except its switch.
     if (e.button !== 0 || (e.target as HTMLElement).closest("button")) return;
     drag.current = { id, pointerId: e.pointerId };
     e.currentTarget.setPointerCapture(e.pointerId);
-    setDragging({ id, to: order.indexOf(id) });
+    setDragging({ id, gap: order.indexOf(id) });
   };
   const onPointerMove = (e: PointerEvent<HTMLLIElement>) => {
     const d = drag.current;
     if (!d || d.pointerId !== e.pointerId) return;
-    const to = dropIndex(e.clientY);
-    setDragging((prev) => (prev && prev.to !== to ? { ...prev, to } : prev));
+    const gap = dropGap(e.clientY);
+    setDragging((prev) => (prev && prev.gap !== gap ? { ...prev, gap } : prev));
   };
   const onPointerUp = (e: PointerEvent<HTMLLIElement>) => {
     const d = drag.current;
     if (!d || d.pointerId !== e.pointerId) return;
     drag.current = null;
     setDragging(null);
-    reorder(order.indexOf(d.id), dropIndex(e.clientY));
+    const from = order.indexOf(d.id);
+    const gap = dropGap(e.clientY);
+    reorder(from, gap > from ? gap - 1 : gap);
   };
+  const from = dragging ? order.indexOf(dragging.id) : -1;
+  const lineAt = dragging && dragging.gap !== from && dragging.gap !== from + 1 ? dragging.gap : -1;
+  const insertionLine = (edge: "top" | "bottom") => (
+    <span
+      aria-hidden="true"
+      className={`pointer-events-none absolute -inset-x-px h-0.5 rounded-full bg-(--p-accent) ${
+        edge === "top" ? "-top-[3px]" : "-bottom-[3px]"
+      }`}
+    />
+  );
 
   return (
     <Page title="Widget">
@@ -256,7 +269,7 @@ export function WidgetPage({ settings, update }: Props) {
           {order.map((id, i) => {
             const name = PAGE_TITLES[id];
             const key = ENABLED_KEY[id];
-            const target = dragging && dragging.to === i && dragging.id !== id;
+            const lifted = dragging?.id === id;
             return (
               <li
                 key={id}
@@ -270,10 +283,16 @@ export function WidgetPage({ settings, update }: Props) {
                   drag.current = null;
                   setDragging(null);
                 }}
-                className={`ud-row flex min-h-[52px] cursor-grab touch-none select-none items-center gap-3 rounded border bg-(--s-card) px-3 py-2 active:cursor-grabbing ${
-                  target ? "border-(--p-focus)" : "border-(--s-cardBorder)"
-                } ${dragging?.id === id ? "opacity-60" : ""}`}
+                className={`ud-row relative flex min-h-[52px] touch-none select-none items-center gap-3 rounded border border-(--s-cardBorder) bg-(--s-card) px-3 py-2 ${
+                  lifted
+                    ? "z-10 cursor-grabbing opacity-60 shadow-lg"
+                    : dragging
+                      ? "cursor-grabbing"
+                      : "cursor-grab hover:bg-[color-mix(in_srgb,var(--s-card),var(--p-text)_5%)]"
+                }`}
               >
+                {lineAt === i && insertionLine("top")}
+                {lineAt === order.length && i === order.length - 1 && insertionLine("bottom")}
                 <span
                   role="button"
                   tabIndex={0}
@@ -291,8 +310,8 @@ export function WidgetPage({ settings, update }: Props) {
                   <svg width="10" height="16" viewBox="0 0 10 16" fill="currentColor">
                     {[2, 8, 14].map((y) => (
                       <g key={y}>
-                        <circle cx="2.5" cy={y} r="1.3" />
-                        <circle cx="7.5" cy={y} r="1.3" />
+                        <circle cx="2.5" cy={y} r="1.6" />
+                        <circle cx="7.5" cy={y} r="1.6" />
                       </g>
                     ))}
                   </svg>
