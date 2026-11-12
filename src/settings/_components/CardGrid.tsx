@@ -53,7 +53,7 @@ export function AccountCell({
   onShownChange: (next: boolean) => void;
   menuItems: MenuItem[];
   card: (header: CardHeader) => ReactNode;
-  /** shown to the card's right */
+  /** shown to the card's right, each taking half the row */
   aside?: ReactNode;
 }) {
   const more = useRef<HTMLButtonElement>(null);
@@ -103,7 +103,7 @@ export function AccountCell({
       }}
     >
       {aside ? (
-        <div className="grid grid-cols-[minmax(0,1fr)_15rem] gap-3 *:min-w-0">
+        <div className="grid grid-cols-2 gap-3 *:min-w-0">
           <div className="*:h-full">{card({ headerActions: actions })}</div>
           {aside}
         </div>
