@@ -85,28 +85,36 @@ export function claudeResetRows(resets: ClaudeResets): ResetRow[] {
 export interface ResetChip {
   key: string;
   count: number;
-  /** "Free limit reset: 1 left · ends Dec 15" */
+  /** "Full reset", "Fable reset" */
   label: string;
   /** paused grants, or nothing usable: drawn gray */
   muted: boolean;
 }
 
+const SHORT: Record<ClaudeResetKind, string> = {
+  full: "Full reset",
+  fiveHour: "5-hour reset",
+  weekly: "Weekly reset",
+  other: "Reset",
+};
+
+/** "Fable reset" when the grant names a model, else its kind: "Full reset". */
+function shortName(g: ClaudeResetGroup): string {
+  const model = /\b(fable|opus|sonnet|haiku)\b/i.exec(g.label)?.[1];
+  if (model) return `${model.charAt(0).toUpperCase()}${model.slice(1).toLowerCase()} reset`;
+  return SHORT[g.kind];
+}
+
 /** A pill per kind of reset in hand; the weekly 5-hour reset only while it is available. */
 export function claudeResetChips(resets: ClaudeResets): ResetChip[] {
-  const rows = claudeResetRows(resets);
   const chips = resets.groups.map((g, i) => ({
-    key: rows[i]!.key,
+    key: `${g.kind}-${i}`,
     count: g.count,
-    label: `${rows[i]!.title}: ${rows[i]!.detail}`,
+    label: g.paused ? `${shortName(g)} (paused)` : shortName(g),
     muted: g.paused || g.count === 0,
   }));
   if (resets.weeklyFiveHourAvailable) {
-    chips.push({
-      key: "weekly-five-hour",
-      count: 1,
-      label: "Weekly 5-hour reset: Available",
-      muted: false,
-    });
+    chips.push({ key: "weekly-five-hour", count: 1, label: "5-hour reset", muted: false });
   }
   return chips;
 }
