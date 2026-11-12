@@ -733,6 +733,7 @@ function mockReport(): Diagnostics {
       ? `Last check: ${new Date(updateStatus.lastChecked).toISOString()} (${check.trigger}) -> ${check.result}; latest release seen: ${check.latestVersion ?? "not learned"}`
       : "Last check: none since UsageDeck started",
     `Status: ${updateStatus.state}`,
+    `Auto-install: ${settings.autoInstallUpdates ? "on" : "off"}`,
   ].join("\n");
   const system = "Windows 11 Pro 24H2 (build 26100)";
   const report = [
