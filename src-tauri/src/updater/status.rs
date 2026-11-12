@@ -1,4 +1,4 @@
-//! What the updater is doing, as Settings → General → Updates renders it, and how each step
+//! What the updater is doing, as Settings → About → Updates renders it, and how each step
 //! of a check changes it. No I/O here, so the tests run on any platform.
 //!
 //! Only a check the user asked for shows its progress and result. A background check shows

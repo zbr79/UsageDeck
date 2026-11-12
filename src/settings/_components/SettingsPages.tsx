@@ -85,7 +85,6 @@ export function GeneralPage({ settings, update }: Props) {
           )}
         />
       </Section>
-      <UpdatesSection />
     </Page>
   );
 }
@@ -487,6 +486,7 @@ export function AboutPage() {
           )}
         />
       </Section>
+      <UpdatesSection />
     </Page>
   );
 }

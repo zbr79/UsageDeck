@@ -71,7 +71,7 @@ export function Nav({
       onSelect={onSelect}
       icon={icon}
       indent={indent}
-      badge={page === "general" && updateReady ? "Update ready" : undefined}
+      badge={page === "about" && updateReady ? "Update ready" : undefined}
     />
   );
   return (

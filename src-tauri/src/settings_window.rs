@@ -233,7 +233,7 @@ fn place(app: &AppHandle, window: &WebviewWindow) {
     ));
 }
 
-fn create(app: &AppHandle) -> tauri::Result<WebviewWindow> {
+fn create(app: &AppHandle, page: Option<&str>) -> tauri::Result<WebviewWindow> {
     let panel_theme = app.state::<Core>().store.get_settings().panel_theme;
     // "Use system setting": no forced theme, so the caption follows Windows live. The first
     // background colour comes from the widget window, which never forces a theme.
@@ -256,7 +256,7 @@ fn create(app: &AppHandle) -> tauri::Result<WebviewWindow> {
         Color(0xff, 0xff, 0xff, 0xff)
     };
     let mut builder =
-        WebviewWindowBuilder::new(app, SETTINGS, WebviewUrl::App("settings.html".into()))
+        WebviewWindowBuilder::new(app, SETTINGS, WebviewUrl::App(settings_url(page).into()))
             .title("UsageDeck Settings")
             .inner_size(DEFAULT_SIZE.0, DEFAULT_SIZE.1)
             .min_inner_size(MIN_SIZE.0, MIN_SIZE.1)
@@ -275,12 +275,12 @@ fn create(app: &AppHandle) -> tauri::Result<WebviewWindow> {
     builder.build()
 }
 
-fn build(app: &AppHandle) {
+fn build(app: &AppHandle, page: Option<&'static str>) {
     if let Some(window) = app.get_webview_window(SETTINGS) {
         let _ = window.set_focus();
         return;
     }
-    let window = match create(app) {
+    let window = match create(app, page) {
         Ok(w) => w,
         Err(e) => {
             log::warn!("could not open settings: {e}");
@@ -306,6 +306,20 @@ fn build(app: &AppHandle) {
 
 /// Open the settings window, or focus it when it is already open.
 pub fn show_settings(app: &AppHandle) {
+    show_settings_at(app, None);
+}
+
+/// The settings page URL; `page` opens that page first (`settings.html?page=about`).
+fn settings_url(page: Option<&str>) -> String {
+    match page {
+        Some(page) => format!("settings.html?page={page}"),
+        None => "settings.html".to_string(),
+    }
+}
+
+/// Open the settings window on `page` when it is not open yet, or focus it when it is (the
+/// caller tells an open window where to go).
+pub fn show_settings_at(app: &AppHandle, page: Option<&'static str>) {
     if let Some(window) = app.get_webview_window(SETTINGS) {
         let _ = window.unminimize();
         let _ = window.show();
@@ -319,7 +333,7 @@ pub fn show_settings(app: &AppHandle) {
     }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        build(&app);
+        build(&app, page);
         BUILDING.store(false, Ordering::SeqCst);
     });
 }

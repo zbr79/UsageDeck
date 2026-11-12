@@ -26,7 +26,7 @@ pub struct Diagnostics {
     /// why the Cursor card has no fresh usage, or None when it has
     cursor_reason: Option<String>,
     updater: UpdateStatus,
-    /// the updater's lines of the report, for Settings → General → Updates
+    /// the updater's lines of the report, for Settings → About → Updates
     updater_report: String,
     /// everything above as text, for the clipboard
     report: String,

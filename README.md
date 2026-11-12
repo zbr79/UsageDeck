@@ -78,8 +78,8 @@ all shortcuts. Each release also has the plain NSIS installer, `UsageDeck_<versi
 
 UsageDeck checks GitHub 15 seconds after it starts and then every hour. When a newer version is
 out, it downloads the installer in the background and checks its size and SHA-256 against the
-release. The widget shows nothing about updates. Everything is in Settings → General → Updates,
-and a dot on **General** in the settings navigation means an update is ready:
+release. The widget shows nothing about updates. Everything is in Settings → About → Updates,
+and a dot on **About** in the settings navigation means an update is ready:
 
 - **Restart to update** installs the update silently and starts the new version. No installer
   window opens; the widget disappears for a few seconds and comes back updated. Until you restart,
@@ -169,7 +169,7 @@ You do not need the log files to see why a card is stale or an update did not sh
   token is stored (plain or `cursor-safe-storage:v1`) and whether it decrypted, the first 8 hex
   characters of the token's SHA-256 and when the token expires, each request with its endpoint,
   HTTP status and the server's error text, which source gave the usage, and the reason in one line.
-- **Settings → General → Updates** shows the last update check: when, manual or background, the
+- **Settings → About → Updates** shows the last update check: when, manual or background, the
   result, and the newest release GitHub named.
 - **Copy diagnostics** (on both pages) copies all of it as text, with the UsageDeck and Windows
   versions and the Claude models of the last 7 days that have no price, ready to paste into an
