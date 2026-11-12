@@ -11,7 +11,6 @@ import {
   SPEND_BAND_TONE,
   spendBand,
   spendRateTitle,
-  targetBandText,
   hourlyOldestFirst,
   hourlySummary,
   meterPaceText,
@@ -134,10 +133,6 @@ describe("spendBand", () => {
 });
 
 describe("spend target text", () => {
-  it("states the green band", () => {
-    expect(targetBandText(100)).toBe("Green between $80 and $120 per hour");
-    expect(targetBandText(5)).toBe("Green between $4.0 and $6.0 per hour");
-  });
   it("tooltip says what the number is, the target, the band and where the rate falls", () => {
     const base = "Claude Code spend over the last hour (API-equivalent, this PC)";
     expect(spendRateTitle(35, null)).toBe(base);

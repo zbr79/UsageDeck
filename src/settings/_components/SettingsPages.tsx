@@ -36,7 +36,6 @@ export function GeneralPage({ settings, update }: Props) {
       <Section>
         <SettingRow
           title="Start with Windows"
-          description="Open the widget when you sign in to Windows"
           control={(labelId) => (
             <Toggle
               labelledBy={labelId}
@@ -52,7 +51,6 @@ export function GeneralPage({ settings, update }: Props) {
         />
         <SettingRow
           title="Hide during full-screen apps"
-          description="Games, videos and presentations stay clear of the widget"
           control={(labelId) => (
             <Toggle
               labelledBy={labelId}
@@ -70,7 +68,6 @@ export function GeneralPage({ settings, update }: Props) {
         />
         <SettingRow
           title="DeepSeek peak-hour warning"
-          description="Show peak-hour start and end countdowns on the top OpenCode card"
           control={(labelId) => (
             <Toggle
               labelledBy={labelId}
@@ -162,7 +159,6 @@ function UpdatesSection({ settings, update }: Props) {
       />
       <SettingRow
         title="Install updates automatically"
-        description="Installs downloaded updates when you're away (2 min idle or locked) and reopens UsageDeck"
         control={(labelId) => (
           <Toggle
             labelledBy={labelId}
@@ -207,7 +203,6 @@ export function AppearancePage({ settings, update }: Props) {
       <Section title="Theme">
         <SettingRow
           title="Settings theme"
-          description="Colours of this settings window"
           control={(labelId, descId) => (
             <select
               aria-labelledby={labelId}
@@ -226,7 +221,6 @@ export function AppearancePage({ settings, update }: Props) {
         />
         <SettingRow
           title="Widget theme"
-          description="Match follows the brightness of the screen behind the widget"
           control={(labelId, descId) => (
             <select
               aria-labelledby={labelId}
@@ -247,7 +241,6 @@ export function AppearancePage({ settings, update }: Props) {
       <Section title="Cards">
         <SettingRow
           title="Show provider names"
-          description="Title widget cards with the provider name instead of the account nickname"
           control={(labelId) => (
             <Toggle
               labelledBy={labelId}
@@ -308,9 +301,6 @@ export function WidgetPage({ settings, update }: Props) {
   return (
     <Page title="Widget">
       <Section title="Providers">
-        <p className="mb-2 text-xs text-(--p-muted)">
-          Drag to reorder. The switch shows or hides the card.
-        </p>
         <ol className="flex flex-col gap-1">
           {order.map((id, i) => {
             const name = PAGE_TITLES[id];
@@ -482,7 +472,6 @@ export function AboutPage({ settings, update }: Props) {
         </div>
         <SettingRow
           title="Log folder"
-          description="Where UsageDeck writes its logs"
           control={(labelId) => (
             <button
               type="button"

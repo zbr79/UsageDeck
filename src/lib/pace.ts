@@ -115,11 +115,6 @@ export function spendBand(rate: number, target: number | null): SpendBand {
   return "on";
 }
 
-/** "Green between $80 and $120 per hour". */
-export function targetBandText(target: number): string {
-  return `Green between ${formatUsd(target * TARGET_LOW)} and ${formatUsd(target * TARGET_HIGH)} per hour`;
-}
-
 const BAND_WORDS: Record<SpendBand, string> = {
   none: "",
   idle: "idle",
