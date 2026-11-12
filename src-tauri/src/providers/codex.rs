@@ -152,12 +152,16 @@ fn parse_reset_list(reply: &Value, now: &str) -> ResetList {
     }
 }
 
-/// Names and types only: the reply's top-level keys and the first credit's keys, for diagnostics.
+/// Names only, sorted: the reply's top-level keys and the first credit's keys, for diagnostics.
 fn shape(reply: &Value) -> String {
     let keys = |v: &Value| {
         v.as_object().map_or_else(
             || "not an object".to_string(),
-            |o| o.keys().cloned().collect::<Vec<_>>().join(", "),
+            |o| {
+                let mut keys: Vec<&str> = o.keys().map(String::as_str).collect();
+                keys.sort_unstable();
+                keys.join(", ")
+            },
         )
     };
     let first = reply["credits"].get(0).map_or("none".to_string(), keys);
