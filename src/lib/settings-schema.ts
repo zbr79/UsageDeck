@@ -1,5 +1,6 @@
 // Pure settings rules, shared by the server (validation) and the client
 // (optimistic updates). No Node imports allowed here.
+import { barIds, type HiddenBars } from "./bars";
 import type { PanelTheme, Settings, ThemeMode, WidgetProvider } from "./types";
 
 export const DEFAULT_PROVIDER_ORDER: readonly WidgetProvider[] = [
@@ -75,6 +76,7 @@ export const DEFAULT_SETTINGS: Settings = {
   startAtLogin: true,
   claudeHourlyTarget: null,
   snoozedUntil: {},
+  hiddenBars: {},
 };
 
 export const MIN_HOURLY_TARGET = 1;
@@ -152,6 +154,29 @@ export function mergeSnoozedUntil(
 }
 
 /**
+ * Merge bar changes: a provider's list replaces its own, an empty list turns its bars back on.
+ * Unknown providers and bar ids are dropped, and a list that would hide every bar of a provider is
+ * ignored: the provider's own switch hides the whole card.
+ */
+export function mergeHiddenBars(current: HiddenBars, changes: unknown): HiddenBars {
+  const out: Record<string, string[]> = { ...current };
+  if (isRecord(changes)) {
+    for (const provider of DEFAULT_PROVIDER_ORDER) {
+      const list = Object.hasOwn(changes, provider) ? changes[provider] : undefined;
+      if (!Array.isArray(list)) continue;
+      const all = barIds(provider);
+      const ids = all.filter((id) => list.includes(id));
+      if (ids.length === all.length) continue;
+      if (ids.length > 0) out[provider] = ids;
+      else delete out[provider];
+    }
+  }
+  return Object.fromEntries(
+    DEFAULT_PROVIDER_ORDER.filter((p) => out[p]).map((p) => [p, out[p]]),
+  ) as HiddenBars;
+}
+
+/**
  * Apply a partial update. Unknown keys and wrongly-typed values are ignored,
  * so a client can only ever change what it sent, and only to valid values.
  */
@@ -185,6 +210,7 @@ export function applySettingsPatch(current: Settings, patch: unknown, now = Date
     if (target !== undefined) next.claudeHourlyTarget = target;
   }
   next.snoozedUntil = mergeSnoozedUntil(current.snoozedUntil, patch.snoozedUntil, now);
+  next.hiddenBars = mergeHiddenBars(current.hiddenBars, patch.hiddenBars);
   return next;
 }
 

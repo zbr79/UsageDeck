@@ -6,12 +6,15 @@ import type {
   GrokUsage,
   OpenCodeAccountUsage,
 } from "./types";
+import type { HiddenBars } from "./bars";
 import { isSnoozed, openCodeUsedUp, usedUp } from "./used-up";
 
 const NOW = Date.parse("2026-11-10T12:00:00.000Z");
 const M = 60_000;
 const H = 60 * M;
 const at = (ms: number) => new Date(NOW + ms).toISOString();
+/** every bar on, the default */
+const ALL: HiddenBars = {};
 
 const codex = (five: number, weekly: number | null, extra: Partial<CodexUsage> = {}) =>
   ({
@@ -28,6 +31,7 @@ const claude = (five: number | null, weekly: number | null, fiveResetIn = 2 * H)
   ({
     fiveHour: { percent: five, resetsAt: at(fiveResetIn) },
     weekly: { percent: weekly, resetsAt: at(30 * H) },
+    weeklyScoped: [] as ClaudeUsage["weeklyScoped"],
   }) as ClaudeUsage;
 
 const fresh = <T>(usage: T | null) => ({ usage, stale: false });
@@ -35,18 +39,18 @@ const cached = <T>(usage: T | null) => ({ usage, stale: true });
 
 describe("usedUp", () => {
   it("5-hour window full: usable again at its reset", () => {
-    expect(usedUp("codex", fresh(codex(100, 40)), NOW)).toEqual({ until: NOW + 81 * M });
-    expect(usedUp("claude", fresh(claude(100, 40)), NOW)).toEqual({ until: NOW + 2 * H });
+    expect(usedUp("codex", fresh(codex(100, 40)), NOW, ALL)).toEqual({ until: NOW + 81 * M });
+    expect(usedUp("claude", fresh(claude(100, 40)), NOW, ALL)).toEqual({ until: NOW + 2 * H });
   });
 
   it("weekly window full: usable again at the weekly reset", () => {
-    expect(usedUp("codex", fresh(codex(20, 100)), NOW)).toEqual({ until: NOW + 72 * H });
-    expect(usedUp("claude", fresh(claude(10, 100)), NOW)).toEqual({ until: NOW + 30 * H });
+    expect(usedUp("codex", fresh(codex(20, 100)), NOW, ALL)).toEqual({ until: NOW + 72 * H });
+    expect(usedUp("claude", fresh(claude(10, 100)), NOW, ALL)).toEqual({ until: NOW + 30 * H });
   });
 
   it("both windows full: waits for the later reset, not the 5-hour one", () => {
-    expect(usedUp("codex", fresh(codex(100, 100)), NOW)).toEqual({ until: NOW + 72 * H });
-    expect(usedUp("claude", fresh(claude(100, 100)), NOW)).toEqual({ until: NOW + 30 * H });
+    expect(usedUp("codex", fresh(codex(100, 100)), NOW, ALL)).toEqual({ until: NOW + 72 * H });
+    expect(usedUp("claude", fresh(claude(100, 100)), NOW, ALL)).toEqual({ until: NOW + 30 * H });
   });
 
   it("claude: a full Fable limit leaves the card usable, since the other models still work", () => {
@@ -54,26 +58,26 @@ describe("usedUp", () => {
       ...claude(30, 40),
       weeklyScoped: [{ label: "Fable", percent: 100, resetsAt: at(30 * H) }],
     };
-    expect(usedUp("claude", fresh(fableFull), NOW)).toBeNull();
+    expect(usedUp("claude", fresh(fableFull), NOW, ALL)).toBeNull();
   });
 
   it("Codex's limit flag counts as full below 100 %", () => {
     const flagged = codex(97, null, { limitReached: true });
-    expect(usedUp("codex", fresh(flagged), NOW)).toEqual({ until: NOW + 81 * M });
+    expect(usedUp("codex", fresh(flagged), NOW, ALL)).toEqual({ until: NOW + 81 * M });
   });
 
   it("cached data whose full window already reset is usable; fresh data still counts", () => {
     const passed = claude(100, 40, -M);
-    expect(usedUp("claude", cached(passed), NOW)).toBeNull();
-    expect(usedUp("claude", fresh(passed), NOW)).toEqual({ until: NOW - M });
+    expect(usedUp("claude", cached(passed), NOW, ALL)).toBeNull();
+    expect(usedUp("claude", fresh(passed), NOW, ALL)).toEqual({ until: NOW - M });
     const codexPassed = codex(100, 40, { resetAt: at(-M) });
-    expect(usedUp("codex", cached(codexPassed), NOW)).toBeNull();
+    expect(usedUp("codex", cached(codexPassed), NOW, ALL)).toBeNull();
   });
 
   it("not full, unknown, or no data: usable", () => {
-    expect(usedUp("codex", fresh(codex(99, 99)), NOW)).toBeNull();
-    expect(usedUp("claude", fresh(claude(null, null)), NOW)).toBeNull();
-    expect(usedUp("claude", fresh(null), NOW)).toBeNull();
+    expect(usedUp("codex", fresh(codex(99, 99)), NOW, ALL)).toBeNull();
+    expect(usedUp("claude", fresh(claude(null, null)), NOW, ALL)).toBeNull();
+    expect(usedUp("claude", fresh(null), NOW, ALL)).toBeNull();
   });
 
   it("cursor: every included bucket full and no on-demand budget left", () => {
@@ -84,8 +88,8 @@ describe("usedUp", () => {
       onDemand: { state: "disabled" },
     } as CursorUsage;
     const usable = (c: Partial<CursorUsage>) =>
-      usedUp("cursor", fresh({ ...full, ...c }), NOW) === null;
-    expect(usedUp("cursor", fresh(full), NOW)).toEqual({ until: NOW + 5 * 24 * H });
+      usedUp("cursor", fresh({ ...full, ...c }), NOW, ALL) === null;
+    expect(usedUp("cursor", fresh(full), NOW, ALL)).toEqual({ until: NOW + 5 * 24 * H });
     expect(usable({ otherModelsPercentUsed: 99 }), "Other Models left").toBe(true);
     expect(usable({ cursorModelsPercentUsed: 40 }), "Cursor Models left").toBe(true);
     expect(usable({ otherModelsPercentUsed: null }), "one bucket reported, full").toBe(false);
@@ -103,8 +107,8 @@ describe("usedUp", () => {
 
   it("grok: one window", () => {
     const grok = { percentUsed: 100, resetAt: at(H) } as GrokUsage;
-    expect(usedUp("grok", fresh(grok), NOW)).toEqual({ until: NOW + H });
-    expect(usedUp("grok", fresh({ ...grok, percentUsed: 50 }), NOW)).toBeNull();
+    expect(usedUp("grok", fresh(grok), NOW, ALL)).toEqual({ until: NOW + H });
+    expect(usedUp("grok", fresh({ ...grok, percentUsed: 50 }), NOW, ALL)).toBeNull();
   });
 
   it("full with no known reset time: used up, but no time to wait for", () => {
@@ -114,7 +118,44 @@ describe("usedUp", () => {
       resetsAt: null,
       onDemand: null,
     } as CursorUsage;
-    expect(usedUp("cursor", fresh(cursor), NOW)).toEqual({ until: null });
+    expect(usedUp("cursor", fresh(cursor), NOW, ALL)).toEqual({ until: null });
+  });
+});
+
+describe("usedUp with bars turned off", () => {
+  it("a full bar the card does not show leaves it usable", () => {
+    expect(usedUp("codex", fresh(codex(100, 40)), NOW, { codex: ["fiveHour"] })).toBeNull();
+    expect(usedUp("claude", fresh(claude(10, 100)), NOW, { claude: ["weekly"] })).toBeNull();
+    const cursorApiFull = {
+      cursorModelsPercentUsed: 40,
+      otherModelsPercentUsed: 100,
+      resetsAt: at(H),
+      onDemand: null,
+    } as CursorUsage;
+    expect(usedUp("cursor", fresh(cursorApiFull), NOW, { cursor: ["firstParty"] })).toEqual({
+      until: NOW + H,
+    });
+    expect(usedUp("cursor", fresh(cursorApiFull), NOW, { cursor: ["api"] })).toBeNull();
+  });
+
+  it("the full bars still shown count, waiting only for their resets", () => {
+    expect(usedUp("codex", fresh(codex(100, 100)), NOW, { codex: ["weekly"] })).toEqual({
+      until: NOW + 81 * M,
+    });
+    expect(usedUp("claude", fresh(claude(100, 100)), NOW, { claude: ["weekly"] })).toEqual({
+      until: NOW + 2 * H,
+    });
+  });
+
+  it("a card left with no shown bar it has data for shows, and counts, what it has", () => {
+    // Codex without a weekly window: hiding its 5-hour bar cannot leave the card empty.
+    expect(usedUp("codex", fresh(codex(100, null)), NOW, { codex: ["fiveHour"] })).toEqual({
+      until: NOW + 81 * M,
+    });
+    // Claude with only its per-model bar on, and no per-model limit in the data.
+    expect(
+      usedUp("claude", fresh(claude(100, 10)), NOW, { claude: ["fiveHour", "weekly"] }),
+    ).toEqual({ until: NOW + 2 * H });
   });
 });
 
@@ -132,12 +173,22 @@ describe("openCodeUsedUp", () => {
     }) as OpenCodeAccountUsage;
 
   it("weekly or monthly full; both full waits for the monthly reset", () => {
-    expect(openCodeUsedUp(row(100, 10), NOW)).toEqual({ until: NOW + 24 * H });
-    expect(openCodeUsedUp(row(100, 100), NOW)).toEqual({ until: NOW + 240 * H });
+    expect(openCodeUsedUp(row(100, 10), NOW, ALL)).toEqual({ until: NOW + 24 * H });
+    expect(openCodeUsedUp(row(100, 100), NOW, ALL)).toEqual({ until: NOW + 240 * H });
   });
 
   it("a full rolling window alone does not stop an OpenCode account", () => {
-    expect(openCodeUsedUp(row(10, 10), NOW)).toBeNull();
+    expect(openCodeUsedUp(row(10, 10), NOW, ALL)).toBeNull();
+  });
+
+  it("counts only the weekly and monthly bars the card shows", () => {
+    expect(openCodeUsedUp(row(10, 100), NOW, { opencode: ["monthly"] })).toBeNull();
+    expect(openCodeUsedUp(row(100, 100), NOW, { opencode: ["monthly"] })).toEqual({
+      until: NOW + 24 * H,
+    });
+    expect(openCodeUsedUp(row(100, 10), NOW, { opencode: ["rolling"] })).toEqual({
+      until: NOW + 24 * H,
+    });
   });
 });
 

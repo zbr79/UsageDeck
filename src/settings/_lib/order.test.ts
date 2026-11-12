@@ -81,6 +81,7 @@ const claude = (five: number, weekly: number) =>
   ({
     fiveHour: { percent: five, resetsAt: new Date(NOW + D).toISOString() },
     weekly: { percent: weekly, resetsAt: new Date(NOW + 2 * D).toISOString() },
+    weeklyScoped: [] as ClaudeUsage["weeklyScoped"],
   }) as ClaudeUsage;
 
 describe("orderTracked", () => {
@@ -92,7 +93,7 @@ describe("orderTracked", () => {
       tracked("recent", claude(10, 10), { cachedAt: 5 }),
       tracked("me", claude(100, 100), { active: true }),
     ];
-    const out = orderTracked("claude", accounts, (id) => id === "hidden", NOW);
+    const out = orderTracked("claude", accounts, (id) => id === "hidden", {}, NOW);
     expect(out.map((a) => a.id)).toEqual(["me", "recent", "old", "full", "hidden"]);
   });
 });

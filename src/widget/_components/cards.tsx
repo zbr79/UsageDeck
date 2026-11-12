@@ -2,6 +2,7 @@ import { Fragment, type ReactNode } from "react";
 import { Badge, HIT_24 } from "@/ui/controls";
 import { CopyIcon, EyeOffIcon } from "@/ui/Icons";
 import { WIDGET_SPEND_TONE, type Tone } from "@/ui/palette";
+import { claudeBars, codexBars, shownBars } from "@/lib/bars";
 import { cursorErrorHint, errorHint, isAuthRejected } from "@/lib/errors";
 import {
   apiByModel,
@@ -198,12 +199,16 @@ export function OpenCodeCard({
     fullEmail ? row.email : row.email.slice(0, 4),
   );
   const u = row.usage;
-  const used = openCodeUsedUp(row, now);
+  const used = openCodeUsedUp(row, now, settings.hiddenBars);
+  const show = shownBars("opencode", settings.hiddenBars);
   const state: CardState = used ? "exhausted" : active ? "active" : "normal";
   const unknown = (w: "rolling" | "weekly" | "monthly") =>
     !!u && isUnknownWindow(u[w], row.stale, now);
   const reset = (w: "rolling" | "weekly" | "monthly", show: boolean) =>
     u && show && !unknown(w) ? formatUntil(u[w].resetsAt, now) : null;
+  // a full longer window grays the shorter ones, when its bar shows
+  const full = (w: "weekly" | "monthly") =>
+    !!u && show.has(w) && isExhaustedWindow(u[w], row.stale, now);
 
   const rejected = isAuthRejected(row.authExpired, row.error);
   const failure = errorHint(row.error, "add the key again in Settings");
@@ -265,35 +270,38 @@ export function OpenCodeCard({
     >
       {u ? (
         <div className="flex gap-2">
-          <Meter
-            label="R"
-            name="Rolling 5-hour window"
-            percent={u.rolling.percent}
-            unknown={unknown("rolling")}
-            dimmed={
-              isExhaustedWindow(u.weekly, row.stale, now) ||
-              isExhaustedWindow(u.monthly, row.stale, now)
-            }
-            increased={increased("rolling")}
-            reset={reset("rolling", primary)}
-          />
-          <Meter
-            label="W"
-            name="Weekly"
-            percent={u.weekly.percent}
-            unknown={unknown("weekly")}
-            dimmed={isExhaustedWindow(u.monthly, row.stale, now)}
-            increased={increased("weekly")}
-            reset={reset("weekly", primary)}
-          />
-          <Meter
-            label="M"
-            name="Monthly"
-            percent={u.monthly.percent}
-            unknown={unknown("monthly")}
-            increased={increased("monthly")}
-            reset={reset("monthly", true)}
-          />
+          {show.has("rolling") && (
+            <Meter
+              label="R"
+              name="Rolling 5-hour window"
+              percent={u.rolling.percent}
+              unknown={unknown("rolling")}
+              dimmed={full("weekly") || full("monthly")}
+              increased={increased("rolling")}
+              reset={reset("rolling", primary)}
+            />
+          )}
+          {show.has("weekly") && (
+            <Meter
+              label="W"
+              name="Weekly"
+              percent={u.weekly.percent}
+              unknown={unknown("weekly")}
+              dimmed={full("monthly")}
+              increased={increased("weekly")}
+              reset={reset("weekly", primary)}
+            />
+          )}
+          {show.has("monthly") && (
+            <Meter
+              label="M"
+              name="Monthly"
+              percent={u.monthly.percent}
+              unknown={unknown("monthly")}
+              increased={increased("monthly")}
+              reset={reset("monthly", true)}
+            />
+          )}
         </div>
       ) : (
         <Note>Unavailable</Note>
@@ -343,10 +351,13 @@ export function CursorCard({
     multiple,
   );
   const cyclePassed = slot.stale && isPassed(c?.resetsAt, now);
-  const used = signedOut ? null : usedUp("cursor", { usage: c, stale: slot.stale }, now);
+  const used = signedOut
+    ? null
+    : usedUp("cursor", { usage: c, stale: slot.stale }, now, settings.hiddenBars);
   const failure = cursorErrorHint(slot.error, note);
-  // the API dollars of a past cycle say nothing about this one
-  const api = cyclePassed ? null : (c?.apiSpend ?? null);
+  const show = shownBars("cursor", settings.hiddenBars);
+  // the API dollars of a past cycle say nothing about this one; they go with the API bar
+  const api = cyclePassed || !show.has("api") ? null : (c?.apiSpend ?? null);
   const resetLine = [
     c?.resetsAt && !cyclePassed ? `Resets ${formatUntil(c.resetsAt, now) ?? ""}` : null,
     api ? apiSpendText(api.spentUsd, api.limitUsd) : null,
@@ -386,21 +397,25 @@ export function CursorCard({
       {c ? (
         <>
           <div className="flex gap-2">
-            <Meter
-              label="First Party"
-              name="First-party usage"
-              percent={c.cursorModelsPercentUsed}
-              unknown={cyclePassed}
-              dimmed={signedOut}
-            />
-            <Meter
-              label="API"
-              name="API usage"
-              percent={c.otherModelsPercentUsed}
-              unknown={cyclePassed}
-              dimmed={signedOut}
-              detail={api ? apiByModel(api.byModel).join(", ") : null}
-            />
+            {show.has("firstParty") && (
+              <Meter
+                label="First Party"
+                name="First-party usage"
+                percent={c.cursorModelsPercentUsed}
+                unknown={cyclePassed}
+                dimmed={signedOut}
+              />
+            )}
+            {show.has("api") && (
+              <Meter
+                label="API"
+                name="API usage"
+                percent={c.otherModelsPercentUsed}
+                unknown={cyclePassed}
+                dimmed={signedOut}
+                detail={api ? apiByModel(api.byModel).join(", ") : null}
+              />
+            )}
           </div>
           {resetLine.length > 0 && <ResetLine>{resetLine.join(" · ")}</ResetLine>}
           {extras && api && (
@@ -456,7 +471,7 @@ export function GrokCard({
     multiple,
   );
   const passed = slot.stale && isPassed(g?.resetAt, now);
-  const used = usedUp("grok", { usage: g, stale: slot.stale }, now);
+  const used = usedUp("grok", { usage: g, stale: slot.stale }, now, settings.hiddenBars);
   const plan = g?.planLabel ?? g?.cursorPlanName;
   const account = g?.email
     ? `${g.email}${g.source === "cursor" ? " (via Cursor sign-in)" : ""}`
@@ -531,7 +546,8 @@ export function CodexCard({
   const hasWeekly = x?.weeklyUsedPercent != null;
   const fiveHour = hasWeekly && x?.limitWindowSeconds === 18000;
   const weeklyPassed = slot.stale && isPassed(x?.weeklyResetAt, now);
-  const used = usedUp("codex", { usage: x, stale: slot.stale }, now);
+  const used = usedUp("codex", { usage: x, stale: slot.stale }, now, settings.hiddenBars);
+  const show = x ? shownBars("codex", settings.hiddenBars, codexBars(x)) : null;
   return (
     <Card
       extras={extras}
@@ -564,14 +580,16 @@ export function CodexCard({
       {x ? (
         <>
           <div className="flex gap-2">
-            <Meter
-              label={fiveHour ? "5h" : "Usage"}
-              name={fiveHour ? "Rolling 5-hour window" : "Codex usage"}
-              percent={x.usedPercent}
-              unknown={passed}
-              reset={hasWeekly && x.resetAt && !passed ? formatUntil(x.resetAt, now) : undefined}
-            />
-            {hasWeekly && (
+            {show?.has("fiveHour") && (
+              <Meter
+                label={fiveHour ? "5h" : "Usage"}
+                name={fiveHour ? "Rolling 5-hour window" : "Codex usage"}
+                percent={x.usedPercent}
+                unknown={passed}
+                reset={hasWeekly && x.resetAt && !passed ? formatUntil(x.resetAt, now) : undefined}
+              />
+            )}
+            {show?.has("weekly") && (
               <Meter
                 label="Weekly"
                 name="Weekly"
@@ -641,9 +659,10 @@ export function ClaudeCard({
   const badgeTone: Tone = !badge || badge === "signed out" ? "gray" : planTone(badge);
   const windowUnknown = (w: ClaudeUsage["fiveHour"] | undefined) =>
     w?.percent == null || (slot.stale && isPassed(w.resetsAt, now));
-  const used = usedUp("claude", { usage: c, stale: slot.stale }, now);
+  const used = usedUp("claude", { usage: c, stale: slot.stale }, now, settings.hiddenBars);
+  const show = c ? shownBars("claude", settings.hiddenBars, claudeBars(c)) : null;
   // One model's own weekly limit (Fable) as a third bar; a second one would not fit at 238 px.
-  const scoped = c?.weeklyScoped[0];
+  const scoped = show?.has("scoped") ? c?.weeklyScoped[0] : undefined;
   const rate = headerRate(pace);
   const target = settings.claudeHourlyTarget;
   const rate60m = pace?.spend.rate60m ?? 0;
@@ -713,21 +732,23 @@ export function ClaudeCard({
                 // with a third bar "Weekly" no longer fits at 238 px: OpenCode's short "W"
                 [scoped ? "W" : "Weekly", "Weekly", c.weekly, "weekly"],
               ] as const
-            ).map(([label, name, w, key]) => {
-              const unknown = windowUnknown(w);
-              const pw = pace?.windows[key] ?? null;
-              return (
-                <Meter
-                  key={label}
-                  label={label}
-                  name={name}
-                  percent={w.percent}
-                  unknown={unknown}
-                  reset={unknown ? null : formatUntil(w.resetsAt, now)}
-                  detail={unknown ? null : meterPaceText(w.percent!, null, pw, now)}
-                />
-              );
-            })}
+            )
+              .filter(([, , , key]) => show?.has(key))
+              .map(([label, name, w, key]) => {
+                const unknown = windowUnknown(w);
+                const pw = pace?.windows[key] ?? null;
+                return (
+                  <Meter
+                    key={key}
+                    label={label}
+                    name={name}
+                    percent={w.percent}
+                    unknown={unknown}
+                    reset={unknown ? null : formatUntil(w.resetsAt, now)}
+                    detail={unknown ? null : meterPaceText(w.percent!, null, pw, now)}
+                  />
+                );
+              })}
             {scoped && (
               <Meter
                 // from 99.1% the wider value leaves "Fable" too little room: its first letter then

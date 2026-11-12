@@ -1,4 +1,5 @@
 import { rankAccounts } from "@/lib/ranking";
+import type { HiddenBars } from "@/lib/bars";
 import { usedUp } from "@/lib/used-up";
 import type {
   ClaudeUsage,
@@ -67,13 +68,14 @@ export function orderTracked(
   id: ProviderId,
   accounts: readonly TrackedAccount<AnyUsage>[],
   hidden: (accountId: string) => boolean,
+  hiddenBars: HiddenBars,
   now = Date.now(),
 ): TrackedAccount<AnyUsage>[] {
   return [...accounts].sort(
     (a, b) =>
       Number(hidden(a.id)) - Number(hidden(b.id)) ||
       Number(b.active) - Number(a.active) ||
-      Number(!!usedUp(id, a, now)) - Number(!!usedUp(id, b, now)) ||
+      Number(!!usedUp(id, a, now, hiddenBars)) - Number(!!usedUp(id, b, now, hiddenBars)) ||
       (b.cachedAt ?? 0) - (a.cachedAt ?? 0),
   );
 }

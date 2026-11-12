@@ -1,5 +1,6 @@
 // Shared between the server (lib/, app/api) and the client (widget,
 // settings). Type-only: no runtime imports allowed here.
+import type { HiddenBars } from "./bars";
 
 export type ThemeMode = "auto" | "light" | "dark";
 /** "system" follows the Windows app light / dark mode. */
@@ -29,6 +30,8 @@ export interface Settings {
   claudeHourlyTarget: number | null;
   /** used-up cards hidden from the widget until they reset: account key → epoch ms */
   snoozedUntil: Record<string, number>;
+  /** usage bars turned off on each provider's cards; {} shows every bar */
+  hiddenBars: HiddenBars;
 }
 
 export type ProviderId = "cursor" | "grok" | "codex" | "claude";

@@ -36,6 +36,11 @@ card shows the percentages alone.
 When Anthropic gives a model a weekly limit of its own (Fable), the Claude card shows it as a third
 bar: `5h | W | Fable`, like the OpenCode card's three bars. A full Fable limit turns only that bar
 red: the other models still work, so the card is not used up.
+
+Each provider's Settings page has a **Bars** section with one switch per bar (for example OpenCode's
+Rolling, Weekly and Monthly), so a card can show only the bars you watch; the rest take the freed
+width. One bar always stays on: the provider's own switch hides the whole card. A full bar you
+turned off does not make the card red or offer to hide it until reset.
 See [SECURITY.md](SECURITY.md) for exactly what is read, stored and sent.
 
 ---
@@ -214,7 +219,8 @@ uninstaller to also remove settings, logs and the stored OpenCode keys (details 
   "Show on widget" switch and a "⋯" menu (also right-click, Shift+F10 or the Menu key): Rename,
   Refresh now and, for OpenCode, Copy API key, Replace API key and Remove account. OpenCode
   accounts are added with an API key; Cursor, Grok Bot, Codex and Claude read that app's own
-  sign-in and only the signed-in account shows on the widget
+  sign-in and only the signed-in account shows on the widget. Under the cards, **Bars** turns each
+  of the provider's bars on or off
 - Claude page: a "Spend & pace" section with the API-equivalent spend of Claude Code on this PC
   (last hour, 5 h, today, 7 days, $/h), a 24-hour bar chart, spend per model, each window's
   speed, even pace and projected limit time, and what 1% of the weekly limit is worth in dollars.
@@ -233,7 +239,8 @@ uninstaller to also remove settings, logs and the stored OpenCode keys (details 
   to `widget.html` or `settings.html`
 - Browser preview of the Cursor card and its diagnostics: add
   `?cursorFail=<rejected|expired|sealed|locked|network|schema|http|web>`; `?snoozed=1` starts with
-  two cards hidden until reset
+  two cards hidden until reset; `?hiddenBars={"opencode":["rolling"],"codex":["fiveHour"]}` starts
+  with those bars turned off
 - Browser preview of the updater: add `?update=<idle|never|checking|downloading|upToDate|failed|ready>`
   for the starting state and `&updateResult=<ready|upToDate|failed>` for what Check for updates
   finds
