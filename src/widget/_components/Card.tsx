@@ -159,6 +159,14 @@ const SEVERITY_FILL: Record<MeterSeverity, string> = {
   danger: "var(--w-barDanger)",
 };
 
+/** How much of the fill colour a meter segment keeps; the rest is white, so it reads lighter. */
+const SEGMENT_MIX = "55%";
+
+/** A segment's width as a share of the (capped) fill. */
+function segmentWidth(pct: number, value: number): number {
+  return Math.min(100, (Math.max(0, pct) / Math.min(value, 100)) * 100);
+}
+
 /** Usage meter: label, percent, bar, optional even-pace tick, optional reset countdown. */
 export function Meter({
   label,
@@ -242,13 +250,14 @@ export function Meter({
             style={{ width: `${known ? Math.min(value, 100) : 0}%`, background: fill }}
           >
             {part && (
-              // sized against the fill, so it never runs past it
+              // sized against the fill and placed at its end, so it never runs past it
               <div
                 data-testid="meter-segment"
                 className="h-full rounded-full transition-colors duration-700"
                 style={{
-                  width: `${Math.min(100, (Math.max(0, part.pct) / Math.min(value, 100)) * 100)}%`,
-                  background: "var(--w-barFable)",
+                  width: `${segmentWidth(part.pct, value)}%`,
+                  marginLeft: `${100 - segmentWidth(part.pct, value)}%`,
+                  background: `color-mix(in srgb, ${fill} ${SEGMENT_MIX}, white)`,
                 }}
               />
             )}
