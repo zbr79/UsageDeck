@@ -11,7 +11,7 @@ import appIcon from "../../../src-tauri/icons/128x128.png";
 import { moveItem, PAGE_TITLES, PROVIDER_ICONS } from "../_lib/pages";
 import { usePanelTheme } from "../_lib/theme";
 import { CopyDiagnosticsButton } from "./Diagnostics";
-import { Page, primaryButton, Section, secondaryButton, selectClass, SettingRow } from "./fields";
+import { Page, Section, secondaryButton, selectClass, SettingRow } from "./fields";
 
 type Update = (patch: SettingsPatch, success?: string) => Promise<boolean>;
 type Props = { settings: Settings; update: Update };
@@ -168,7 +168,6 @@ export function updateDescription(status: UpdateStatus, now: number): string {
 function UpdatesSection({ settings, update }: Props) {
   const status = useUpdateStatus();
   const [now, setNow] = useState(() => Date.now());
-  const [restarting, setRestarting] = useState(false);
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 60_000);
     return () => clearInterval(id);
@@ -176,11 +175,6 @@ function UpdatesSection({ settings, update }: Props) {
   // "just now" right after a check, not the minute-old clock
   useEffect(() => setNow(Date.now()), [status]);
   if (!status) return null;
-  const busy = status.state === "checking" || status.state === "downloading";
-  const restart = () => {
-    setRestarting(true);
-    installUpdate().catch(() => setRestarting(false));
-  };
   return (
     <Section title="Updates">
       <SettingRow
@@ -193,29 +187,6 @@ function UpdatesSection({ settings, update }: Props) {
         }
         live
         icon={<img src={appIcon} alt="" className="size-5" />}
-        control={(labelId, descId) =>
-          status.state === "ready" ? (
-            <button
-              type="button"
-              aria-describedby={descId}
-              disabled={restarting}
-              onClick={restart}
-              className={primaryButton}
-            >
-              {restarting ? "Restarting…" : "Restart to update"}
-            </button>
-          ) : (
-            <button
-              type="button"
-              aria-describedby={descId ?? labelId}
-              disabled={busy}
-              onClick={checkForUpdates}
-              className={secondaryButton}
-            >
-              Check for updates
-            </button>
-          )
-        }
       />
       <SettingRow
         title="Install updates automatically"

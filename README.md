@@ -243,7 +243,10 @@ uninstaller to also remove settings, logs and the stored OpenCode keys (details 
   "Not priced: <model ids>" line names it, and its replies stay out of the dollars
   The widget's Claude card shows the spend rate after its name (`$71/h`); its meter colours follow
   the percentage only (amber from 80%, red from 100%), and pace stays in the meter tooltip
-- About: version, log folder, the repository and Updates (installed version and the last check's result, Install updates automatically, Copy diagnostics)
+- About: version, log folder, the repository and Updates (installed version and the last check's
+  result, Install updates automatically, Copy diagnostics). **Check for updates** sits at the
+  bottom of the navigation, above About; once an update is downloaded it reads **Restart to
+  update**
 - Fully keyboard accessible: modal dialogs trap focus and Esc closes the topmost one first; menus
   use the arrow keys, Home and End; forced-colors (high contrast) is supported
 - `settings.html?page=<general|widget|claude|codex|cursor|grok|opencode|about>` opens a

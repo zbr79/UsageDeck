@@ -1,6 +1,13 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import type { WidgetProvider } from "@/lib/types";
-import { useUpdateStatus } from "@/lib/updates";
+import {
+  checkForUpdates,
+  installUpdate,
+  isBusy,
+  useUpdateStatus,
+  type UpdateStatus,
+} from "@/lib/updates";
+import { DownloadIcon, RefreshIcon } from "@/ui/Icons";
 import { PAGE_TITLES, PROVIDER_ICONS, type PageId } from "../_lib/pages";
 
 function NavItem({
@@ -50,7 +57,38 @@ function NavItem({
   );
 }
 
-/** Left navigation: General, Widget, Accounts (one item per provider), About. */
+/** Bottom of the nav: starts a check, or restarts into a downloaded update. The result shows on About. */
+function UpdateButton({ status }: { status: UpdateStatus | null }) {
+  const [restarting, setRestarting] = useState(false);
+  const ready = status?.state === "ready";
+  const restart = () => {
+    setRestarting(true);
+    installUpdate().catch(() => setRestarting(false));
+  };
+  let label = "Check for updates";
+  if (ready) label = restarting ? "Restarting…" : "Restart to update";
+  else if (isBusy(status)) label = "Checking…";
+  return (
+    <li>
+      <button
+        type="button"
+        disabled={status === null || isBusy(status) || restarting}
+        onClick={ready ? restart : checkForUpdates}
+        className="ud-nav-item flex min-h-9 w-full items-center gap-3 rounded px-3 text-left text-sm hover:bg-(--s-navHover) disabled:cursor-default disabled:text-(--p-muted) disabled:hover:bg-transparent"
+      >
+        {ready ? (
+          <DownloadIcon size={16} className="shrink-0" />
+        ) : (
+          <RefreshIcon size={16} className="shrink-0" />
+        )}
+        <span className="truncate">{label}</span>
+      </button>
+    </li>
+  );
+}
+
+/** Left navigation: General, Widget, Accounts (one item per provider),
+ * Check for updates, About. */
 export function Nav({
   current,
   onSelect,
@@ -62,7 +100,8 @@ export function Nav({
   providerOrder: readonly WidgetProvider[];
   light: boolean;
 }) {
-  const updateReady = useUpdateStatus()?.state === "ready";
+  const updateStatus = useUpdateStatus();
+  const updateReady = updateStatus?.state === "ready";
   const item = (page: PageId, icon?: ReactNode, indent?: boolean) => (
     <NavItem
       key={page}
@@ -99,7 +138,10 @@ export function Nav({
           ),
         )}
       </ul>
-      <ul className="mt-auto flex flex-col gap-0.5 p-0.5 pt-4">{item("about")}</ul>
+      <ul className="mt-auto flex flex-col gap-0.5 p-0.5 pt-4">
+        <UpdateButton status={updateStatus} />
+        {item("about")}
+      </ul>
     </nav>
   );
 }
