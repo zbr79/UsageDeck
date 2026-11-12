@@ -90,6 +90,8 @@ and a dot on **About** in the settings navigation means an update is ready:
 - **Restart to update** installs the update silently and starts the new version. No installer
   window opens; the widget disappears for a few seconds and comes back updated. Until you restart,
   the download is kept, so it is not downloaded again.
+- **Install updates automatically** (off by default) installs a downloaded update by itself once
+  you have been away for 2 minutes or have locked Windows, then reopens UsageDeck.
 - **Check for updates** checks at once. The same page shows the installed version, when UsageDeck
   last checked and what that check found (also a background check that showed nothing).
 
@@ -223,7 +225,7 @@ uninstaller to also remove settings, logs and the stored OpenCode keys (details 
   left it, kept on a visible monitor, and closes only when asked: the X, Alt+F4, Ctrl+W or Esc
 - General: start with Windows, hide during full-screen apps, DeepSeek peak-hour warning, and
   Updates (installed version, last check and its result, Check for updates, Restart to update,
-  Copy diagnostics)
+  Install updates automatically, Copy diagnostics)
 - Appearance: settings theme, widget theme, show provider names
 - Widget: provider order (drag the grip, or Move up / Move down), a "Show on widget" switch per
   provider, and **Hidden until reset**: the used-up cards you hid from the widget, each with a
