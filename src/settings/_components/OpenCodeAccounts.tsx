@@ -7,7 +7,7 @@ import { OpenCodeCard } from "@/widget/_components/cards";
 import { orderOpenCode } from "../_lib/order";
 import { PROVIDER_ICONS } from "../_lib/pages";
 import { refreshWidget, removeAccount } from "../_lib/hooks";
-import { AccountCell, CardGrid, EmptyState, ProviderLogo, useNow } from "./CardGrid";
+import { AccountCell, CardGrid, cardSettings, EmptyState, ProviderLogo, useNow } from "./CardGrid";
 import BarsSection from "./BarsSection";
 import { KeyDialog, RemoveDialog, RenameDialog } from "./dialogs";
 import { Page, primaryButton } from "./fields";
@@ -142,7 +142,7 @@ export default function OpenCodeAccounts({
                     row={row}
                     active={!off && !lapsed}
                     primary
-                    settings={settings}
+                    settings={cardSettings(settings)}
                     peak={NO_PEAK}
                     now={now}
                     increased={() => false}

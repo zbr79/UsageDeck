@@ -20,7 +20,7 @@ import { PAGE_TITLES, PROVIDER_ICONS } from "../_lib/pages";
 import { refreshWidget, type Summaries } from "../_lib/hooks";
 import { orderTracked } from "../_lib/order";
 import { usePanelTheme } from "../_lib/theme";
-import { AccountCell, CardGrid, EmptyState, ProviderLogo, useNow } from "./CardGrid";
+import { AccountCell, CardGrid, cardSettings, EmptyState, ProviderLogo, useNow } from "./CardGrid";
 import BarsSection from "./BarsSection";
 import ResetsAside from "./ResetsAside";
 import { RenameDialog } from "./dialogs";
@@ -62,7 +62,13 @@ function providerCard(
   // Cached usage looks like fresh usage: no status note and no dimming. A hidden account is gray.
   const extras = { active: account.active, dimmed: hidden, hidden, ...header };
   // `multiple` makes every card title the account's own label (or nickname), not the provider.
-  const common = { settings, now, accountId: account.id, multiple: true, extras };
+  const common = {
+    settings: cardSettings(settings),
+    now,
+    accountId: account.id,
+    multiple: true,
+    extras,
+  };
   const label = account.label;
   switch (id) {
     case "cursor": {

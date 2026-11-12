@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import type { CardHeader } from "@/widget/_components/Card";
+import type { Settings } from "@/lib/types";
 import { Menu, type MenuItem } from "@/ui/Menu";
 import { isContextMenuKey } from "@/ui/menu-focus";
 
@@ -11,6 +12,11 @@ export function useNow(intervalMs = 60_000): number {
     return () => clearInterval(id);
   }, [intervalMs]);
   return now;
+}
+
+/** Settings' cards always name each account: "Show provider names" is for the widget only. */
+export function cardSettings(settings: Settings): Settings {
+  return { ...settings, showProviderNames: false };
 }
 
 /**
