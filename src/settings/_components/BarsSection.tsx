@@ -1,7 +1,8 @@
 import { BARS, type BarId, type HiddenBars } from "@/lib/bars";
 import type { Settings, WidgetProvider } from "@/lib/types";
+import { useId } from "react";
 import { Toggle } from "@/ui/Toggle";
-import { Section, SettingRow } from "./fields";
+import { Section } from "./fields";
 
 const LAST_BAR = "At least one bar stays on — turn the provider off to hide the card";
 
@@ -26,33 +27,58 @@ export default function BarsSection({
   const onCount = bars.filter((bar) => !hidden.includes(bar.id)).length;
   return (
     <Section title="Bars">
-      {bars.map((bar) => {
-        const on = !hidden.includes(bar.id);
-        const last = on && onCount === 1;
-        const name = (bar.id === "scoped" && scopedName) || bar.name;
-        const next = (show: boolean) =>
-          show ? hidden.filter((id) => id !== bar.id) : [...hidden, bar.id];
-        return (
-          <SettingRow
-            key={bar.id}
-            title={name}
-            control={(labelId) => (
-              <Toggle
-                labelledBy={labelId}
-                checked={on}
-                disabled={last}
-                title={last ? LAST_BAR : undefined}
-                onChange={(show) =>
-                  void update(
-                    { hiddenBars: { [provider]: next(show) } as HiddenBars },
-                    `${name} bar ${show ? "shown" : "hidden"}`,
-                  )
-                }
-              />
-            )}
-          />
-        );
-      })}
+      <div className="grid grid-cols-3 gap-1">
+        {bars.map((bar) => {
+          const on = !hidden.includes(bar.id);
+          const last = on && onCount === 1;
+          const name = (bar.id === "scoped" && scopedName) || bar.name;
+          const next = (show: boolean) =>
+            show ? hidden.filter((id) => id !== bar.id) : [...hidden, bar.id];
+          return (
+            <BarTile
+              key={bar.id}
+              name={name}
+              on={on}
+              last={last}
+              onChange={(show) =>
+                void update(
+                  { hiddenBars: { [provider]: next(show) } as HiddenBars },
+                  `${name} bar ${show ? "shown" : "hidden"}`,
+                )
+              }
+            />
+          );
+        })}
+      </div>
     </Section>
+  );
+}
+
+/** One bar's switch: its name and toggle on one compact card, three to a row. */
+function BarTile({
+  name,
+  on,
+  last,
+  onChange,
+}: {
+  name: string;
+  on: boolean;
+  last: boolean;
+  onChange: (show: boolean) => void;
+}) {
+  const labelId = useId();
+  return (
+    <div className="ud-row flex min-h-[68px] items-center justify-between gap-3 rounded border border-(--s-cardBorder) bg-(--s-card) p-4">
+      <span id={labelId} className="min-w-0 truncate text-sm">
+        {name}
+      </span>
+      <Toggle
+        labelledBy={labelId}
+        checked={on}
+        disabled={last}
+        title={last ? LAST_BAR : undefined}
+        onChange={onChange}
+      />
+    </div>
   );
 }
