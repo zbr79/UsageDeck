@@ -51,6 +51,7 @@ let settings: Settings = {
   disabledAccounts: ["hidden@example.com", "claude:hidden@example.com"],
   providerOrder: ["opencode", "cursor", "grok", "codex", "claude"],
   startAtLogin: true,
+  autoInstallUpdates: false,
   claudeHourlyTarget: null,
   // `?snoozed=1` starts with two cards hidden until they reset (browser preview only).
   snoozedUntil: query().get("snoozed")
