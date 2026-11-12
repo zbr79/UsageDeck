@@ -37,7 +37,7 @@ When Anthropic gives a model a weekly limit of its own (Fable), the Claude card 
 bar: `5h | W | Fable`, like the OpenCode card's three bars. A full Fable limit turns only that bar
 red: the other models still work, so the card is not used up.
 
-Fable's own use also shows as a darker part at the start of the 5h and W bars; hover a bar for the
+Fable's own use also shows as a purple part at the start of the 5h and W bars; hover a bar for the
 numbers. On W the number is exact: Anthropic reports Fable's use in points of the weekly bar
 (`Fable 12 pts (allowance 50% of weekly)`). On 5h it is an estimate, marked `≈`: the 5h bar times
 Fable's share of the dollars Claude Code on this PC spent in the current 5-hour window. Use on

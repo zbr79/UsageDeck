@@ -44,9 +44,12 @@ describe.each(CARD_PALETTES)("%s card theme", (_name, p) => {
     expect(contrast(b.fg, b.bg, p.card)).toBeGreaterThanOrEqual(AA_TEXT);
   });
 
-  it.each(["barOk", "barWarn", "barDanger"] as const)("%s meter fill meets 3:1", (key) => {
-    expect(contrast(p[key], p.card)).toBeGreaterThanOrEqual(AA_NON_TEXT);
-  });
+  it.each(["barOk", "barWarn", "barDanger", "barFable"] as const)(
+    "%s meter fill meets 3:1",
+    (key) => {
+      expect(contrast(p[key], p.card)).toBeGreaterThanOrEqual(AA_NON_TEXT);
+    },
+  );
 
   // The even-pace tick sits on the meter track and pokes out onto the card.
   it("pace tick meets 3:1 against the track and the card", () => {
