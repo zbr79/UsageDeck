@@ -74,6 +74,7 @@ describe("Meter segment", () => {
     const html = meter({ detail: "60% used", segment: { pct: 18, title: "Fable 18 pts" } });
     expect(html).toContain('data-testid="meter-segment"');
     expect(html).toContain("width:30%");
+    expect(html).toContain("margin-left:70%");
     expect(html).toContain('title="Weekly: 60% used · Fable 18 pts"');
     expect(html).toContain("60%, resets in 2d. 60% used · Fable 18 pts");
   });
