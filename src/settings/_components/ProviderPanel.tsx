@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { CardHeader } from "@/widget/_components/Card";
 import { accountKey } from "@/lib/account-key";
+import { claudeResetRows, codexResetRows, type ResetRow } from "@/lib/claude-resets";
 import type {
   ClaudeUsage,
   CodexUsage,
@@ -114,6 +115,16 @@ function providerCard(
   }
 }
 
+/** The lines beside a Claude or Codex card (none without usage); null on other pages. */
+function resetRowsOf(id: ProviderId, account: AnyAccount): ResetRow[] | null {
+  if (id === "claude") {
+    const resets = (account.usage as ClaudeUsage | null)?.resets;
+    return resets ? claudeResetRows(resets) : [];
+  }
+  if (id === "codex") return account.usage ? codexResetRows(account.usage as CodexUsage) : [];
+  return null;
+}
+
 /** "1 account" / "3 accounts". */
 export function accountCount(n: number | null): string | null {
   if (n === null) return null;
@@ -167,7 +178,7 @@ export default function ProviderPanel({
             const key = accountKey(id, account.id);
             const isHidden = hidden(account.id);
             const shownName = nickname(account.id) || labelOf(id, account);
-            const resets = id === "claude" ? (account.usage as ClaudeUsage | null)?.resets : null;
+            const resetRows = resetRowsOf(id, account);
             return (
               <AccountCell
                 key={account.id}
@@ -191,7 +202,7 @@ export default function ProviderPanel({
                     onSelect: () => refreshWidget(summaries.reloadAll),
                   },
                 ]}
-                aside={resets && <ResetsAside resets={resets} />}
+                aside={resetRows && <ResetsAside rows={resetRows} />}
                 card={(header) =>
                   providerCard(
                     id,
