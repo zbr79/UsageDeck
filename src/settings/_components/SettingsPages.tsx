@@ -6,7 +6,6 @@ import { formatAgo, formatResetDuration } from "@/lib/format";
 import {
   checkForUpdates,
   installUpdate,
-  lastCheckLine,
   useUpdateStatus,
   type UpdateStatus,
 } from "@/lib/updates";
@@ -16,7 +15,7 @@ import { Toggle } from "@/ui/Toggle";
 import appIcon from "../../../src-tauri/icons/128x128.png";
 import { moveItem, PAGE_TITLES, PROVIDER_ICONS } from "../_lib/pages";
 import { usePanelTheme } from "../_lib/theme";
-import { CopyDiagnosticsButton, formatAt } from "./Diagnostics";
+import { CopyDiagnosticsButton } from "./Diagnostics";
 import { Page, primaryButton, Section, secondaryButton, selectClass, SettingRow } from "./fields";
 
 type Update = (patch: SettingsPatch, success?: string) => Promise<boolean>;
@@ -174,14 +173,7 @@ function UpdatesSection({ settings, update }: Props) {
           />
         )}
       />
-      <SettingRow
-        title="Diagnostics"
-        description={
-          lastCheckLine(status, (ms) => formatAt(ms, now)) ?? "No update check has finished yet"
-        }
-        live
-        control={() => <CopyDiagnosticsButton />}
-      />
+      <SettingRow title="Diagnostics" control={() => <CopyDiagnosticsButton />} />
     </Section>
   );
 }
@@ -465,8 +457,7 @@ export function AboutPage({ settings, update }: Props) {
           <div>
             <div className="text-xl leading-7 font-semibold">UsageDeck</div>
             <div className="text-xs text-(--p-muted)">
-              Version {version ?? "unknown"} · usage monitor for Claude, Codex, Cursor, Grok Bot and
-              OpenCode
+              Version {version ?? "unknown"}
             </div>
           </div>
         </div>
@@ -485,7 +476,6 @@ export function AboutPage({ settings, update }: Props) {
         />
         <SettingRow
           title="Source code"
-          description="github.com/zbr79/UsageDeck"
           control={(labelId) => (
             <button
               type="button"

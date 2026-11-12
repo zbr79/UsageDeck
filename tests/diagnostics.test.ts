@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { cursorRows, type CursorAttempt } from "@/lib/diagnostics";
 import { CURSOR_PERSISTENT_FAILURES, cursorErrorHint } from "@/lib/errors";
 import type { ProviderErrorKind } from "@/lib/types";
-import { isBusy, lastCheckLine, statusChanged, type UpdateStatus } from "@/lib/updates";
+import { isBusy, statusChanged, type UpdateStatus } from "@/lib/updates";
 import { snoozedEntries } from "@/settings/_components/SettingsPages";
 
 const at = (ms: number) => `t${ms}`;
@@ -150,27 +150,6 @@ describe("update status store rules", () => {
     expect(statusChanged(status(), status({ lastChecked: 5 }))).toBe(true);
   });
 
-  it("puts the last check in words, also a silent background one", () => {
-    expect(lastCheckLine(status(), at)).toBeNull();
-    expect(
-      lastCheckLine(
-        status({
-          lastChecked: 7,
-          lastCheck: { trigger: "background", result: "up to date", latestVersion: "1.4.4" },
-        }),
-        at,
-      ),
-    ).toBe("Last check t7 (background): up to date · newest release 1.4.4");
-    expect(
-      lastCheckLine(
-        status({
-          lastChecked: 9,
-          lastCheck: { trigger: "manual", result: "failed: HTTP 403", latestVersion: null },
-        }),
-        at,
-      ),
-    ).toBe("Last check t9 (manual): failed: HTTP 403");
-  });
 });
 
 describe("hidden until reset list", () => {
