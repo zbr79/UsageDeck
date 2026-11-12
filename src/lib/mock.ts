@@ -23,6 +23,9 @@ const query = () => new URLSearchParams(typeof location === "undefined" ? "" : l
 // (browser preview only); it defaults to 1h 21m.
 const CODEX_RESET_MS = Number(query().get("codexReset")) || 81 * 60_000;
 const iso = (msFromNow: number) => new Date(NOW + msFromNow).toISOString();
+// `?fable=0`: Claude without Fable's shares of the weekly and 5-hour bars, as 1.4.7 previewed it
+// (browser preview only).
+const NO_FABLE = query().get("fable") === "0";
 
 /** `?hiddenBars={"opencode":["rolling"],"codex":["fiveHour"]}`: start with those bars turned off. */
 function queryHiddenBars() {
@@ -188,7 +191,15 @@ const providers: Record<string, unknown> = {
       weekly: { percent: 60, resetsAt: iso(52 * H) },
       weeklyOpus: null,
       weeklySonnet: null,
-      weeklyScoped: [{ label: "Fable", percent: 23, resetsAt: iso(52 * H) }],
+      weeklyScoped: [
+        {
+          label: "Fable",
+          percent: 23,
+          resetsAt: iso(52 * H),
+          sharePctOfWeekly: NO_FABLE ? 0 : 12,
+          allowancePctOfWeekly: 50,
+        },
+      ],
       resetCredits: null,
       billingType: null,
       rateLimitTier: null,
@@ -527,6 +538,7 @@ export function paceScenario(scenario: PaceScenario, now = NOW): ClaudePace {
         state: "lasts",
       },
     },
+    fableFiveHour: NO_FABLE ? null : { usd: 135.2, totalUsd: 353.1 },
     calibration: { usdPerWeeklyPct: 185.6 },
     coverage: "claude-code-this-pc",
   };

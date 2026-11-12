@@ -1,7 +1,7 @@
 // Pure helpers for Claude spend and pace: the widget card (header rate, even-pace tick and meter
 // tooltip) and the settings section.
 // Data comes from GET /api/claude/pace; see docs/plans/claude-spend-and-pace.md.
-import type { ClaudePace, PaceWindow } from "./types";
+import type { ClaudePace, ClaudeScopedWindow, ModelShare, PaceWindow } from "./types";
 
 export type PaceTone = "muted" | "amber" | "red";
 export type PaceWindowKey = "fiveHour" | "weekly";
@@ -241,4 +241,43 @@ export function calibrationText(usdPerWeeklyPct: number | null): string | null {
   return usdPerWeeklyPct == null
     ? null
     : `1% of your weekly limit ≈ ${formatUsd(usdPerWeeklyPct)} of usage`;
+}
+
+/** A darker part at the start of a meter's fill: the points one model used, and what to say. */
+export interface MeterSegment {
+  pct: number;
+  title: string;
+}
+
+const pts = (v: number) => formatPct(v).replace("%", " pts");
+
+/**
+ * Fable's part of the weekly bar, exact from Anthropic: its use in points of the weekly bar, at
+ * most the bar's own fill. Null without any use.
+ */
+export function weeklyModelSegment(
+  weeklyPct: number,
+  scoped: ClaudeScopedWindow | undefined,
+): MeterSegment | null {
+  const share = scoped?.sharePctOfWeekly;
+  if (share == null || !(share > 0) || !(weeklyPct > 0)) return null;
+  const allowance =
+    scoped!.allowancePctOfWeekly == null
+      ? ""
+      : ` (allowance ${formatPct(scoped!.allowancePctOfWeekly)} of weekly)`;
+  return { pct: Math.min(share, weeklyPct), title: `${scoped!.label} ${pts(share)}${allowance}` };
+}
+
+/**
+ * Fable's part of the 5-hour bar, an estimate: the bar times Fable's share of the API-equivalent
+ * dollars Claude Code on this PC spent in the window. Use elsewhere (claude.ai, other PCs) is not
+ * in the logs, so this can be off either way. Null without Fable dollars.
+ */
+export function fiveHourFableSegment(
+  fiveHourPct: number,
+  share: ModelShare | null,
+): MeterSegment | null {
+  if (!share || !(share.totalUsd > 0) || !(share.usd > 0) || !(fiveHourPct > 0)) return null;
+  const pct = fiveHourPct * Math.min(1, share.usd / share.totalUsd);
+  return { pct, title: `Fable ≈${pts(pct)} (estimate from Claude Code on this PC)` };
 }

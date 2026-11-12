@@ -56,7 +56,15 @@ describe("usedUp", () => {
   it("claude: a full Fable limit leaves the card usable, since the other models still work", () => {
     const fableFull = {
       ...claude(30, 40),
-      weeklyScoped: [{ label: "Fable", percent: 100, resetsAt: at(30 * H) }],
+      weeklyScoped: [
+        {
+          label: "Fable",
+          percent: 100,
+          resetsAt: at(30 * H),
+          sharePctOfWeekly: 50,
+          allowancePctOfWeekly: 50,
+        },
+      ],
     };
     expect(usedUp("claude", fresh(fableFull), NOW, ALL)).toBeNull();
   });
