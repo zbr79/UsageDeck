@@ -80,3 +80,33 @@ export function claudeResetRows(resets: ClaudeResets): ResetRow[] {
   }
   return rows;
 }
+
+/** One reset pill on a Claude card: how many of one kind, named in its tooltip. */
+export interface ResetChip {
+  key: string;
+  count: number;
+  /** "Free limit reset: 1 left · ends Dec 15" */
+  label: string;
+  /** paused grants, or nothing usable: drawn gray */
+  muted: boolean;
+}
+
+/** A pill per kind of reset in hand; the weekly 5-hour reset only while it is available. */
+export function claudeResetChips(resets: ClaudeResets): ResetChip[] {
+  const rows = claudeResetRows(resets);
+  const chips = resets.groups.map((g, i) => ({
+    key: rows[i]!.key,
+    count: g.count,
+    label: `${rows[i]!.title}: ${rows[i]!.detail}`,
+    muted: g.paused || g.count === 0,
+  }));
+  if (resets.weeklyFiveHourAvailable) {
+    chips.push({
+      key: "weekly-five-hour",
+      count: 1,
+      label: "Weekly 5-hour reset: Available",
+      muted: false,
+    });
+  }
+  return chips;
+}

@@ -22,7 +22,7 @@ import { orderTracked } from "../_lib/order";
 import { usePanelTheme } from "../_lib/theme";
 import { AccountCell, CardGrid, EmptyState, ProviderLogo, useNow } from "./CardGrid";
 import BarsSection from "./BarsSection";
-import ResetsSection from "./ResetsSection";
+import ResetsAside from "./ResetsAside";
 import { RenameDialog } from "./dialogs";
 import { CursorDiagnostics } from "./Diagnostics";
 import PaceSection, { usePace } from "./PaceSection";
@@ -137,13 +137,6 @@ export default function ProviderPanel({
   const sorted = accounts ? orderTracked(id, accounts, hidden, settings.hiddenBars, now) : null;
   const nickname = (accountId: string) => settings.displayNames[accountKey(id, accountId)] ?? "";
   const renameAccount = accounts?.find((a) => a.id === renaming) ?? null;
-  const resetLines =
-    id === "claude" && sorted
-      ? sorted.flatMap((a) => {
-          const resets = (a.usage as ClaudeUsage | null)?.resets;
-          return resets ? [{ id: a.id, name: nickname(a.id) || labelOf(id, a), resets }] : [];
-        })
-      : [];
   const scopedLabel =
     id === "claude"
       ? accounts?.map((a) => (a.usage as ClaudeUsage | null)?.weeklyScoped[0]?.label).find(Boolean)
@@ -163,11 +156,12 @@ export default function ProviderPanel({
           here.
         </EmptyState>
       ) : (
-        <CardGrid>
+        <CardGrid single={id === "claude" || id === "codex"}>
           {sorted.map((account) => {
             const key = accountKey(id, account.id);
             const isHidden = hidden(account.id);
             const shownName = nickname(account.id) || labelOf(id, account);
+            const resets = id === "claude" ? (account.usage as ClaudeUsage | null)?.resets : null;
             return (
               <AccountCell
                 key={account.id}
@@ -191,6 +185,7 @@ export default function ProviderPanel({
                     onSelect: () => refreshWidget(summaries.reloadAll),
                   },
                 ]}
+                aside={resets && <ResetsAside resets={resets} />}
                 card={(header) =>
                   providerCard(
                     id,
@@ -209,7 +204,6 @@ export default function ProviderPanel({
           })}
         </CardGrid>
       )}
-      <ResetsSection accounts={resetLines} />
       <BarsSection
         provider={id}
         settings={settings}

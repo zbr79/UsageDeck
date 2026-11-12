@@ -92,15 +92,22 @@ const card = (resetCredits: number | null, resets: ClaudeResets | null) =>
   );
 
 describe("Claude card reset badge", () => {
-  it("shows the total and names each kind in its tooltip", () => {
-    const html = card(3, {
-      groups: [group({ count: 2 })],
+  it("shows a pill per kind, each named with its count and expiry on hover", () => {
+    const html = card(4, {
+      groups: [
+        group({ label: "Free limit reset", count: 2, earliestExpiry: "2026-12-15T12:00:00Z" }),
+        group({ kind: "fiveHour", label: "5-hour reset", paused: true }),
+      ],
       weeklyFiveHourAvailable: true,
     });
-    expect(html).toContain("↺ 3");
-    expect(html).toContain(
-      'title="Reset credits available: 3. 2 full resets · weekly 5-hour reset available"',
-    );
+    expect(html.match(/↺ /g)).toHaveLength(3);
+    expect(html).toContain('title="Free limit reset: 2 left · earliest ends Dec 15"');
+    expect(html).toContain('title="5-hour reset: 1 left · paused"');
+    expect(html).toContain('title="Weekly 5-hour reset: Available"');
+  });
+
+  it("falls back to the total when Claude names no kinds", () => {
+    expect(card(0, { groups: [], weeklyFiveHourAvailable: false })).toContain("↺ 0");
   });
 
   it("shows no badge when Claude lists no resets", () => {

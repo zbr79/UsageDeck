@@ -15,13 +15,15 @@ export function useNow(intervalMs = 60_000): number {
 
 /**
  * The widget's own cards, 2 per row, 1 when the page is narrow (a container query on the grid's
- * width). The cards are drawn at 1.1x (`.ud-cards` zoom) so their 11 px widget text reads at
- * 12 px or more, the settings minimum.
+ * width) or when `single`. The cards are drawn at 1.1x (`.ud-cards` zoom) so their 11 px widget
+ * text reads at 12 px or more, the settings minimum.
  */
-export function CardGrid({ children }: { children: ReactNode }) {
+export function CardGrid({ children, single }: { children: ReactNode; single?: boolean }) {
   return (
     <div className="@container">
-      <ul className="ud-cards grid grid-cols-1 gap-3 p-1 @[540px]:grid-cols-2">{children}</ul>
+      <ul className={`ud-cards grid grid-cols-1 gap-3 p-1 ${single ? "" : "@[540px]:grid-cols-2"}`}>
+        {children}
+      </ul>
     </div>
   );
 }
@@ -37,6 +39,7 @@ export function AccountCell({
   onShownChange,
   menuItems,
   card,
+  aside,
 }: {
   /** the card's title (nickname, or else the email) */
   name: string;
@@ -44,6 +47,8 @@ export function AccountCell({
   onShownChange: (next: boolean) => void;
   menuItems: MenuItem[];
   card: (header: CardHeader) => ReactNode;
+  /** shown to the card's right */
+  aside?: ReactNode;
 }) {
   const more = useRef<HTMLButtonElement>(null);
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
@@ -91,7 +96,14 @@ export function AccountCell({
         openFromButton();
       }}
     >
-      {card({ headerActions: actions })}
+      {aside ? (
+        <div className="flex items-stretch gap-3">
+          <div className="min-w-0 flex-1 *:h-full">{card({ headerActions: actions })}</div>
+          {aside}
+        </div>
+      ) : (
+        card({ headerActions: actions })
+      )}
       {menuAt && (
         <Menu
           label={`Options for ${name}`}
