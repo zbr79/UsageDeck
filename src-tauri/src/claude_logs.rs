@@ -523,6 +523,11 @@ impl SpendEngine {
         sum_where(&s.buckets, |mid| mid > since && mid <= now + MINUTE_MS)
     }
 
+    /// Fable's part of the dollars spent from `since` to `now`; see `fable_share`.
+    pub fn fable_share(&self, since: i64, now: i64) -> Option<ModelShare> {
+        fable_share(&self.lock_shared().buckets, since, now)
+    }
+
     /// The `spend` object of `/api/claude/pace` at `now`.
     pub fn spend(&self, now: i64) -> Spend {
         let local = Local
@@ -567,6 +572,55 @@ fn sum_where(buckets: &Buckets, keep: impl Fn(i64) -> bool) -> f64 {
         }
     }
     usd
+}
+
+/// Model ids that count against Anthropic's Fable weekly limit. Mythos is the same model under
+/// another id (the price table gives both the same prices).
+const FABLE_MODEL_PREFIXES: [&str; 2] = ["claude-fable", "claude-mythos"];
+
+/// One model family's dollars beside all dollars, over the same span.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelShare {
+    pub usd: f64,
+    pub total_usd: f64,
+}
+
+/// Fable's dollars and all dollars from `since` to `now`, priced models only. None when either
+/// is zero: nothing to split, or no part to show.
+fn fable_share(buckets: &Buckets, since: i64, now: i64) -> Option<ModelShare> {
+    let keep = |mid: i64| mid > since && mid <= now + MINUTE_MS;
+    let mut share = ModelShare {
+        usd: 0.0,
+        total_usd: 0.0,
+    };
+    for (minute, models) in buckets.range(since / MINUTE_MS - 1..) {
+        if !keep(mid(*minute)) {
+            continue;
+        }
+        for ((model, tier), b) in models {
+            let Some(price) = price_of(model, *tier) else {
+                continue;
+            };
+            let usd = cost(&price, &b.tokens);
+            share.total_usd += usd;
+            if FABLE_MODEL_PREFIXES.iter().any(|p| model.starts_with(p)) {
+                share.usd += usd;
+            }
+        }
+    }
+    (share.usd > 0.0 && share.total_usd > 0.0).then_some(share)
+}
+
+/// The start of the current 5-hour window: 5 hours before its reset, else 5 hours ago when the
+/// reset is unknown, already past or further off than one window.
+fn five_hour_start(resets_at: Option<&str>, now: i64) -> i64 {
+    let window = 5 * HOUR_MS;
+    resets_at
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|d| d.timestamp_millis())
+        .filter(|r| *r > now && *r <= now + window)
+        .map_or(now - window, |r| r - window)
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -715,12 +769,15 @@ pub fn pace_body(engine: &SpendEngine, dir: &Path, now: i64) -> Value {
     let weekly = history::points_of(&mine, history::WEEKLY);
     let usd_per_weekly_pct =
         history::usd_per_weekly_pct(&weekly, now, |t| engine.spend_between(t, now));
+    let five_pace = history::window_pace(&five, now, 5 * HOUR_MS);
+    let five_start = five_hour_start(five_pace.as_ref().and_then(|p| p.resets_at.as_deref()), now);
     json!({
         "spend": spend,
         "windows": {
-            "fiveHour": history::window_pace(&five, now, 5 * HOUR_MS),
+            "fiveHour": five_pace,
             "weekly": history::window_pace(&weekly, now, 7 * history::DAY_MS),
         },
+        "fableFiveHour": engine.fable_share(five_start, now),
         "calibration": { "usdPerWeeklyPct": usd_per_weekly_pct },
         "coverage": "claude-code-this-pc",
     })
@@ -911,6 +968,59 @@ mod tests {
         // 5 and 30 min ago are in the current hour (10:00-10:30); 120 min ago is 08:30 -> index 2
         assert!(close(s.hourly[0], 2.0) && close(s.hourly[2], 2.0));
         assert!(close(s.by_model[0].usd24h, 4.0));
+    }
+
+    #[test]
+    fn fables_share_counts_fable_and_mythos_inside_the_window_only() {
+        let mut b = Buckets::new();
+        let add = |b: &mut Buckets, mins_ago: i64, model: &str, out: u64| {
+            b.entry((NOW - mins_ago * MINUTE_MS) / MINUTE_MS)
+                .or_default()
+                .entry((model.into(), Tier::Standard))
+                .or_default()
+                .tokens
+                .output += out;
+        };
+        let since = NOW - 3 * HOUR_MS;
+        add(&mut b, 10, "claude-opus-5-5", 100_000); // $2
+        add(&mut b, 20, "claude-fable-5-2-20261020", 25_000); // $1
+        add(&mut b, 179, "claude-mythos-5-1", 20_000); // $1, inside by a minute
+        add(&mut b, 181, "claude-fable-5-2", 25_000); // before the window
+        add(&mut b, 30, "claude-fable-9", 50_000); // unpriced: in neither figure
+        let share = fable_share(&b, since, NOW).unwrap();
+        assert!(close(share.usd, 2.0), "{}", share.usd);
+        assert!(close(share.total_usd, 4.0), "{}", share.total_usd);
+        assert_eq!(
+            serde_json::to_value(share).unwrap(),
+            json!({ "usd": share.usd, "totalUsd": share.total_usd })
+        );
+
+        let mut no_fable = Buckets::new();
+        add(&mut no_fable, 10, "claude-opus-5-5", 100_000);
+        assert_eq!(fable_share(&no_fable, since, NOW), None);
+        assert_eq!(fable_share(&Buckets::new(), since, NOW), None);
+        let mut only_unpriced = Buckets::new();
+        add(&mut only_unpriced, 10, "claude-fable-9", 100_000);
+        assert_eq!(fable_share(&only_unpriced, since, NOW), None);
+    }
+
+    #[test]
+    fn the_five_hour_window_starts_five_hours_before_its_reset() {
+        let iso = |ms: i64| {
+            chrono::DateTime::from_timestamp_millis(ms)
+                .unwrap()
+                .to_rfc3339()
+        };
+        let reset = NOW + 2 * HOUR_MS;
+        assert_eq!(five_hour_start(Some(&iso(reset)), NOW), reset - 5 * HOUR_MS);
+        let fallback = NOW - 5 * HOUR_MS;
+        assert_eq!(five_hour_start(None, NOW), fallback);
+        assert_eq!(five_hour_start(Some("soon"), NOW), fallback);
+        assert_eq!(five_hour_start(Some(&iso(NOW - MINUTE_MS)), NOW), fallback);
+        assert_eq!(
+            five_hour_start(Some(&iso(NOW + 6 * HOUR_MS)), NOW),
+            fallback
+        );
     }
 
     #[test]
