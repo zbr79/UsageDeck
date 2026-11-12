@@ -198,7 +198,7 @@ export function OpenCodeCard({
     fullEmail ? row.email : row.email.slice(0, 4),
   );
   const u = row.usage;
-  const used = openCodeUsedUp(row, now);
+  const used = openCodeUsedUp(row, now, settings.hiddenBars);
   const state: CardState = used ? "exhausted" : active ? "active" : "normal";
   const unknown = (w: "rolling" | "weekly" | "monthly") =>
     !!u && isUnknownWindow(u[w], row.stale, now);
@@ -343,7 +343,9 @@ export function CursorCard({
     multiple,
   );
   const cyclePassed = slot.stale && isPassed(c?.resetsAt, now);
-  const used = signedOut ? null : usedUp("cursor", { usage: c, stale: slot.stale }, now);
+  const used = signedOut
+    ? null
+    : usedUp("cursor", { usage: c, stale: slot.stale }, now, settings.hiddenBars);
   const failure = cursorErrorHint(slot.error, note);
   // the API dollars of a past cycle say nothing about this one
   const api = cyclePassed ? null : (c?.apiSpend ?? null);
@@ -456,7 +458,7 @@ export function GrokCard({
     multiple,
   );
   const passed = slot.stale && isPassed(g?.resetAt, now);
-  const used = usedUp("grok", { usage: g, stale: slot.stale }, now);
+  const used = usedUp("grok", { usage: g, stale: slot.stale }, now, settings.hiddenBars);
   const plan = g?.planLabel ?? g?.cursorPlanName;
   const account = g?.email
     ? `${g.email}${g.source === "cursor" ? " (via Cursor sign-in)" : ""}`
@@ -531,7 +533,7 @@ export function CodexCard({
   const hasWeekly = x?.weeklyUsedPercent != null;
   const fiveHour = hasWeekly && x?.limitWindowSeconds === 18000;
   const weeklyPassed = slot.stale && isPassed(x?.weeklyResetAt, now);
-  const used = usedUp("codex", { usage: x, stale: slot.stale }, now);
+  const used = usedUp("codex", { usage: x, stale: slot.stale }, now, settings.hiddenBars);
   return (
     <Card
       extras={extras}
@@ -641,7 +643,7 @@ export function ClaudeCard({
   const badgeTone: Tone = !badge || badge === "signed out" ? "gray" : planTone(badge);
   const windowUnknown = (w: ClaudeUsage["fiveHour"] | undefined) =>
     w?.percent == null || (slot.stale && isPassed(w.resetsAt, now));
-  const used = usedUp("claude", { usage: c, stale: slot.stale }, now);
+  const used = usedUp("claude", { usage: c, stale: slot.stale }, now, settings.hiddenBars);
   // One model's own weekly limit (Fable) as a third bar; a second one would not fit at 238 px.
   const scoped = c?.weeklyScoped[0];
   const rate = headerRate(pace);

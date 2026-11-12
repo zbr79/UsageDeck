@@ -1,4 +1,5 @@
-import { isAccountExhausted, isPassed, usableAgainAt } from "./ranking";
+import { claudeBars, codexBars, shownBars, type BarId, type HiddenBars } from "./bars";
+import { isExhaustedWindow, isPassed } from "./ranking";
 import type {
   ClaudeUsage,
   CodexUsage,
@@ -9,7 +10,8 @@ import type {
 } from "./types";
 
 // When a card is used up (its red ring), and when it can be used again. The widget cards, the
-// settings order and the widget's "hide until it resets" all read this one rule.
+// settings order and the widget's "hide until it resets" all read this one rule. Only the bars the
+// card shows count: a full bar the user turned off never turns the card red.
 
 export interface UsageOf {
   cursor: CursorUsage;
@@ -39,47 +41,66 @@ interface LimitWindow {
 }
 
 /**
- * Cursor stops when every included bucket it reports is at 100% and on-demand usage cannot take
- * over: it is off, its monthly limit is spent, or Cursor did not say.
+ * Cursor stops when every included bucket it reports (of the bars shown) is at 100% and on-demand
+ * usage cannot take over: it is off, its monthly limit is spent, or Cursor did not say.
  */
-function cursorUsedUp(c: CursorUsage): boolean {
-  const buckets = [c.cursorModelsPercentUsed, c.otherModelsPercentUsed].filter(
-    (p): p is number => p != null,
-  );
+function cursorUsedUp(c: CursorUsage, shown: ReadonlySet<BarId<"cursor">>): boolean {
+  const buckets = [
+    shown.has("firstParty") ? c.cursorModelsPercentUsed : null,
+    shown.has("api") ? c.otherModelsPercentUsed : null,
+  ].filter((p): p is number => p != null);
   const od = c.onDemand;
   const onDemandLeft =
     od?.state === "enabled" && (od.limitUsd == null || od.spentUsd < od.limitUsd);
   return buckets.length > 0 && buckets.every((p) => p >= 100) && !onDemandLeft;
 }
 
-/** The windows that can stop each provider. */
-const WINDOWS: { [P in ProviderId]: (usage: UsageOf[P]) => LimitWindow[] } = {
-  cursor: (c) => [{ full: cursorUsedUp(c), resetsAt: c.resetsAt }],
-  grok: (g) => [{ full: (g.percentUsed ?? 0) >= 100, resetsAt: g.resetAt }],
-  codex: (x) => [
-    { full: x.limitReached || (x.usedPercent ?? 0) >= 100, resetsAt: x.resetAt },
-    {
-      full: x.weeklyUsedPercent != null && x.weeklyUsedPercent >= 100,
-      resetsAt: x.weeklyResetAt,
-    },
+/** The windows that can stop each provider, out of the bars its card shows. */
+const WINDOWS: {
+  [P in ProviderId]: (usage: UsageOf[P], hidden: HiddenBars) => LimitWindow[];
+} = {
+  cursor: (c, hidden) => [
+    { full: cursorUsedUp(c, shownBars("cursor", hidden)), resetsAt: c.resetsAt },
   ],
+  grok: (g) => [{ full: (g.percentUsed ?? 0) >= 100, resetsAt: g.resetAt }],
+  codex: (x, hidden) => {
+    const shown = shownBars("codex", hidden, codexBars(x));
+    return [
+      shown.has("fiveHour") && {
+        full: x.limitReached || (x.usedPercent ?? 0) >= 100,
+        resetsAt: x.resetAt,
+      },
+      shown.has("weekly") && {
+        full: x.weeklyUsedPercent != null && x.weeklyUsedPercent >= 100,
+        resetsAt: x.weeklyResetAt,
+      },
+    ].filter((w) => w !== false);
+  },
   // A model's own weekly limit (Fable) is left out: when it is full, the other models still work,
   // so only its bar turns red.
-  claude: (c) =>
-    [c.fiveHour, c.weekly].map((w) => ({
-      full: w?.percent != null && w.percent >= 100,
-      resetsAt: w?.resetsAt,
-    })),
+  claude: (c, hidden) => {
+    const shown = shownBars("claude", hidden, claudeBars(c));
+    return (["fiveHour", "weekly"] as const)
+      .filter((bar) => shown.has(bar))
+      .map((bar) => ({
+        full: c[bar]?.percent != null && c[bar].percent >= 100,
+        resetsAt: c[bar]?.resetsAt,
+      }));
+  },
 };
 
-/** Null while the account can be used. A cached window whose reset has passed tells nothing. */
+/**
+ * Null while the account can be used. A cached window whose reset has passed tells nothing, and
+ * neither does a bar in `hidden`.
+ */
 export function usedUp<P extends ProviderId>(
   provider: P,
   snapshot: UsageSnapshot<UsageOf[P]>,
   now: number,
+  hidden: HiddenBars,
 ): UsedUp | null {
   if (!snapshot.usage) return null;
-  const full = WINDOWS[provider](snapshot.usage).filter(
+  const full = WINDOWS[provider](snapshot.usage, hidden).filter(
     (w) => w.full && !(snapshot.stale && isPassed(w.resetsAt, now)),
   );
   if (full.length === 0) return null;
@@ -87,10 +108,24 @@ export function usedUp<P extends ProviderId>(
   return { until: resets.every(Number.isFinite) ? Math.max(...resets) : null };
 }
 
-/** `usedUp` for an OpenCode account: its weekly and monthly windows, as the widget ranks them. */
-export function openCodeUsedUp(row: OpenCodeAccountUsage, now: number): UsedUp | null {
-  if (!isAccountExhausted(row, now)) return null;
-  return { until: usableAgainAt(row, now) || null };
+/**
+ * `usedUp` for an OpenCode account: its weekly and monthly windows, as the widget ranks them, when
+ * their bars show. Waits for the latest reset among the full ones.
+ */
+export function openCodeUsedUp(
+  row: OpenCodeAccountUsage,
+  now: number,
+  hidden: HiddenBars,
+): UsedUp | null {
+  const u = row.usage;
+  if (!u) return null;
+  const shown = shownBars("opencode", hidden);
+  const full = (["weekly", "monthly"] as const).filter(
+    (bar) => shown.has(bar) && isExhaustedWindow(u[bar], row.stale, now),
+  );
+  if (full.length === 0) return null;
+  const times = full.map((bar) => new Date(u[bar].resetsAt).getTime()).filter(Number.isFinite);
+  return { until: times.length ? Math.max(...times) : null };
 }
 
 /**

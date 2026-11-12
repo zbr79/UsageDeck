@@ -123,7 +123,7 @@ export default function ProviderPanel({
   const accounts = summaries[id]?.accounts ?? null;
   const hidden = (accountId: string) =>
     settings.disabledAccounts.includes(accountKey(id, accountId));
-  const sorted = accounts ? orderTracked(id, accounts, hidden, now) : null;
+  const sorted = accounts ? orderTracked(id, accounts, hidden, settings.hiddenBars, now) : null;
   const nickname = (accountId: string) => settings.displayNames[accountKey(id, accountId)] ?? "";
   const renameAccount = accounts?.find((a) => a.id === renaming) ?? null;
 

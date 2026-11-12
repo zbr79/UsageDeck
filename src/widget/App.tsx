@@ -98,7 +98,7 @@ export default function WidgetPage() {
     signedIn(provider, list).map((account) => ({
       provider,
       id: account.id,
-      used: usedUp(provider, account, now),
+      used: usedUp(provider, account, now, settings.hiddenBars),
     }));
   const snoozed = snoozedCards(
     [
@@ -106,7 +106,7 @@ export default function WidgetPage() {
         ? ranked.map((row) => ({
             provider: "opencode" as const,
             id: row.email,
-            used: openCodeUsedUp(row, now),
+            used: openCodeUsedUp(row, now, settings.hiddenBars),
           }))
         : []),
       ...cardsUsedUp("cursor", data.cursor),
