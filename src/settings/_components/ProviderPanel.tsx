@@ -20,6 +20,7 @@ import { refreshWidget, type Summaries } from "../_lib/hooks";
 import { orderTracked } from "../_lib/order";
 import { usePanelTheme } from "../_lib/theme";
 import { AccountCell, CardGrid, EmptyState, ProviderLogo, useNow } from "./CardGrid";
+import BarsSection from "./BarsSection";
 import { RenameDialog } from "./dialogs";
 import { CursorDiagnostics } from "./Diagnostics";
 import PaceSection from "./PaceSection";
@@ -126,6 +127,10 @@ export default function ProviderPanel({
   const sorted = accounts ? orderTracked(id, accounts, hidden, settings.hiddenBars, now) : null;
   const nickname = (accountId: string) => settings.displayNames[accountKey(id, accountId)] ?? "";
   const renameAccount = accounts?.find((a) => a.id === renaming) ?? null;
+  const scopedLabel =
+    id === "claude"
+      ? accounts?.map((a) => (a.usage as ClaudeUsage | null)?.weeklyScoped[0]?.label).find(Boolean)
+      : undefined;
 
   return (
     <Page
@@ -186,6 +191,12 @@ export default function ProviderPanel({
           })}
         </CardGrid>
       )}
+      <BarsSection
+        provider={id}
+        settings={settings}
+        update={update}
+        scopedName={scopedLabel && `${scopedLabel} weekly`}
+      />
       {id === "cursor" && <CursorDiagnostics />}
       {id === "claude" && <PaceSection target={settings.claudeHourlyTarget} update={update} />}
       {renameAccount && (

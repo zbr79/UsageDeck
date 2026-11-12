@@ -8,6 +8,7 @@ import { orderOpenCode } from "../_lib/order";
 import { PROVIDER_ICONS } from "../_lib/pages";
 import { refreshWidget, removeAccount } from "../_lib/hooks";
 import { AccountCell, CardGrid, EmptyState, ProviderLogo, useNow } from "./CardGrid";
+import BarsSection from "./BarsSection";
 import { KeyDialog, RemoveDialog, RenameDialog } from "./dialogs";
 import { Page, primaryButton } from "./fields";
 import { accountCount } from "./ProviderPanel";
@@ -155,6 +156,7 @@ export default function OpenCodeAccounts({
           })}
         </CardGrid>
       )}
+      <BarsSection provider="opencode" settings={settings} update={update} />
       {pending?.kind === "add" && <KeyDialog onClose={close} onDone={() => void reload()} />}
       {pending?.kind === "key" && (
         <KeyDialog email={pending.email} onClose={close} onDone={() => void reload()} />
