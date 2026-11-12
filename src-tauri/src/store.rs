@@ -440,6 +440,8 @@ pub struct Settings {
     pub provider_order: Vec<WidgetProvider>,
     /// register the app in the Windows Run key so it starts with Windows
     pub start_at_login: bool,
+    /// install a downloaded update by itself once the user is away (updater.rs)
+    pub auto_install_updates: bool,
     /// Claude Code hourly spend target in whole USD per hour (1-10000); None = off
     pub claude_hourly_target: Option<u32>,
     /// used-up cards hidden from the widget until they reset: account key -> epoch ms
@@ -465,6 +467,7 @@ impl Default for Settings {
             disabled_accounts: Vec::new(),
             provider_order: DEFAULT_PROVIDER_ORDER.to_vec(),
             start_at_login: true,
+            auto_install_updates: false,
             claude_hourly_target: None,
             snoozed_until: BTreeMap::new(),
             hidden_bars: BTreeMap::new(),
@@ -647,7 +650,7 @@ pub fn apply_settings_patch_at(current: &Settings, patch: &Value, now_ms: u64) -
     };
     let mut next = current.clone();
     {
-        let bools: [(&str, &mut bool); 9] = [
+        let bools: [(&str, &mut bool); 10] = [
             ("opencodeEnabled", &mut next.opencode_enabled),
             ("cursorEnabled", &mut next.cursor_enabled),
             ("grokEnabled", &mut next.grok_enabled),
@@ -660,6 +663,7 @@ pub fn apply_settings_patch_at(current: &Settings, patch: &Value, now_ms: u64) -
             ("hideInFullscreen", &mut next.hide_in_fullscreen),
             ("showProviderNames", &mut next.show_provider_names),
             ("startAtLogin", &mut next.start_at_login),
+            ("autoInstallUpdates", &mut next.auto_install_updates),
         ];
         for (key, slot) in bools {
             if let Some(Value::Bool(b)) = obj.get(key) {
@@ -1085,6 +1089,28 @@ mod tests {
         assert!(normalize_settings(Some(&json!({ "grokEnabled": false }))).hide_in_fullscreen);
         assert!(
             !normalize_settings(Some(&json!({ "hideInFullscreen": false }))).hide_in_fullscreen
+        );
+    }
+
+    #[test]
+    fn settings_patch_auto_install_updates() {
+        let current = Settings::default();
+        assert!(!current.auto_install_updates);
+        assert_eq!(
+            serde_json::to_value(&current).unwrap()["autoInstallUpdates"],
+            json!(false)
+        );
+        let on = apply_settings_patch(&current, &json!({ "autoInstallUpdates": true }));
+        assert!(on.auto_install_updates);
+        // wrong types are ignored
+        let same = apply_settings_patch(&on, &json!({ "autoInstallUpdates": "false" }));
+        assert!(same.auto_install_updates);
+        let off = apply_settings_patch(&on, &json!({ "autoInstallUpdates": false }));
+        assert!(!off.auto_install_updates);
+        // an old settings file without the field leaves installs to the user
+        assert!(!normalize_settings(Some(&json!({ "grokEnabled": false }))).auto_install_updates);
+        assert!(
+            normalize_settings(Some(&json!({ "autoInstallUpdates": true }))).auto_install_updates
         );
     }
 

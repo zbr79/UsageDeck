@@ -1,6 +1,6 @@
 [package]
 name = "usagedeck"
-version = "1.5.2"
+version = "1.5.3"
 description = "UsageDeck: AI usage widget"
 edition = "2021"
 publish = false

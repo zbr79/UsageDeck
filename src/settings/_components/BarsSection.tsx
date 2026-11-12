@@ -26,7 +26,6 @@ export default function BarsSection({
   const onCount = bars.filter((bar) => !hidden.includes(bar.id)).length;
   return (
     <Section title="Bars">
-      <p className="mb-2 text-xs text-(--p-muted)">The bars this provider&apos;s cards show.</p>
       {bars.map((bar) => {
         const on = !hidden.includes(bar.id);
         const last = on && onCount === 1;

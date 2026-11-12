@@ -397,11 +397,13 @@ pub fn run() {
             build_tray(app)?;
             // Same rule as the Run key: a dev or cargo-target build never updates itself in
             // the background ("Check for updates" still works).
-            if cfg!(debug_assertions) || running_from_cargo_target() {
+            let dev_build = cfg!(debug_assertions) || running_from_cargo_target();
+            if dev_build {
                 log::info!("background update checks off (dev build)");
             } else {
                 updater::start(app.handle().clone());
             }
+            updater::watch_auto_install(app.handle().clone(), dev_build);
             win::screen::start_sampler(app.handle().clone());
             win::fullscreen::start_watcher(app.handle().clone());
             if cli::wants_settings(std::env::args()) {

@@ -109,6 +109,15 @@ describe("applySettingsPatch", () => {
     );
   });
 
+  it("leaves automatic update installs off by default and keeps a boolean change", () => {
+    expect(DEFAULT_SETTINGS.autoInstallUpdates).toBe(false);
+    expect(normalizeSettings({}).autoInstallUpdates).toBe(false);
+    const on = applySettingsPatch(DEFAULT_SETTINGS, { autoInstallUpdates: true });
+    expect(on.autoInstallUpdates).toBe(true);
+    expect(applySettingsPatch(on, { autoInstallUpdates: "false" }).autoInstallUpdates).toBe(true);
+    expect(applySettingsPatch(on, { autoInstallUpdates: false }).autoInstallUpdates).toBe(false);
+  });
+
   it("normalises garbage from disk to defaults", () => {
     expect(normalizeSettings(null)).toEqual(DEFAULT_SETTINGS);
     expect(normalizeSettings([1, 2])).toEqual(DEFAULT_SETTINGS);

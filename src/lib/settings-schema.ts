@@ -53,6 +53,7 @@ const BOOLEAN_KEYS = [
   "hideInFullscreen",
   "showProviderNames",
   "startAtLogin",
+  "autoInstallUpdates",
 ] as const;
 
 export const MAX_NICKNAME_LENGTH = 64;
@@ -74,6 +75,7 @@ export const DEFAULT_SETTINGS: Settings = {
   disabledAccounts: [],
   providerOrder: [...DEFAULT_PROVIDER_ORDER],
   startAtLogin: true,
+  autoInstallUpdates: false,
   claudeHourlyTarget: null,
   snoozedUntil: {},
   hiddenBars: {},

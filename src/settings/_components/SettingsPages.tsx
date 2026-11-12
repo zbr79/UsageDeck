@@ -36,7 +36,6 @@ export function GeneralPage({ settings, update }: Props) {
       <Section>
         <SettingRow
           title="Start with Windows"
-          description="Open the widget when you sign in to Windows"
           control={(labelId) => (
             <Toggle
               labelledBy={labelId}
@@ -52,7 +51,6 @@ export function GeneralPage({ settings, update }: Props) {
         />
         <SettingRow
           title="Hide during full-screen apps"
-          description="Games, videos and presentations stay clear of the widget"
           control={(labelId) => (
             <Toggle
               labelledBy={labelId}
@@ -70,7 +68,6 @@ export function GeneralPage({ settings, update }: Props) {
         />
         <SettingRow
           title="DeepSeek peak-hour warning"
-          description="Show peak-hour start and end countdowns on the top OpenCode card"
           control={(labelId) => (
             <Toggle
               labelledBy={labelId}
@@ -108,7 +105,7 @@ export function updateDescription(status: UpdateStatus, now: number): string {
   }
 }
 
-function UpdatesSection() {
+function UpdatesSection({ settings, update }: Props) {
   const status = useUpdateStatus();
   const [now, setNow] = useState(() => Date.now());
   const [restarting, setRestarting] = useState(false);
@@ -128,7 +125,12 @@ function UpdatesSection() {
     <Section title="Updates">
       <SettingRow
         title={`UsageDeck ${status.currentVersion}`}
-        description={updateDescription(status, now)}
+        description={
+          updateDescription(status, now) +
+          (settings.autoInstallUpdates && status.state === "ready"
+            ? " · installs when you're away"
+            : "")
+        }
         live
         icon={<img src={appIcon} alt="" className="size-5" />}
         control={(labelId, descId) =>
@@ -154,6 +156,23 @@ function UpdatesSection() {
             </button>
           )
         }
+      />
+      <SettingRow
+        title="Install updates automatically"
+        control={(labelId) => (
+          <Toggle
+            labelledBy={labelId}
+            checked={settings.autoInstallUpdates}
+            onChange={(autoInstallUpdates) =>
+              void update(
+                { autoInstallUpdates },
+                autoInstallUpdates
+                  ? "Installs updates automatically"
+                  : "Updates wait for you to install them",
+              )
+            }
+          />
+        )}
       />
       <SettingRow
         title="Diagnostics"
@@ -184,7 +203,6 @@ export function AppearancePage({ settings, update }: Props) {
       <Section title="Theme">
         <SettingRow
           title="Settings theme"
-          description="Colours of this settings window"
           control={(labelId, descId) => (
             <select
               aria-labelledby={labelId}
@@ -203,7 +221,6 @@ export function AppearancePage({ settings, update }: Props) {
         />
         <SettingRow
           title="Widget theme"
-          description="Match follows the brightness of the screen behind the widget"
           control={(labelId, descId) => (
             <select
               aria-labelledby={labelId}
@@ -224,7 +241,6 @@ export function AppearancePage({ settings, update }: Props) {
       <Section title="Cards">
         <SettingRow
           title="Show provider names"
-          description="Title widget cards with the provider name instead of the account nickname"
           control={(labelId) => (
             <Toggle
               labelledBy={labelId}
@@ -285,9 +301,6 @@ export function WidgetPage({ settings, update }: Props) {
   return (
     <Page title="Widget">
       <Section title="Providers">
-        <p className="mb-2 text-xs text-(--p-muted)">
-          Drag to reorder. The switch shows or hides the card.
-        </p>
         <ol className="flex flex-col gap-1">
           {order.map((id, i) => {
             const name = PAGE_TITLES[id];
@@ -435,7 +448,7 @@ function openAboutLink(link: "logs" | "repo") {
   invoke("open_about_link", { link }).catch((err) => console.error("open link failed", err));
 }
 
-export function AboutPage() {
+export function AboutPage({ settings, update }: Props) {
   const [version, setVersion] = useState<string | null>(null);
   useEffect(() => {
     if (!inTauri()) {
@@ -459,7 +472,6 @@ export function AboutPage() {
         </div>
         <SettingRow
           title="Log folder"
-          description="Where UsageDeck writes its logs"
           control={(labelId) => (
             <button
               type="button"
@@ -486,7 +498,7 @@ export function AboutPage() {
           )}
         />
       </Section>
-      <UpdatesSection />
+      <UpdatesSection settings={settings} update={update} />
     </Page>
   );
 }

@@ -15,7 +15,6 @@ import {
   paceVsEven,
   SPEND_BAND_TONE,
   spendBand,
-  targetBandText,
   windowForecast,
   WINDOW_LABELS,
   type PaceTone,
@@ -166,25 +165,6 @@ function Row({ title, detail, children }: { title: string; detail: string; child
   );
 }
 
-const BAND_WORDS = { below: "below target", on: "on target", above: "above target" } as const;
-
-/** The 60-min rate, coloured like the widget header when a target is set (plus the band in words). */
-function RateFigure({ rate, target }: { rate: number; target: number | null }) {
-  const band = spendBand(rate, target);
-  const tone = SPEND_BAND_TONE[band];
-  return (
-    <span data-testid="pace-rate" data-tone={tone}>
-      <span
-        className="font-semibold"
-        style={tone === "muted" ? undefined : { color: `var(--p-${PANEL_SPEND_TONE[tone]})` }}
-      >
-        {formatUsdRate(rate)}
-      </span>
-      {band in BAND_WORDS && ` (${BAND_WORDS[band as keyof typeof BAND_WORDS]})`}
-    </span>
-  );
-}
-
 const draftOf = (target: number | null) => (target == null ? "" : String(target));
 
 /** "Hourly spend target": $ [ 100 ] /h, applied on Enter or blur; empty means off. */
@@ -211,7 +191,6 @@ function TargetRow({ target, update }: { target: number | null; update: Update }
     <div data-testid="target-row">
       <SettingRow
         title="Hourly spend target"
-        description="Colours the spend on the widget: yellow below, green near, red above."
         control={(labelId, descId) => (
           <>
             <span className="flex items-center gap-1 text-sm">
@@ -254,9 +233,6 @@ function TargetRow({ target, update }: { target: number | null; update: Update }
           </>
         )}
       />
-      <p className="mt-1 px-4 text-xs text-(--p-muted)" data-testid="target-band">
-        {target == null ? "Off: the widget shows the spend in grey." : targetBandText(target)}
-      </p>
     </div>
   );
 }
@@ -301,16 +277,11 @@ function PaceBody({ pace, now, target }: { pace: ClaudePace; now: number; target
           <Stat label="Today" value={usd(s.today)} />
           <Stat label="Last 7 days" value={usd(s.last7d)} />
         </div>
-        <div className="mt-3 text-xs text-(--p-muted)">
-          {s.backfilling ? (
-            "Reading Claude Code logs for the first time…"
-          ) : (
-            <>
-              Spending <RateFigure rate={s.rate60m} target={target} /> over the last 60 min ·{" "}
-              {formatUsdRate(s.rate15m)} over the last 15 min
-            </>
-          )}
-        </div>
+        {s.backfilling && (
+          <div className="mt-3 text-xs text-(--p-muted)">
+            Reading Claude Code logs for the first time…
+          </div>
+        )}
       </div>
 
       <div className={box}>

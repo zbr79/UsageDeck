@@ -107,7 +107,7 @@ export default function SettingsPage() {
   } else if (page === "widget") {
     content = <WidgetPage settings={settings} update={update} />;
   } else if (page === "about") {
-    content = <AboutPage />;
+    content = <AboutPage settings={settings} update={update} />;
   } else if (page === "opencode") {
     content = (
       <OpenCodeAccounts

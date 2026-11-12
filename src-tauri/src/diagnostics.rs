@@ -108,7 +108,11 @@ fn collect(app: &AppHandle) -> Diagnostics {
     let system = system();
     let cursor = cursor::last_attempt();
     let updater = app.state::<Updater>().status();
-    let updater_report = updater.report(|ms| stamp(ms as i64));
+    let updater_report = format!(
+        "{}\n{}",
+        updater.report(|ms| stamp(ms as i64)),
+        app.state::<Updater>().auto_install_report()
+    );
     let claude_spend = app.try_state::<crate::Core>().map_or_else(
         || "Logs: not started".to_string(),
         |core| core.spend.spend(crate::claude_logs::now_ms()).report(),
