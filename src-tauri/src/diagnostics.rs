@@ -1,5 +1,5 @@
-//! The in-app diagnostics: what the last Cursor attempt and the last update check did, and which
-//! Claude models have no price, as rows for the settings window and as a plain-text report the
+//! The in-app diagnostics: what the last Cursor attempt and the last update check did, which
+//! Claude models have no price, and which reset fields Claude's last usage reply held, as rows for the settings window and as a plain-text report the
 //! user can copy. It answers "why is the card
 //! stale" without log files.
 //!
@@ -79,6 +79,7 @@ fn report_text(
     cursor: Option<&str>,
     updater: &str,
     claude_spend: &str,
+    claude_resets: &str,
 ) -> String {
     let text = format!(
         "UsageDeck diagnostics (holds no token, key or account name)\n\
@@ -93,7 +94,10 @@ fn report_text(
          {updater}\n\
          \n\
          Claude spend\n\
-         {claude_spend}",
+         {claude_spend}\n\
+         \n\
+         Claude resets\n\
+         {claude_resets}",
         cursor.unwrap_or("No attempt yet since UsageDeck started")
     );
     redact(&text)
@@ -109,6 +113,10 @@ fn collect(app: &AppHandle) -> Diagnostics {
         || "Logs: not started".to_string(),
         |core| core.spend.spend(crate::claude_logs::now_ms()).report(),
     );
+    let claude_resets = crate::providers::claude::last_resets_report().map_or_else(
+        || "No usage reply yet since UsageDeck started".to_string(),
+        |(at, fields)| format!("Usage reply: {}\n{fields}", stamp(at)),
+    );
     let report = report_text(
         &app_version,
         &system,
@@ -116,6 +124,7 @@ fn collect(app: &AppHandle) -> Diagnostics {
         cursor.as_ref().map(|c| c.report(&chrono::Local)).as_deref(),
         &updater_report,
         &claude_spend,
+        &claude_resets,
     );
     Diagnostics {
         cursor_reason: cursor.as_ref().and_then(|c| c.reason(&chrono::Local)),
@@ -174,11 +183,13 @@ mod tests {
             Some(cursor),
             updater,
             "Not priced (last 7 days): claude-opus-6 (4 replies, not in the dollar figures)",
+            "Keys: cedar_ember object, juniper_tide null, iguana_necktie null, amber_gauge absent",
         );
         assert!(text.contains(cursor));
         assert!(text.contains(updater));
         assert!(text.ends_with(
-            "\n\nClaude spend\nNot priced (last 7 days): claude-opus-6 (4 replies, not in the dollar figures)"
+            "\n\nClaude spend\nNot priced (last 7 days): claude-opus-6 (4 replies, not in the dollar figures)\n\n\
+             Claude resets\nKeys: cedar_ember object, juniper_tide null, iguana_necktie null, amber_gauge absent"
         ));
         assert!(text.starts_with(
             "UsageDeck diagnostics (holds no token, key or account name)\nApp: UsageDeck 1.4.4\n"
@@ -193,10 +204,13 @@ mod tests {
             Some(&format!("oops {jwt}")),
             updater,
             "",
+            "",
         );
         assert!(!leaked.contains("eyJ"));
         assert!(leaked.contains("oops [redacted]"));
-        assert!(report_text("1.4.4", "Windows", "now", None, updater, "")
-            .contains("Cursor\nNo attempt yet since UsageDeck started"));
+        assert!(
+            report_text("1.4.4", "Windows", "now", None, updater, "", "")
+                .contains("Cursor\nNo attempt yet since UsageDeck started")
+        );
     }
 }

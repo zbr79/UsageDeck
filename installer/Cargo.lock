@@ -3611,7 +3611,7 @@ dependencies = [
 
 [[package]]
 name = "usagedeck-installer"
-version = "1.4.9"
+version = "1.5.0"
 dependencies = [
  "serde",
  "serde_json",

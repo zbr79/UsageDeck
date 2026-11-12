@@ -14,6 +14,7 @@ import type {
 } from "@/lib/types";
 import { ClaudeCard, CodexCard, CursorCard, GrokCard } from "@/widget/_components/cards";
 import { slotFromAccount as widgetSlot } from "@/widget/_lib/useWidgetData";
+import { claudeResetsText } from "@/lib/claude-resets";
 import { cardErrorKind } from "@/lib/errors";
 import type { SettingsPatch } from "@/lib/settings-schema";
 import { PAGE_TITLES, PROVIDER_ICONS } from "../_lib/pages";
@@ -136,6 +137,13 @@ export default function ProviderPanel({
   const sorted = accounts ? orderTracked(id, accounts, hidden, settings.hiddenBars, now) : null;
   const nickname = (accountId: string) => settings.displayNames[accountKey(id, accountId)] ?? "";
   const renameAccount = accounts?.find((a) => a.id === renaming) ?? null;
+  const resetLines =
+    id === "claude" && sorted
+      ? sorted.flatMap((a) => {
+          const resets = (a.usage as ClaudeUsage | null)?.resets;
+          return resets ? [{ id: a.id, name: nickname(a.id) || labelOf(id, a), resets }] : [];
+        })
+      : [];
   const scopedLabel =
     id === "claude"
       ? accounts?.map((a) => (a.usage as ClaudeUsage | null)?.weeklyScoped[0]?.label).find(Boolean)
@@ -201,6 +209,12 @@ export default function ProviderPanel({
           })}
         </CardGrid>
       )}
+      {resetLines.map((line) => (
+        <p key={line.id} className="mt-2 px-1 text-xs text-(--p-muted)">
+          {(sorted?.length ?? 0) > 1 ? `Resets for ${line.name}: ` : "Resets: "}
+          {claudeResetsText(line.resets)}
+        </p>
+      ))}
       <BarsSection
         provider={id}
         settings={settings}

@@ -104,6 +104,7 @@ const usage = (scoped: ClaudeScopedWindow[]): ClaudeUsage => ({
   weeklySonnet: null,
   weeklyScoped: scoped,
   resetCredits: null,
+  resets: null,
   billingType: null,
   rateLimitTier: null,
   orgUuid: null,
