@@ -35,12 +35,21 @@ const TONE_COLORS: Record<PaceTone, string> = {
   red: "var(--p-danger)",
 };
 
-/** Fetches /api/claude/pace while the Claude page is open, every 60 s. */
-function usePace(): { pace: ClaudePace | null; failed: boolean; now: number } {
-  const [state, setState] = useState<{ pace: ClaudePace | null; failed: boolean; now: number }>(
-    () => ({ pace: null, failed: false, now: Date.now() }),
-  );
+export interface PaceState {
+  pace: ClaudePace | null;
+  failed: boolean;
+  now: number;
+}
+
+/** Fetches /api/claude/pace while `enabled` (the Claude page is open), every 60 s. */
+export function usePace(enabled: boolean): PaceState {
+  const [state, setState] = useState<PaceState>(() => ({
+    pace: null,
+    failed: false,
+    now: Date.now(),
+  }));
   useEffect(() => {
+    if (!enabled) return;
     let alive = true;
     const load = () =>
       getJson<ClaudePace>("/api/claude/pace").then(
@@ -53,7 +62,7 @@ function usePace(): { pace: ClaudePace | null; failed: boolean; now: number } {
       alive = false;
       clearInterval(id);
     };
-  }, []);
+  }, [enabled]);
   return state;
 }
 
@@ -253,8 +262,15 @@ function TargetRow({ target, update }: { target: number | null; update: Update }
 }
 
 /** Settings → Claude: API-equivalent spend of Claude Code on this PC, and each window's pace. */
-export default function PaceSection({ target, update }: { target: number | null; update: Update }) {
-  const { pace, failed, now } = usePace();
+export default function PaceSection({
+  target,
+  update,
+  state: { pace, failed, now },
+}: {
+  target: number | null;
+  update: Update;
+  state: PaceState;
+}) {
   return (
     <div className="mt-8" data-testid="pace-section">
       <Section title="Spend & pace">

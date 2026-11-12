@@ -13,12 +13,21 @@ import {
   formatResetDuration,
   formatUntil,
 } from "@/lib/format";
-import { headerRate, meterPaceText, SPEND_BAND_TONE, spendBand, spendRateTitle } from "@/lib/pace";
+import {
+  fiveHourFableSegment,
+  headerRate,
+  meterPaceText,
+  SPEND_BAND_TONE,
+  spendBand,
+  spendRateTitle,
+  weeklyModelSegment,
+} from "@/lib/pace";
 import type { PeakInfo } from "@/lib/peak";
 import { isExhaustedWindow, isPassed, isUnknownWindow } from "@/lib/ranking";
 import { openCodeUsedUp, usedUp, type UsedUp } from "@/lib/used-up";
 import type {
   ClaudePace,
+  ModelShare,
   ClaudeUsage,
   CodexUsage,
   CursorAttemptNote,
@@ -624,12 +633,15 @@ export function ClaudeCard({
   accountLabel = null,
   multiple = false,
   pace = null,
+  fableFiveHour = null,
   onHide,
   extras,
 }: {
   slot: ProviderSlot<ClaudeUsage>;
   /** spend and pace of Claude Code on this PC; one card only shows the rate, null shows none */
   pace?: ClaudePace | null;
+  /** Fable's dollars in the 5-hour window on this PC: the account signed in now, else null */
+  fableFiveHour?: ModelShare | null;
   settings: Settings;
   now: number;
   accountId?: string | null;
@@ -737,6 +749,11 @@ export function ClaudeCard({
               .map(([label, name, w, key]) => {
                 const unknown = windowUnknown(w);
                 const pw = pace?.windows[key] ?? null;
+                const segment = unknown
+                  ? null
+                  : key === "weekly"
+                    ? weeklyModelSegment(w.percent!, c.weeklyScoped[0])
+                    : fiveHourFableSegment(w.percent!, fableFiveHour);
                 return (
                   <Meter
                     key={key}
@@ -746,6 +763,7 @@ export function ClaudeCard({
                     unknown={unknown}
                     reset={unknown ? null : formatUntil(w.resetsAt, now)}
                     detail={unknown ? null : meterPaceText(w.percent!, null, pw, now)}
+                    segment={segment}
                   />
                 );
               })}

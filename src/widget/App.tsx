@@ -421,6 +421,9 @@ export default function WidgetPage() {
               multiple={multiple}
               onHide={hide("claude", account.id)}
               pace={account.id === paceAccountId ? data.pace : null}
+              fableFiveHour={
+                account.id === paceAccountId ? (data.pace?.fableFiveHour ?? null) : null
+              }
             />
           ),
           <ClaudeCard
