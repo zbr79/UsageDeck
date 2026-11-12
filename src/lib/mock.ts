@@ -1,7 +1,7 @@
 // Browser-only mock of the Rust `api` command, so `npm run dev` can be viewed
 // in a normal browser. Data adapted from tests/e2e/fixtures.ts, with times
 // relative to the page load instead of a frozen clock.
-import { applySettingsPatch } from "./settings-schema";
+import { applySettingsPatch, mergeHiddenBars } from "./settings-schema";
 import type {
   ClaudePace,
   ClaudeUsage,
@@ -24,6 +24,15 @@ const query = () => new URLSearchParams(typeof location === "undefined" ? "" : l
 const CODEX_RESET_MS = Number(query().get("codexReset")) || 81 * 60_000;
 const iso = (msFromNow: number) => new Date(NOW + msFromNow).toISOString();
 
+/** `?hiddenBars={"opencode":["rolling"],"codex":["fiveHour"]}`: start with those bars turned off. */
+function queryHiddenBars() {
+  try {
+    return mergeHiddenBars({}, JSON.parse(query().get("hiddenBars") ?? "{}"));
+  } catch {
+    return {};
+  }
+}
+
 let settings: Settings = {
   opencodeEnabled: true,
   cursorEnabled: true,
@@ -44,7 +53,8 @@ let settings: Settings = {
   snoozedUntil: query().get("snoozed")
     ? { "cursor:dev@example.com": NOW + 200 * 60_000, "opencode:main@example.com": NOW + 26 * H }
     : {},
-  hiddenBars: {},
+  // browser preview only, like `?snoozed=1`
+  hiddenBars: queryHiddenBars(),
 };
 
 const win = (percent: number, resetsIn: number) => ({
