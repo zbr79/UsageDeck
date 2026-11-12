@@ -43,6 +43,12 @@ numbers. On W the number is exact: Anthropic reports Fable's use in points of th
 Fable's share of the dollars Claude Code on this PC spent in the current 5-hour window. Use on
 claude.ai or other PCs is not in those logs, and only the account signed in now gets it.
 
+When Claude has banked limit resets for the account, the Claude card shows a `↺ N` badge with the
+number in hand. Its tooltip, and a line under the card in Settings → Claude, lists each kind with
+its count and nearest expiry (`2 full resets (earliest ends Dec 3) · 1 five-hour reset`), paused
+grants marked `paused`. At the 5-hour limit it also says whether the weekly free 5-hour reset is
+available; an available one counts toward N. UsageDeck only reads resets: redeem them in Claude.
+
 Each provider's Settings page has a **Bars** section with one switch per bar (for example OpenCode's
 Rolling, Weekly and Monthly), so a card can show only the bars you watch; the rest take the freed
 width. One bar always stays on: the provider's own switch hides the whole card. A full bar you
@@ -172,8 +178,9 @@ You do not need the log files to see why a card is stale or an update did not sh
 - **Settings → About → Updates** shows the last update check: when, manual or background, the
   result, and the newest release GitHub named.
 - **Copy diagnostics** (on both pages) copies all of it as text, with the UsageDeck and Windows
-  versions and the Claude models of the last 7 days that have no price, ready to paste into an
-  issue.
+  versions, the Claude models of the last 7 days that have no price, and the reset fields of
+  Claude's last usage reply (which keys came back, eligibility, and each grant's name, count and
+  dates, without grant ids), ready to paste into an issue.
 
 The report never contains a token, a key or an account name. Server replies are cut to 200
 characters and anything that looks like a token is replaced with `[redacted]`.
