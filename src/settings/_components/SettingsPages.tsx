@@ -108,7 +108,7 @@ export function updateDescription(status: UpdateStatus, now: number): string {
   }
 }
 
-function UpdatesSection() {
+function UpdatesSection({ settings, update }: Props) {
   const status = useUpdateStatus();
   const [now, setNow] = useState(() => Date.now());
   const [restarting, setRestarting] = useState(false);
@@ -128,7 +128,12 @@ function UpdatesSection() {
     <Section title="Updates">
       <SettingRow
         title={`UsageDeck ${status.currentVersion}`}
-        description={updateDescription(status, now)}
+        description={
+          updateDescription(status, now) +
+          (settings.autoInstallUpdates && status.state === "ready"
+            ? " · installs when you're away"
+            : "")
+        }
         live
         icon={<img src={appIcon} alt="" className="size-5" />}
         control={(labelId, descId) =>
@@ -154,6 +159,24 @@ function UpdatesSection() {
             </button>
           )
         }
+      />
+      <SettingRow
+        title="Install updates automatically"
+        description="Installs downloaded updates when you're away (2 min idle or locked) and reopens UsageDeck"
+        control={(labelId) => (
+          <Toggle
+            labelledBy={labelId}
+            checked={settings.autoInstallUpdates}
+            onChange={(autoInstallUpdates) =>
+              void update(
+                { autoInstallUpdates },
+                autoInstallUpdates
+                  ? "Installs updates automatically"
+                  : "Updates wait for you to install them",
+              )
+            }
+          />
+        )}
       />
       <SettingRow
         title="Diagnostics"
@@ -435,7 +458,7 @@ function openAboutLink(link: "logs" | "repo") {
   invoke("open_about_link", { link }).catch((err) => console.error("open link failed", err));
 }
 
-export function AboutPage() {
+export function AboutPage({ settings, update }: Props) {
   const [version, setVersion] = useState<string | null>(null);
   useEffect(() => {
     if (!inTauri()) {
@@ -486,7 +509,7 @@ export function AboutPage() {
           )}
         />
       </Section>
-      <UpdatesSection />
+      <UpdatesSection settings={settings} update={update} />
     </Page>
   );
 }
