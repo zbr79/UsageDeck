@@ -431,6 +431,8 @@ pub struct Settings {
     /// hide the widget while a full-screen app is in front on its monitor
     pub hide_in_fullscreen: bool,
     pub show_provider_names: bool,
+    /// Claude bars draw Fable's part in a lighter shade of the fill
+    pub fable_shade: bool,
     pub theme_mode: ThemeMode,
     pub panel_theme: PanelTheme,
     /// nickname per OpenCode account email, or per provider id; values are always strings
@@ -459,6 +461,7 @@ impl Default for Settings {
             deepseek_peak_hour_warning: true,
             hide_in_fullscreen: true,
             show_provider_names: false,
+            fable_shade: true,
             theme_mode: ThemeMode::Auto,
             panel_theme: PanelTheme::Dark,
             display_names: Map::new(),
@@ -647,7 +650,7 @@ pub fn apply_settings_patch_at(current: &Settings, patch: &Value, now_ms: u64) -
     };
     let mut next = current.clone();
     {
-        let bools: [(&str, &mut bool); 9] = [
+        let bools: [(&str, &mut bool); 10] = [
             ("opencodeEnabled", &mut next.opencode_enabled),
             ("cursorEnabled", &mut next.cursor_enabled),
             ("grokEnabled", &mut next.grok_enabled),
@@ -659,6 +662,7 @@ pub fn apply_settings_patch_at(current: &Settings, patch: &Value, now_ms: u64) -
             ),
             ("hideInFullscreen", &mut next.hide_in_fullscreen),
             ("showProviderNames", &mut next.show_provider_names),
+            ("fableShade", &mut next.fable_shade),
             ("startAtLogin", &mut next.start_at_login),
         ];
         for (key, slot) in bools {
@@ -1086,6 +1090,15 @@ mod tests {
         assert!(
             !normalize_settings(Some(&json!({ "hideInFullscreen": false }))).hide_in_fullscreen
         );
+    }
+
+    #[test]
+    fn fable_shade_is_on_by_default_and_takes_a_boolean() {
+        assert!(Settings::default().fable_shade);
+        assert!(normalize_settings(Some(&json!({ "grokEnabled": false }))).fable_shade);
+        let off = apply_settings_patch(&Settings::default(), &json!({ "fableShade": false }));
+        assert!(!off.fable_shade);
+        assert!(!apply_settings_patch(&off, &json!({ "fableShade": "yes" })).fable_shade);
     }
 
     #[test]

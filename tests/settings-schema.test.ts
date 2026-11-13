@@ -109,6 +109,14 @@ describe("applySettingsPatch", () => {
     );
   });
 
+  it("keeps the Fable shade on by default and takes a boolean change", () => {
+    expect(DEFAULT_SETTINGS.fableShade).toBe(true);
+    expect(normalizeSettings({}).fableShade).toBe(true);
+    const off = applySettingsPatch(DEFAULT_SETTINGS, { fableShade: false });
+    expect(off.fableShade).toBe(false);
+    expect(applySettingsPatch(off, { fableShade: "yes" }).fableShade).toBe(false);
+  });
+
   it("normalises garbage from disk to defaults", () => {
     expect(normalizeSettings(null)).toEqual(DEFAULT_SETTINGS);
     expect(normalizeSettings([1, 2])).toEqual(DEFAULT_SETTINGS);

@@ -31,7 +31,8 @@ import {
 import { RenameDialog } from "./dialogs";
 import { CursorDiagnostics } from "./Diagnostics";
 import PaceSection, { usePace } from "./PaceSection";
-import { Page } from "./fields";
+import { Page, SettingRow } from "./fields";
+import { Toggle } from "@/ui/Toggle";
 
 type Update = (patch: SettingsPatch, success?: string) => Promise<boolean>;
 type AnyAccount = TrackedAccount<CursorUsage | GrokUsage | CodexUsage | ClaudeUsage>;
@@ -178,7 +179,25 @@ export default function ProviderPanel({
         settings={settings}
         update={update}
         scopedName={scopedLabel && `${scopedLabel} weekly`}
-      />
+      >
+        {id === "claude" && (
+          <SettingRow
+            title="Fable color on bars"
+            control={(labelId) => (
+              <Toggle
+                labelledBy={labelId}
+                checked={settings.fableShade}
+                onChange={(fableShade) =>
+                  void update(
+                    { fableShade },
+                    fableShade ? "Fable shown in a lighter shade" : "Bars back to one color",
+                  )
+                }
+              />
+            )}
+          />
+        )}
+      </BarsSection>
       {id === "cursor" && <CursorDiagnostics />}
       {id === "claude" && (
         <PaceSection target={settings.claudeHourlyTarget} update={update} state={pace} />

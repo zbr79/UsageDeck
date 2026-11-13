@@ -16,6 +16,8 @@ export interface Settings {
   /** hide the widget while a full-screen app is in front on its monitor */
   hideInFullscreen: boolean;
   showProviderNames: boolean;
+  /** Claude bars draw Fable's part in a lighter shade of the fill */
+  fableShade: boolean;
   themeMode: ThemeMode;
   panelTheme: PanelTheme;
   /** nickname per OpenCode account email, or per provider id */

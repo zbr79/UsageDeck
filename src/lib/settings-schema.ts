@@ -52,6 +52,7 @@ const BOOLEAN_KEYS = [
   "deepseekPeakHourWarning",
   "hideInFullscreen",
   "showProviderNames",
+  "fableShade",
   "startAtLogin",
 ] as const;
 
@@ -68,6 +69,7 @@ export const DEFAULT_SETTINGS: Settings = {
   deepseekPeakHourWarning: true,
   hideInFullscreen: true,
   showProviderNames: false,
+  fableShade: true,
   themeMode: "auto",
   panelTheme: "dark",
   displayNames: {},

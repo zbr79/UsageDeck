@@ -45,6 +45,7 @@ let settings: Settings = {
   deepseekPeakHourWarning: true,
   hideInFullscreen: true,
   showProviderNames: false,
+  fableShade: true,
   themeMode: "dark",
   panelTheme: "dark",
   displayNames: { "main@example.com": "Main", "spare@example.com": "Spare" },
