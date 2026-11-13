@@ -1,7 +1,6 @@
 import type { ReactNode } from "react";
 import { formatPercent } from "@/lib/format";
 import { usageSeverity } from "@/lib/pace";
-import { resetCellText, resetCellTitle, type ResetRow } from "@/lib/claude-resets";
 import { Badge } from "@/ui/controls";
 import type { Tone } from "@/ui/palette";
 import { EyeOffIcon } from "@/ui/Icons";
@@ -13,6 +12,16 @@ export interface UsageCell {
   reset: string | null;
 }
 
+/** The provider's last column: Claude and Codex resets, Cursor API spend. */
+export interface ExtraCell {
+  text: string;
+  /** hover text, e.g. each reset's date */
+  title?: string;
+  /** a ↺ before the text */
+  icon?: "reset";
+  muted?: boolean;
+}
+
 export interface TableColumn {
   id: string;
   /** header text, "5-hour", "Fable weekly" */
@@ -21,17 +30,20 @@ export interface TableColumn {
 
 const FILL = { ok: "var(--w-barOk)", warn: "var(--w-barWarn)", danger: "var(--w-barDanger)" };
 
-/** Grid columns: account, one per usage window, resets, then the "⋯" button. */
-export function tableTemplate(windows: number): string {
-  return `minmax(0,1.6fr) repeat(${windows}, minmax(0,1fr)) minmax(0,1.4fr) 24px`;
+/** Grid columns: account, one per usage window, the provider's last column if any, "⋯". */
+export function tableTemplate(windows: number, extra: boolean): string {
+  return `minmax(0,1.6fr) repeat(${windows}, minmax(0,1fr)) ${extra ? "minmax(0,1.4fr) " : ""}24px`;
 }
 
 /** The accounts table: a header row, then one `AccountCell` per account rendering `AccountRow`. */
 export function AccountTable({
   columns,
+  extra,
   children,
 }: {
   columns: readonly TableColumn[];
+  /** the last column's header ("Resets"); none when undefined */
+  extra?: string;
   children: ReactNode;
 }) {
   return (
@@ -39,7 +51,7 @@ export function AccountTable({
       <li
         aria-hidden="true"
         className="grid items-center gap-4 px-4 py-2 text-xs text-(--p-muted)"
-        style={{ gridTemplateColumns: tableTemplate(columns.length) }}
+        style={{ gridTemplateColumns: tableTemplate(columns.length, extra !== undefined) }}
       >
         <span>Account</span>
         {columns.map((c) => (
@@ -47,7 +59,7 @@ export function AccountTable({
             {c.name}
           </span>
         ))}
-        <span>Resets</span>
+        {extra !== undefined && <span>{extra}</span>}
         <span />
       </li>
       {children}
@@ -107,10 +119,11 @@ export function AccountRow({
   plan,
   active,
   hidden,
+  dimmed = false,
   columns,
   cells,
   note,
-  resets,
+  extra,
   warning,
   actions,
 }: {
@@ -120,21 +133,23 @@ export function AccountRow({
   plan: { label: string; tone: Tone } | null;
   active: boolean;
   hidden: boolean;
+  /** gray bars: old numbers or a lapsed subscription */
+  dimmed?: boolean;
   columns: readonly TableColumn[];
   cells: Partial<Record<string, UsageCell>>;
   note: string | null;
-  resets: readonly ResetRow[];
+  /** the provider's last column; omitted when its table has none */
+  extra?: ExtraCell;
   /** "re-auth", with its explanation as the tooltip */
   warning: { text: string; title: string } | null;
   actions: ReactNode;
 }) {
-  const resetText = resetCellText(resets);
   return (
     <div
       className={`relative grid items-center gap-4 border-t border-(--s-cardBorder) px-4 py-2.5 text-sm ${
         hidden ? "opacity-60" : ""
       }`}
-      style={{ gridTemplateColumns: tableTemplate(columns.length) }}
+      style={{ gridTemplateColumns: tableTemplate(columns.length, extra !== undefined) }}
     >
       {active && (
         <span
@@ -175,25 +190,23 @@ export function AccountRow({
             key={c.id}
             name={c.name}
             cell={cells[c.id] ?? { percent: null, reset: null }}
-            dimmed={hidden}
+            dimmed={hidden || dimmed}
           />
         ))
       )}
-      <span
-        className={`truncate text-xs ${resetText ? "" : "text-(--p-muted)"}`}
-        title={resetText ? resetCellTitle(resets) : undefined}
-      >
-        {resetText ? (
-          <>
+      {extra && (
+        <span
+          className={`truncate text-xs ${extra.muted ? "text-(--p-muted)" : ""}`}
+          title={extra.title}
+        >
+          {extra.icon === "reset" && (
             <span aria-hidden="true" className="text-(--w-badge-violet-fg)">
               ↺{" "}
             </span>
-            {resetText}
-          </>
-        ) : (
-          "No resets"
-        )}
-      </span>
+          )}
+          {extra.text}
+        </span>
+      )}
       {actions}
     </div>
   );

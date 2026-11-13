@@ -1,13 +1,13 @@
 import { useState } from "react";
 import { toastSuccess } from "@/components/toast/toast";
 import { copyKey } from "@/lib/copy-key";
-import type { PeakInfo } from "@/lib/peak";
 import type { OpenCodeAccountSummary, OpenCodeAccountUsage, Settings } from "@/lib/types";
-import { OpenCodeCard } from "@/widget/_components/cards";
 import { orderOpenCode } from "../_lib/order";
 import { PROVIDER_ICONS } from "../_lib/pages";
 import { refreshWidget, removeAccount } from "../_lib/hooks";
-import { AccountCell, CardGrid, cardSettings, EmptyState, ProviderLogo, useNow } from "./CardGrid";
+import { fixedColumns, openCodeRow } from "../_lib/table-rows";
+import { AccountRow, AccountTable } from "./AccountTable";
+import { AccountCell, EmptyState, ProviderLogo, useNow } from "./CardGrid";
 import BarsSection from "./BarsSection";
 import { KeyDialog, RemoveDialog, RenameDialog } from "./dialogs";
 import { Page, primaryButton } from "./fields";
@@ -15,10 +15,7 @@ import { accountCount } from "./ProviderPanel";
 
 type Update = (patch: Partial<Settings>, success?: string) => Promise<boolean>;
 
-/** Settings cards show no peak-hour hint: that is a live widget cue. */
-const NO_PEAK: PeakInfo = { active: false, endAt: null, nextStartAt: null };
-
-/** A row for an account whose usage hasn't arrived yet (the card says "Unavailable"). */
+/** A row for an account whose usage hasn't arrived yet (it says "Unavailable"). */
 function emptyRow(email: string): OpenCodeAccountUsage {
   return {
     email,
@@ -66,6 +63,7 @@ export default function OpenCodeAccounts({
       ).map((row) => accounts.find((a) => a.email === row.email)!)
     : null;
   const nickname = (email: string) => settings.displayNames[email] ?? "";
+  const columns = fixedColumns("opencode", settings.hiddenBars);
   const close = () => setPending(null);
   const addButton = (
     <button type="button" onClick={() => setPending({ kind: "add" })} className={primaryButton}>
@@ -95,11 +93,11 @@ export default function OpenCodeAccounts({
           <div className="mt-4">{addButton}</div>
         </EmptyState>
       ) : (
-        <CardGrid>
+        <AccountTable columns={columns}>
           {sorted.map((a) => {
             const row = usage[a.email] ?? emptyRow(a.email);
             const off = disabled(a.email);
-            const lapsed = row.subscriptionActive === false;
+            const data = openCodeRow(row, now);
             const lower = a.email.toLowerCase();
             return (
               <AccountCell
@@ -137,24 +135,25 @@ export default function OpenCodeAccounts({
                     onSelect: () => setPending({ kind: "remove", email: a.email }),
                   },
                 ]}
-                card={(header) => (
-                  <OpenCodeCard
-                    row={row}
-                    active={!off && !lapsed}
-                    primary
-                    settings={cardSettings(settings)}
-                    peak={NO_PEAK}
-                    now={now}
-                    increased={() => false}
-                    onCopyKey={() => void copyKey(a.email)}
-                    extras={{ dimmed: off || lapsed, hidden: off, plain: lapsed, ...header }}
-                    fullEmail
+                row={(header) => (
+                  <AccountRow
+                    name={nickname(a.email) || a.email}
+                    hint={a.email}
+                    plan={data.plan}
+                    active={false}
+                    hidden={off}
+                    dimmed={data.dimmed}
+                    columns={columns}
+                    cells={data.cells}
+                    note={data.note}
+                    warning={data.warning}
+                    actions={header.headerActions}
                   />
                 )}
               />
             );
           })}
-        </CardGrid>
+        </AccountTable>
       )}
       <BarsSection provider="opencode" settings={settings} update={update} />
       {pending?.kind === "add" && <KeyDialog onClose={close} onDone={() => void reload()} />}
