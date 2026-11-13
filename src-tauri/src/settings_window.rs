@@ -22,7 +22,7 @@ pub const STATE_FILE: &str = "settings-window.json";
 /// Default and minimum inner size, logical pixels.
 const DEFAULT_SIZE: (f64, f64) = (960.0, 680.0);
 const MIN_SIZE: (f64, f64) = (640.0, 480.0);
-/// The repository named on the About page.
+/// The repository Settings → General → Support opens.
 const REPO_URL: &str = "https://github.com/zbr79/UsageDeck";
 
 /// Bumped on every move / resize; only the last one within the debounce window is saved.
@@ -309,7 +309,7 @@ pub fn show_settings(app: &AppHandle) {
     show_settings_at(app, None);
 }
 
-/// The settings page URL; `page` opens that page first (`settings.html?page=about`).
+/// The settings page URL; `page` opens that page first (`settings.html?page=updates`).
 fn settings_url(page: Option<&str>) -> String {
     match page {
         Some(page) => format!("settings.html?page={page}"),
@@ -349,7 +349,8 @@ pub fn hide_settings(app: &AppHandle) {
     let _ = app.emit_to(WIDGET, EVENT_SETTINGS_CHANGED, ());
 }
 
-/// About page links: "logs" opens the log folder, "repo" the repository in the default browser.
+/// Support links (Settings → General): "logs" opens the log folder, "repo" the repository in the
+/// default browser.
 /// Only these two fixed targets exist; anything else is ignored.
 #[tauri::command]
 pub fn open_about_link(app: AppHandle, link: String) {

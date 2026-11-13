@@ -51,9 +51,18 @@ export function Page({
 }
 
 /** A group of rows: header 14/20 semibold, 30 px above (except first) and 6 px below. */
-export function Section({ title, children }: { title?: string; children: ReactNode }) {
+export function Section({
+  title,
+  id,
+  children,
+}: {
+  title?: string;
+  /** an anchor to scroll to */
+  id?: string;
+  children: ReactNode;
+}) {
   return (
-    <section className="mt-[30px] first:mt-0">
+    <section id={id} className="mt-[30px] scroll-mt-6 first:mt-0">
       {title && <h2 className="mb-1.5 text-sm font-semibold">{title}</h2>}
       <div className="flex flex-col gap-1">{children}</div>
     </section>
