@@ -582,6 +582,13 @@ export function paceScenario(scenario: PaceScenario, now = NOW): ClaudePace {
       },
     },
     fableFiveHour: NO_FABLE ? null : { usd: 135.2, totalUsd: 353.1 },
+    fiveHourByModel: NO_FABLE
+      ? [{ model: "claude-opus-5-5", usd: 353.1 }]
+      : [
+          { model: "claude-opus-5-5", usd: 210.4 },
+          { model: "claude-fable-5-2", usd: 135.2 },
+          { model: "claude-sonnet-5-5", usd: 7.5 },
+        ],
     calibration: { usdPerWeeklyPct: 185.6 },
     coverage: "claude-code-this-pc",
   };

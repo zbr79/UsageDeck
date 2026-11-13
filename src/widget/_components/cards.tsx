@@ -17,7 +17,7 @@ import {
 import {
   fiveHourFableSegment,
   headerRate,
-  meterPaceText,
+  claudeModelLines,
   SPEND_BAND_TONE,
   spendBand,
   spendRateTitle,
@@ -438,7 +438,7 @@ export function CursorCard({
                 percent={c.otherModelsPercentUsed}
                 unknown={cyclePassed}
                 dimmed={signedOut}
-                detail={api ? apiByModel(api.byModel).join(", ") : null}
+                lines={api ? apiByModel(api.byModel) : []}
               />
             )}
           </div>
@@ -756,7 +756,6 @@ export function ClaudeCard({
               .filter(([, , , key]) => show?.has(key))
               .map(([label, name, w, key]) => {
                 const unknown = windowUnknown(w);
-                const pw = pace?.windows[key] ?? null;
                 const segment = unknown
                   ? null
                   : key === "weekly"
@@ -770,7 +769,16 @@ export function ClaudeCard({
                     percent={w.percent}
                     unknown={unknown}
                     reset={unknown ? null : formatUntil(w.resetsAt, now)}
-                    detail={unknown ? null : meterPaceText(w.percent!, null, pw, now)}
+                    lines={
+                      unknown
+                        ? []
+                        : claudeModelLines(
+                            key,
+                            w.percent!,
+                            c.weeklyScoped[0],
+                            pace?.fiveHourByModel ?? [],
+                          )
+                    }
                     segment={segment}
                   />
                 );

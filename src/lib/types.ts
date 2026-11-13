@@ -302,6 +302,8 @@ export interface ClaudePace {
   windows: { fiveHour: PaceWindow | null; weekly: PaceWindow | null };
   /** Fable's dollars in the current 5-hour window; null without any */
   fableFiveHour: ModelShare | null;
+  /** each model's dollars in the current 5-hour window, largest first */
+  fiveHourByModel: { model: string; usd: number }[];
   calibration: { usdPerWeeklyPct: number | null };
   coverage: "claude-code-this-pc";
 }
