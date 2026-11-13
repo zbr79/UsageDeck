@@ -4859,7 +4859,7 @@ name = "usagedeck"
 version = "1.5.14"
 dependencies = [
  "aes-gcm",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "keyring",
  "log",

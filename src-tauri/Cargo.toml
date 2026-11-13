@@ -27,7 +27,7 @@ keyring = { version = "3", features = ["windows-native"] }
 log = "0.4"
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 aes-gcm = "0.10"
-base64 = "0.22"
+base64 = "0.23"
 # Already in the lock file through tauri; decrypts the old app's enc:v1 keys on import.
 sha2 = "0.10"
 
