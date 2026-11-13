@@ -6,10 +6,13 @@ import {
   formatUsd,
   formatUsdRate,
   modelShares,
+  SPEND_RANGES,
   spendSeries,
   spendSeriesSummary,
   type SpendPoint,
+  type SpendRange,
 } from "@/lib/pace";
+import { SegmentedControl } from "@/ui/controls";
 import { sanitizeHourlyTarget } from "@/lib/settings-schema";
 import type { ClaudePace, Settings } from "@/lib/types";
 import { inputClass, Section, secondaryButton, SettingRow } from "./fields";
@@ -63,10 +66,10 @@ function Stat({ label, value }: { label: string; value: string }) {
 const TOTAL_LINE = "var(--p-badge-blue-fg)";
 const FABLE_LINE = "var(--p-badge-amber-fg)";
 
-/** Spend over 24 h in quarter hours, oldest on the left: all spend as a filled line, Fable as a
- * yellow line. Plain SVG with an accessible summary. */
-export function SpendChart({ quarters, fable }: { quarters: number[]; fable: number[] }) {
-  const points = spendSeries(quarters, fable);
+/** Spend over the chosen range, oldest on the left: all spend as a filled line, Fable as a yellow
+ * line, in $/h. Plain SVG with an accessible summary. */
+export function SpendChart({ spend, range }: { spend: ClaudePace["spend"]; range: SpendRange }) {
+  const points = spendSeries(spend, range);
   const W = 480;
   const H = 110;
   const max = Math.max(1, ...points.map((p) => p.total)) * 1.1;
@@ -80,7 +83,7 @@ export function SpendChart({ quarters, fable }: { quarters: number[]; fable: num
       <div className="relative">
         <svg
           role="img"
-          aria-label={spendSeriesSummary(points)}
+          aria-label={spendSeriesSummary(points, range)}
           viewBox={`0 0 ${W} ${H}`}
           preserveAspectRatio="none"
           className="block h-28 w-full overflow-visible"
@@ -125,7 +128,7 @@ export function SpendChart({ quarters, fable }: { quarters: number[]; fable: num
         className="mt-1 flex items-center justify-between gap-4 text-xs text-(--p-muted)"
         aria-hidden="true"
       >
-        <span>24 h ago</span>
+        <span>{range === "24h" ? "24 h ago" : range === "1h" ? "1 h ago" : "15 min ago"}</span>
         <span className="flex items-center gap-3">
           <span className="flex items-center gap-1.5">
             <span className="h-0.5 w-3 rounded-full" style={{ background: TOTAL_LINE }} />
@@ -257,6 +260,7 @@ function PaceBody({ pace, now, target }: { pace: ClaudePace; now: number; target
   const usd = (v: number) => (s.backfilling ? "$—" : formatUsd(v));
   const models = modelShares(s.byModel);
   const calibration = calibrationText(pace.calibration.usdPerWeeklyPct);
+  const [range, setRange] = useState<SpendRange>("24h");
   return (
     <>
       <div className={box}>
@@ -274,8 +278,16 @@ function PaceBody({ pace, now, target }: { pace: ClaudePace; now: number; target
       </div>
 
       <div className={box}>
-        <div className="mb-2 text-sm">Last 24 hours</div>
-        <SpendChart quarters={s.quarters} fable={s.quartersFable} />
+        <div className="mb-2 flex items-center justify-between gap-4">
+          <div className="text-sm">{SPEND_RANGES.find((r) => r.value === range)!.title}</div>
+          <SegmentedControl
+            label="Chart range"
+            options={SPEND_RANGES}
+            value={range}
+            onChange={setRange}
+          />
+        </div>
+        <SpendChart spend={s} range={range} />
         {models.length > 0 && (
           <ul className="mt-3 flex flex-col gap-1 text-xs" aria-label="Spend by model, last 24 h">
             {models.map((m) => (

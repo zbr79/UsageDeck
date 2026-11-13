@@ -551,6 +551,13 @@ export function paceScenario(scenario: PaceScenario, now = NOW): ClaudePace {
       quartersFable: PROBE_HOURLY.flatMap((h, i) =>
         [0.3, 0.45, 0.2, 0.35].map((k) => (h / 4) * k * (i % 4 === 1 ? 0.2 : 1)),
       ),
+      // the last hour minute by minute: bursts of work with quiet minutes between
+      minutes: Array.from({ length: 60 }, (_, i) =>
+        i % 7 < 4 ? 0.4 + ((i * 37) % 11) / 10 : 0.05,
+      ),
+      minutesFable: Array.from({ length: 60 }, (_, i) =>
+        i % 7 < 2 ? 0.3 + ((i * 13) % 5) / 10 : 0,
+      ),
       unpricedReplies: 0,
       unpricedModels: [],
       scannedAt: now - 20_000,

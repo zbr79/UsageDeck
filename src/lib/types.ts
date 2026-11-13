@@ -279,6 +279,10 @@ export interface PaceSpend {
   quarters: number[];
   /** Fable's part of each quarter, indexed like `quarters` */
   quartersFable: number[];
+  /** 60 minutes of USD, index 0 = the current minute */
+  minutes: number[];
+  /** Fable's part of each minute, indexed like `minutes` */
+  minutesFable: number[];
   /** last 7 days, replies with tokens on models the price table lacks */
   unpricedReplies: number;
   /** those models' ids, sorted */

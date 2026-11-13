@@ -49,6 +49,8 @@ const pace = (over: Partial<ClaudePace["spend"]> = {}, windows?: ClaudePace["win
       hourly: [],
       quarters: [],
       quartersFable: [],
+      minutes: [],
+      minutesFable: [],
       unpricedReplies: 0,
       unpricedModels: [],
       scannedAt: NOW,
@@ -193,18 +195,33 @@ describe("meterPaceText", () => {
 });
 
 describe("settings helpers", () => {
-  it("turns quarter-hour dollars into $/h, oldest first, and summarises the peak", () => {
-    const points = spendSeries([5, 20, 10, 0], [1, 5, 0, 0]);
-    expect(points).toEqual([
+  it("turns each range's dollars into $/h, oldest first, and summarises the peak", () => {
+    const spend = pace({
+      quarters: [5, 20, 10, 0],
+      quartersFable: [1, 5, 0, 0],
+      minutes: Array.from({ length: 60 }, (_, i) => (i === 3 ? 2 : i === 40 ? 4 : 0)),
+      minutesFable: Array.from({ length: 60 }, (_, i) => (i === 3 ? 1 : 0)),
+    }).spend;
+    const day = spendSeries(spend, "24h");
+    expect(day).toEqual([
       { total: 0, fable: 0 },
       { total: 40, fable: 0 },
       { total: 80, fable: 20 },
       { total: 20, fable: 4 },
     ]);
-    expect(spendSeriesSummary(points)).toBe(
+    expect(spendSeriesSummary(day, "24h")).toBe(
       "Spend over the last 24 hours. Peak $80/h, 15 minutes ago. Fable 17% of it.",
     );
-    expect(spendSeriesSummary([])).toBe("Spend over the last 24 hours: no data yet");
+    const quarter = spendSeries(spend, "15m");
+    expect(quarter).toHaveLength(15);
+    expect(quarter[11]).toEqual({ total: 120, fable: 60 });
+    expect(spendSeriesSummary(quarter, "15m")).toBe(
+      "Spend over the last 15 minutes. Peak $120/h, 3 minutes ago. Fable 50% of it.",
+    );
+    const hour = spendSeries(spend, "1h");
+    expect(hour).toHaveLength(60);
+    expect(spendSeriesSummary(hour, "1h")).toContain("Peak $240/h, 40 minutes ago");
+    expect(spendSeriesSummary([], "1h")).toBe("Spend over the last hour: no data yet");
   });
   it("splits spend by model with shares", () => {
     const rows = modelShares([
