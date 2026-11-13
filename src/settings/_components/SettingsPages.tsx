@@ -143,7 +143,7 @@ function UpdatesSection({ settings, update }: Props) {
         description={
           updateDescription(status, now) +
           (settings.autoInstallUpdates && status.state === "ready"
-            ? " · installs when you're away"
+            ? " · installs when you close Settings"
             : "")
         }
         inline
