@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState, type PointerEvent } from "react";
-import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { inTauri } from "@/lib/bridge";
 import { formatAgo, formatResetDuration } from "@/lib/format";
@@ -142,6 +141,7 @@ export function GeneralPage({ settings, update }: Props) {
           )}
         />
       </Section>
+      <UpdatesSection settings={settings} update={update} />
     </Page>
   );
 }
@@ -182,9 +182,9 @@ function UpdatesSection({ settings, update }: Props) {
     installUpdate().catch(() => setRestarting(false));
   };
   return (
-    <Section title="Updates">
+    <Section title="UsageDeck" id="updates">
       <SettingRow
-        title={`UsageDeck ${status.currentVersion}`}
+        title={`Version ${status.currentVersion}`}
         description={
           updateDescription(status, now) +
           (settings.autoInstallUpdates && status.state === "ready"
@@ -234,7 +234,20 @@ function UpdatesSection({ settings, update }: Props) {
           />
         )}
       />
-      <SettingRow title="Diagnostics" control={() => <CopyDiagnosticsButton />} />
+      <SettingRow
+        title="Support"
+        control={() => (
+          <div className="flex flex-wrap justify-end gap-2">
+            <button type="button" onClick={() => openAboutLink("logs")} className={secondaryButton}>
+              Log folder
+            </button>
+            <button type="button" onClick={() => openAboutLink("repo")} className={secondaryButton}>
+              GitHub
+            </button>
+            <CopyDiagnosticsButton />
+          </div>
+        )}
+      />
     </Section>
   );
 }
@@ -445,55 +458,4 @@ function HiddenUntilReset({ settings, update }: Props) {
 function openAboutLink(link: "logs" | "repo") {
   if (!inTauri()) return;
   invoke("open_about_link", { link }).catch((err) => console.error("open link failed", err));
-}
-
-export function AboutPage({ settings, update }: Props) {
-  const [version, setVersion] = useState<string | null>(null);
-  useEffect(() => {
-    if (!inTauri()) {
-      setVersion("preview");
-      return;
-    }
-    getVersion().then(setVersion, () => setVersion(null));
-  }, []);
-  return (
-    <Page title="About">
-      <Section>
-        <div className="ud-row flex items-center gap-4 rounded border border-(--s-cardBorder) bg-(--s-card) p-4">
-          <img src={appIcon} alt="" className="size-12" />
-          <div>
-            <div className="text-xl leading-7 font-semibold">UsageDeck</div>
-            <div className="text-xs text-(--p-muted)">Version {version ?? "unknown"}</div>
-          </div>
-        </div>
-        <SettingRow
-          title="Log folder"
-          control={(labelId) => (
-            <button
-              type="button"
-              aria-describedby={labelId}
-              onClick={() => openAboutLink("logs")}
-              className={secondaryButton}
-            >
-              Open log folder
-            </button>
-          )}
-        />
-        <SettingRow
-          title="Source code"
-          control={(labelId) => (
-            <button
-              type="button"
-              aria-describedby={labelId}
-              onClick={() => openAboutLink("repo")}
-              className={secondaryButton}
-            >
-              Open on GitHub
-            </button>
-          )}
-        />
-      </Section>
-      <UpdatesSection settings={settings} update={update} />
-    </Page>
-  );
 }

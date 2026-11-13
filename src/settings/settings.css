@@ -1,28 +1,8 @@
-/* Settings window only: focus, card scale, scrollbars and forced-colors (high contrast). */
+/* Settings window only: focus, scrollbars and forced-colors (high contrast). */
 
 .settings-root :focus-visible {
   outline: 2px solid var(--p-focus);
   outline-offset: 2px;
-}
-
-/* The widget's smallest card text is 11 px: 1.1x draws it at 12.1 px, the settings minimum
-   (CardGrid). */
-.settings-root .ud-cards {
-  zoom: 1.1;
-}
-
-/* Cards in one row share its height, and every meter keeps its reset line (empty when the
-   reset is unknown), so a no-data card lines up with its neighbour. */
-.settings-root .ud-cards > li {
-  display: flex;
-  flex-direction: column;
-}
-.settings-root .ud-cards > li > section {
-  flex: 1;
-}
-.settings-root .ud-cards .ud-reset {
-  display: block;
-  min-height: 1rem;
 }
 
 .settings-root main,

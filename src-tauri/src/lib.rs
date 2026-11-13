@@ -279,12 +279,12 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 let _ = app.emit_to(WIDGET, EVENT_REFRESH, ());
             }
             "settings" => show_settings(app),
-            // The result shows in Settings → About → Updates. A new settings window opens on
-            // About; an open one is told to go there.
+            // The result shows in Settings → General → UsageDeck. A new settings window opens
+            // there; an open one is told to go there.
             "update" => {
                 updater::check_now(app);
                 let _ = app.emit_to(SETTINGS, EVENT_SHOW_UPDATES, ());
-                settings_window::show_settings_at(app, Some("about"));
+                settings_window::show_settings_at(app, Some("updates"));
             }
             "logs" => open_log_folder(app),
             "quit" => app.exit(0),

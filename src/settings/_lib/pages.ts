@@ -1,7 +1,7 @@
 import type { WidgetProvider } from "@/lib/types";
 
-/** The settings window's pages: General, Widget, one per provider, then About. */
-export type PageId = "general" | "widget" | WidgetProvider | "about";
+/** The settings window's pages: General, Widget, then one per provider. */
+export type PageId = "general" | "widget" | WidgetProvider;
 
 export const PROVIDER_PAGES: readonly WidgetProvider[] = [
   "claude",
@@ -11,12 +11,11 @@ export const PROVIDER_PAGES: readonly WidgetProvider[] = [
   "opencode",
 ];
 
-const FIXED_PAGES = ["general", "widget", "about"] as const;
+const FIXED_PAGES = ["general", "widget"] as const;
 
 export const PAGE_TITLES: Record<PageId, string> = {
   general: "General",
   widget: "Widget",
-  about: "About",
   claude: "Claude",
   codex: "Codex",
   cursor: "Cursor",
@@ -48,6 +47,11 @@ export function isProviderPage(page: PageId): page is WidgetProvider {
  * The page a URL opens: `settings.html?page=<id>` (for screenshots and deep links). The older
  * `?tab=<id>` still works; anything unknown opens General.
  */
+/** `?page=updates` (the tray's Check for updates) opens General scrolled to its UsageDeck section. */
+export function wantsUpdates(search: string): boolean {
+  return new URLSearchParams(search).get("page") === "updates";
+}
+
 export function pageFromSearch(search: string): PageId {
   const params = new URLSearchParams(search);
   const page = params.get("page") ?? params.get("tab");

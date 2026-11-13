@@ -7,6 +7,7 @@ import { PanelThemeContext, resolvePanelTheme, useSystemDark } from "./_lib/them
 import {
   isProviderPage,
   pageFromSearch,
+  wantsUpdates,
   PAGE_TITLES,
   searchWithPage,
   type PageId,
@@ -14,7 +15,7 @@ import {
 import { Nav } from "./_components/Nav";
 import OpenCodeAccounts from "./_components/OpenCodeAccounts";
 import ProviderPanel from "./_components/ProviderPanel";
-import { AboutPage, GeneralPage, WidgetPage } from "./_components/SettingsPages";
+import { GeneralPage, WidgetPage } from "./_components/SettingsPages";
 
 /** Settings-only surface colours (WinUI: cards sit one step off the page). */
 const SURFACES = {
@@ -91,7 +92,21 @@ export default function SettingsPage() {
   };
 
   // `select` only touches setters and refs, so the first one stays good.
-  useEffect(() => onShowUpdates(() => select("about")), []);
+  // Check for updates (tray): General, scrolled to its UsageDeck section once it is drawn.
+  const [toUpdates, setToUpdates] = useState(() => wantsUpdates(window.location.search));
+  useEffect(
+    () =>
+      onShowUpdates(() => {
+        select("general");
+        setToUpdates(true);
+      }),
+    [],
+  );
+  useEffect(() => {
+    if (!toUpdates || !settings || page !== "general") return;
+    document.getElementById("updates")?.scrollIntoView({ block: "start" });
+    setToUpdates(false);
+  }, [toUpdates, settings, page]);
 
   useEffect(() => {
     document.title = `${PAGE_TITLES[page]} - UsageDeck Settings`;
@@ -104,8 +119,6 @@ export default function SettingsPage() {
     content = <GeneralPage settings={settings} update={update} />;
   } else if (page === "widget") {
     content = <WidgetPage settings={settings} update={update} />;
-  } else if (page === "about") {
-    content = <AboutPage settings={settings} update={update} />;
   } else if (page === "opencode") {
     content = (
       <OpenCodeAccounts

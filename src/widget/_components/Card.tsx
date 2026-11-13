@@ -273,13 +273,14 @@ export function Meter({
           />
         )}
       </div>
-      {/* Always rendered so settings can reserve the line (settings.css); hidden when empty. */}
-      <div
-        aria-hidden="true"
-        className={`ud-reset text-[11px] leading-4 text-(--w-muted) transition-colors duration-700 ${reset && known ? "" : "hidden"}`}
-      >
-        {reset && known ? reset : null}
-      </div>
+      {reset && known && (
+        <div
+          aria-hidden="true"
+          className="text-[11px] leading-4 text-(--w-muted) transition-colors duration-700"
+        >
+          {reset}
+        </div>
+      )}
     </div>
   );
 }

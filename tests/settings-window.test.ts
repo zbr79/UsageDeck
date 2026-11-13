@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { keyError } from "@/settings/_lib/key-error";
-import { moveItem, pageFromSearch, searchWithPage } from "@/settings/_lib/pages";
+import { moveItem, pageFromSearch, searchWithPage, wantsUpdates } from "@/settings/_lib/pages";
 import { isContextMenuKey, menuFocusIndex, menuPosition } from "@/ui/menu-focus";
 
 describe("pageFromSearch", () => {
@@ -8,7 +8,6 @@ describe("pageFromSearch", () => {
     expect(pageFromSearch("?page=general")).toBe("general");
     expect(pageFromSearch("?page=widget&panel=light")).toBe("widget");
     expect(pageFromSearch("?panel=dark&page=opencode")).toBe("opencode");
-    expect(pageFromSearch("?page=about")).toBe("about");
   });
 
   it("still accepts the older ?tab=", () => {
@@ -21,8 +20,12 @@ describe("pageFromSearch", () => {
     expect(pageFromSearch("?page=")).toBe("general");
   });
 
-  it("opens General for the Appearance page, now part of it", () => {
+  it("opens General for the Appearance and About pages, now part of it", () => {
     expect(pageFromSearch("?page=appearance")).toBe("general");
+    expect(pageFromSearch("?page=about")).toBe("general");
+    expect(pageFromSearch("?page=updates")).toBe("general");
+    expect(wantsUpdates("?page=updates")).toBe(true);
+    expect(wantsUpdates("?page=general")).toBe(false);
     expect(pageFromSearch("?tab=appearance")).toBe("general");
   });
 

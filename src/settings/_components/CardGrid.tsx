@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import type { CardHeader } from "@/widget/_components/Card";
-import type { Settings } from "@/lib/types";
 import { Menu, type MenuItem } from "@/ui/Menu";
 import { isContextMenuKey } from "@/ui/menu-focus";
 
@@ -14,26 +13,8 @@ export function useNow(intervalMs = 60_000): number {
   return now;
 }
 
-/** Settings' cards always name each account: "Show provider names" is for the widget only. */
-export function cardSettings(settings: Settings): Settings {
-  return { ...settings, showProviderNames: false };
-}
-
 /**
- * The widget's own cards, 2 per row, 1 when the page is narrow (a container query on the grid's
- * width). The cards are drawn at 1.1x (`.ud-cards` zoom) so their 11 px widget text reads at
- * 12 px or more, the settings minimum.
- */
-export function CardGrid({ children }: { children: ReactNode }) {
-  return (
-    <div className="@container">
-      <ul className="ud-cards grid grid-cols-1 gap-3 p-1 @[540px]:grid-cols-2">{children}</ul>
-    </div>
-  );
-}
-
-/**
- * One account card (or table row) with its "⋯" button. The menu starts with "Hide from widget" / "Show on
+ * One account table row with its "⋯" button. The menu starts with "Hide from widget" / "Show on
  * widget", then the page's own items. It also opens on right-click, Shift+F10 and the Menu key;
  * focus returns to "⋯".
  */
@@ -42,14 +23,14 @@ export function AccountCell({
   shown,
   onShownChange,
   menuItems,
-  card,
+  row,
 }: {
-  /** the card's title (nickname, or else the email) */
+  /** the account's name (nickname, or else the email) */
   name: string;
   shown: boolean;
   onShownChange: (next: boolean) => void;
   menuItems: MenuItem[];
-  card: (header: CardHeader) => ReactNode;
+  row: (header: CardHeader) => ReactNode;
 }) {
   const more = useRef<HTMLButtonElement>(null);
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
@@ -97,7 +78,7 @@ export function AccountCell({
         openFromButton();
       }}
     >
-      {card({ headerActions: actions })}
+      {row({ headerActions: actions })}
       {menuAt && (
         <Menu
           label={`Options for ${name}`}

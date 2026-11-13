@@ -74,7 +74,7 @@ function RestartToUpdate() {
 }
 
 /** Left navigation: General, Widget, Accounts (one item per provider),
- * Restart to update (once an update is downloaded), About. */
+ * Restart to update (once an update is downloaded). */
 export function Nav({
   current,
   onSelect,
@@ -96,7 +96,7 @@ export function Nav({
       onSelect={onSelect}
       icon={icon}
       indent={indent}
-      badge={page === "about" && updateReady ? "Update ready" : undefined}
+      badge={page === "general" && updateReady ? "Update ready" : undefined}
     />
   );
   return (
@@ -124,10 +124,11 @@ export function Nav({
           ),
         )}
       </ul>
-      <ul className="mt-auto flex flex-col gap-0.5 p-0.5 pt-4">
-        {updateReady && <RestartToUpdate />}
-        {item("about")}
-      </ul>
+      {updateReady && (
+        <ul className="mt-auto flex flex-col gap-0.5 p-0.5 pt-4">
+          <RestartToUpdate />
+        </ul>
+      )}
     </nav>
   );
 }
