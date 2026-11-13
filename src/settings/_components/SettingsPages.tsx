@@ -5,12 +5,13 @@ import { formatAgo, formatResetDuration } from "@/lib/format";
 import { checkForUpdates, installUpdate, useUpdateStatus, type UpdateStatus } from "@/lib/updates";
 import type { SettingsPatch } from "@/lib/settings-schema";
 import type { PanelTheme, Settings, ThemeMode, WidgetProvider } from "@/lib/types";
+import { SegmentedControl } from "@/ui/controls";
 import { Toggle } from "@/ui/Toggle";
 import appIcon from "../../../src-tauri/icons/128x128.png";
 import { moveItem, PAGE_TITLES, PROVIDER_ICONS } from "../_lib/pages";
 import { usePanelTheme } from "../_lib/theme";
 import { CopyDiagnosticsButton } from "./Diagnostics";
-import { Page, primaryButton, Section, secondaryButton, selectClass, SettingRow } from "./fields";
+import { Page, primaryButton, Section, secondaryButton, SettingRow } from "./fields";
 
 type Update = (patch: SettingsPatch, success?: string) => Promise<boolean>;
 type Props = { settings: Settings; update: Update };
@@ -23,13 +24,13 @@ const ENABLED_KEY: Record<WidgetProvider, keyof Settings & `${string}Enabled`> =
   opencode: "opencodeEnabled",
 };
 
-const PANEL_THEMES: { value: PanelTheme; label: string }[] = [
+const PANEL_THEMES: { value: PanelTheme; label: string; title?: string }[] = [
   { value: "light", label: "Light" },
   { value: "dark", label: "Dark" },
-  { value: "system", label: "Use system setting" },
+  { value: "system", label: "System", title: "Follow the Windows setting" },
 ];
-const WIDGET_THEMES: { value: ThemeMode; label: string }[] = [
-  { value: "auto", label: "Match the screen behind it" },
+const WIDGET_THEMES: { value: ThemeMode; label: string; title?: string }[] = [
+  { value: "auto", label: "Auto", title: "Match the screen behind the widget" },
   { value: "light", label: "Light" },
   { value: "dark", label: "Dark" },
 ];
@@ -54,7 +55,7 @@ export function GeneralPage({ settings, update }: Props) {
           )}
         />
         <SettingRow
-          title="Hide during full-screen apps"
+          title="Hide during full-screen"
           control={(labelId) => (
             <Toggle
               labelledBy={labelId}
@@ -70,73 +71,27 @@ export function GeneralPage({ settings, update }: Props) {
             />
           )}
         />
-        <SettingRow
-          title="DeepSeek peak-hour warning"
-          control={(labelId) => (
-            <Toggle
-              labelledBy={labelId}
-              checked={settings.deepseekPeakHourWarning}
-              onChange={(deepseekPeakHourWarning) =>
-                void update(
-                  { deepseekPeakHourWarning },
-                  deepseekPeakHourWarning ? "Peak-hour warning on" : "Peak-hour warning off",
-                )
-              }
-            />
-          )}
-        />
       </Section>
       <Section title="Theme">
         <SettingRow
           title="Settings theme"
-          control={(labelId, descId) => (
-            <select
-              aria-labelledby={labelId}
-              aria-describedby={descId}
+          control={() => (
+            <SegmentedControl
+              label="Settings theme"
+              options={PANEL_THEMES}
               value={settings.panelTheme}
-              onChange={(e) => void update({ panelTheme: e.target.value as PanelTheme })}
-              className={selectClass}
-            >
-              {PANEL_THEMES.map((t) => (
-                <option key={t.value} value={t.value}>
-                  {t.label}
-                </option>
-              ))}
-            </select>
+              onChange={(panelTheme) => void update({ panelTheme })}
+            />
           )}
         />
         <SettingRow
           title="Widget theme"
-          control={(labelId, descId) => (
-            <select
-              aria-labelledby={labelId}
-              aria-describedby={descId}
+          control={() => (
+            <SegmentedControl
+              label="Widget theme"
+              options={WIDGET_THEMES}
               value={settings.themeMode}
-              onChange={(e) => void update({ themeMode: e.target.value as ThemeMode })}
-              className={selectClass}
-            >
-              {WIDGET_THEMES.map((t) => (
-                <option key={t.value} value={t.value}>
-                  {t.label}
-                </option>
-              ))}
-            </select>
-          )}
-        />
-      </Section>
-      <Section title="Cards">
-        <SettingRow
-          title="Show provider names"
-          control={(labelId) => (
-            <Toggle
-              labelledBy={labelId}
-              checked={settings.showProviderNames}
-              onChange={(showProviderNames) =>
-                void update(
-                  { showProviderNames },
-                  showProviderNames ? "Cards show provider names" : "Cards show nicknames",
-                )
-              }
+              onChange={(themeMode) => void update({ themeMode })}
             />
           )}
         />
@@ -260,6 +215,14 @@ export function WidgetPage({ settings, update }: Props) {
   const drag = useRef<{ id: WidgetProvider; pointerId: number } | null>(null);
   // `gap` is where the row would land: before row `gap`, or after the last row at order.length.
   const [dragging, setDragging] = useState<{ id: WidgetProvider; gap: number } | null>(null);
+  // the provider whose cards hidden until reset are listed under its row
+  const [openHidden, setOpenHidden] = useState<WidgetProvider | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
+  const snoozed = snoozedEntries(settings, now);
   const reorder = (from: number, to: number) => {
     if (from === to) return;
     void update({ providerOrder: moveItem(order, from, to) });
@@ -312,6 +275,8 @@ export function WidgetPage({ settings, update }: Props) {
             const name = PAGE_TITLES[id];
             const key = ENABLED_KEY[id];
             const lifted = dragging?.id === id;
+            const hidden = snoozed.filter((card) => card.provider === id);
+            const open = openHidden === id && hidden.length > 0;
             return (
               <li
                 key={id}
@@ -325,7 +290,7 @@ export function WidgetPage({ settings, update }: Props) {
                   drag.current = null;
                   setDragging(null);
                 }}
-                className={`ud-row relative flex min-h-[52px] touch-none select-none items-center gap-3 rounded border border-(--s-cardBorder) bg-(--s-card) px-3 py-2 ${
+                className={`ud-row relative touch-none select-none rounded border border-(--s-cardBorder) bg-(--s-card) px-3 py-2 ${
                   lifted
                     ? "z-10 cursor-grabbing opacity-60 shadow-lg"
                     : dragging
@@ -335,52 +300,104 @@ export function WidgetPage({ settings, update }: Props) {
               >
                 {lineAt === i && insertionLine("top")}
                 {lineAt === order.length && i === order.length - 1 && insertionLine("bottom")}
-                <span
-                  role="button"
-                  tabIndex={0}
-                  aria-label={`Reorder ${name}, position ${i + 1} of ${order.length}`}
-                  aria-keyshortcuts="ArrowUp ArrowDown"
-                  title="Drag to reorder"
-                  onKeyDown={(e) => {
-                    const to = e.key === "ArrowUp" ? i - 1 : e.key === "ArrowDown" ? i + 1 : -1;
-                    if (to < 0 || to >= order.length) return;
-                    e.preventDefault();
-                    reorder(i, to);
-                  }}
-                  className="flex h-8 w-6 items-center justify-center rounded text-(--p-muted)"
-                >
-                  <svg width="10" height="16" viewBox="0 0 10 16" fill="currentColor">
-                    {[2, 8, 14].map((y) => (
-                      <g key={y}>
-                        <circle cx="2.5" cy={y} r="1.6" />
-                        <circle cx="7.5" cy={y} r="1.6" />
-                      </g>
+                <div className="flex min-h-9 items-center gap-3">
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Reorder ${name}, position ${i + 1} of ${order.length}`}
+                    aria-keyshortcuts="ArrowUp ArrowDown"
+                    title="Drag to reorder"
+                    onKeyDown={(e) => {
+                      const to = e.key === "ArrowUp" ? i - 1 : e.key === "ArrowDown" ? i + 1 : -1;
+                      if (to < 0 || to >= order.length) return;
+                      e.preventDefault();
+                      reorder(i, to);
+                    }}
+                    className="flex h-8 w-6 items-center justify-center rounded text-(--p-muted)"
+                  >
+                    <svg width="10" height="16" viewBox="0 0 10 16" fill="currentColor">
+                      {[2, 8, 14].map((y) => (
+                        <g key={y}>
+                          <circle cx="2.5" cy={y} r="1.6" />
+                          <circle cx="7.5" cy={y} r="1.6" />
+                        </g>
+                      ))}
+                    </svg>
+                  </span>
+                  <img
+                    src={PROVIDER_ICONS[id]}
+                    alt=""
+                    draggable={false}
+                    className={`size-5 rounded ${id === "codex" && light ? "invert" : ""}`}
+                  />
+                  <span className="min-w-0 flex-1 text-sm">{name}</span>
+                  {hidden.length > 0 && (
+                    <button
+                      type="button"
+                      aria-expanded={open}
+                      onClick={() => setOpenHidden(open ? null : id)}
+                      className="cursor-pointer rounded-full border border-(--p-border) px-2 py-0.5 text-xs text-(--p-muted) hover:text-(--p-text)"
+                    >
+                      {hidden.length} hidden
+                    </button>
+                  )}
+                  <Toggle
+                    label={`Show ${name} on the widget`}
+                    checked={settings[key]}
+                    onChange={(next) =>
+                      void update(
+                        { [key]: next },
+                        `${name} ${next ? "shown on" : "hidden from"} widget`,
+                      )
+                    }
+                  />
+                </div>
+                {open && (
+                  <ul className="mt-2 flex flex-col gap-1 border-t border-(--s-cardBorder) pt-2 pl-9">
+                    {hidden.map((card) => (
+                      <li key={card.key} className="flex items-center gap-3 text-sm">
+                        <span className="min-w-0 truncate">{card.name}</span>
+                        <span className="flex-1 text-xs text-(--p-muted)">
+                          back in {formatResetDuration(card.until - now)}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void update(
+                              { snoozedUntil: { [card.key]: null } },
+                              `${card.name} is back on the widget`,
+                            )
+                          }
+                          className={secondaryButton}
+                        >
+                          Unhide
+                        </button>
+                      </li>
                     ))}
-                  </svg>
-                </span>
-                <img
-                  src={PROVIDER_ICONS[id]}
-                  alt=""
-                  draggable={false}
-                  className={`size-5 rounded ${id === "codex" && light ? "invert" : ""}`}
-                />
-                <span className="min-w-0 flex-1 text-sm">{name}</span>
-                <Toggle
-                  label={`Show ${name} on the widget`}
-                  checked={settings[key]}
-                  onChange={(next) =>
-                    void update(
-                      { [key]: next },
-                      `${name} ${next ? "shown on" : "hidden from"} widget`,
-                    )
-                  }
-                />
+                  </ul>
+                )}
               </li>
             );
           })}
         </ol>
       </Section>
-      <HiddenUntilReset settings={settings} update={update} />
+      <Section title="Cards">
+        <SettingRow
+          title="Show provider names"
+          control={(labelId) => (
+            <Toggle
+              labelledBy={labelId}
+              checked={settings.showProviderNames}
+              onChange={(showProviderNames) =>
+                void update(
+                  { showProviderNames },
+                  showProviderNames ? "Cards show provider names" : "Cards show nicknames",
+                )
+              }
+            />
+          )}
+        />
+      </Section>
     </Page>
   );
 }
@@ -402,57 +419,6 @@ export function snoozedEntries(
       return [{ key, provider, name, until }];
     })
     .sort((a, b) => a.until - b.until);
-}
-
-/** Used-up cards the user hid from the widget until they reset, each with a way back. */
-function HiddenUntilReset({ settings, update }: Props) {
-  const light = usePanelTheme() === "light";
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 30_000);
-    return () => clearInterval(id);
-  }, []);
-  const hidden = snoozedEntries(settings, now);
-  return (
-    <Section title="Hidden until reset">
-      {hidden.length === 0 ? (
-        <p className="text-xs text-(--p-muted)">
-          No cards are hidden. A used-up card has an eye button on the widget that hides it until it
-          resets.
-        </p>
-      ) : (
-        hidden.map((card) => (
-          <SettingRow
-            key={card.key}
-            title={card.name}
-            description={`${PAGE_TITLES[card.provider]} · back in ${formatResetDuration(card.until - now)}`}
-            icon={
-              <img
-                src={PROVIDER_ICONS[card.provider]}
-                alt=""
-                className={`size-5 rounded ${card.provider === "codex" && light ? "invert" : ""}`}
-              />
-            }
-            control={(labelId) => (
-              <button
-                type="button"
-                aria-describedby={labelId}
-                onClick={() =>
-                  void update(
-                    { snoozedUntil: { [card.key]: null } },
-                    `${card.name} is back on the widget`,
-                  )
-                }
-                className={secondaryButton}
-              >
-                Show
-              </button>
-            )}
-          />
-        ))
-      )}
-    </Section>
-  );
 }
 
 function openAboutLink(link: "logs" | "repo") {

@@ -10,7 +10,8 @@ import { AccountRow, AccountTable } from "./AccountTable";
 import { AccountCell, EmptyState, ProviderLogo, useNow } from "./CardGrid";
 import BarsSection from "./BarsSection";
 import { KeyDialog, RemoveDialog, RenameDialog } from "./dialogs";
-import { Page, primaryButton } from "./fields";
+import { Page, primaryButton, Section, SettingRow } from "./fields";
+import { Toggle } from "@/ui/Toggle";
 import { accountCount } from "./ProviderPanel";
 
 type Update = (patch: Partial<Settings>, success?: string) => Promise<boolean>;
@@ -156,6 +157,23 @@ export default function OpenCodeAccounts({
         </AccountTable>
       )}
       <BarsSection provider="opencode" settings={settings} update={update} />
+      <Section>
+        <SettingRow
+          title="DeepSeek peak-hour warning"
+          control={(labelId) => (
+            <Toggle
+              labelledBy={labelId}
+              checked={settings.deepseekPeakHourWarning}
+              onChange={(deepseekPeakHourWarning) =>
+                void update(
+                  { deepseekPeakHourWarning },
+                  deepseekPeakHourWarning ? "Peak-hour warning on" : "Peak-hour warning off",
+                )
+              }
+            />
+          )}
+        />
+      </Section>
       {pending?.kind === "add" && <KeyDialog onClose={close} onDone={() => void reload()} />}
       {pending?.kind === "key" && (
         <KeyDialog email={pending.email} onClose={close} onDone={() => void reload()} />

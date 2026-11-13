@@ -43,14 +43,14 @@ export function Switch({
   );
 }
 
-/** Single-choice button group exposed as a radio group (arrow keys move). */
+/** Single-choice tabs exposed as a radio group (arrow keys move). */
 export function SegmentedControl<T extends string>({
   options,
   value,
   onChange,
   label,
 }: {
-  options: readonly T[];
+  options: readonly { value: T; label: string; title?: string }[];
   value: T;
   onChange: (next: T) => void;
   label: string;
@@ -66,20 +66,20 @@ export function SegmentedControl<T extends string>({
     if (!delta) return;
     e.preventDefault();
     const next = (i + delta + options.length) % options.length;
-    onChange(options[next]);
+    onChange(options[next].value);
     refs.current[next]?.focus();
   };
   return (
     <div
       role="radiogroup"
       aria-label={label}
-      className="flex rounded-lg overflow-hidden border border-(--p-border) shrink-0"
+      className="flex shrink-0 gap-0.5 rounded-md border border-(--p-border) bg-(--p-surface) p-0.5"
     >
       {options.map((option, i) => {
-        const selected = option === value;
+        const selected = option.value === value;
         return (
           <button
-            key={option}
+            key={option.value}
             ref={(el) => {
               refs.current[i] = el;
             }}
@@ -87,15 +87,16 @@ export function SegmentedControl<T extends string>({
             role="radio"
             aria-checked={selected}
             tabIndex={selected ? 0 : -1}
-            onClick={() => onChange(option)}
+            title={option.title}
+            onClick={() => onChange(option.value)}
             onKeyDown={(e) => onKeyDown(e, i)}
-            className={`px-2.5 py-1 text-xs capitalize transition-colors ${
+            className={`min-h-7 rounded px-3 text-sm transition-colors ${
               selected
-                ? "bg-(--p-primaryBg) text-(--p-primaryFg)"
-                : "bg-(--p-surface) text-(--p-muted) hover:text-(--p-text)"
+                ? "bg-(--p-primaryBg) font-medium text-(--p-primaryFg)"
+                : "text-(--p-muted) hover:text-(--p-text)"
             }`}
           >
-            {option}
+            {option.label}
           </button>
         );
       })}
