@@ -14,7 +14,7 @@ export const inputClass =
   "w-full min-h-8 rounded border border-(--p-inputBorder) bg-(--p-inputBg) px-2.5 text-sm text-(--p-text) placeholder:text-(--p-muted)";
 
 export const selectClass =
-  "min-h-8 min-w-[160px] rounded border border-(--p-inputBorder) bg-(--s-card) px-2.5 text-sm text-(--p-text)";
+  "min-h-8 w-56 rounded border border-(--p-inputBorder) bg-(--s-card) px-2.5 text-sm text-(--p-text)";
 
 /** A scrolling page: title 28/36 semibold, content at most 1000 px wide. */
 export function Page({

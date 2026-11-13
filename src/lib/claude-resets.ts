@@ -53,6 +53,8 @@ export interface ResetRow {
   key: string;
   title: string;
   detail: string;
+  count: number;
+  paused: boolean;
 }
 
 const detail = (count: number, expiry: string | null, paused = false) =>
@@ -66,6 +68,8 @@ export function claudeResetRows(resets: ClaudeResets): ResetRow[] {
     key: `${t.name}|${t.paused}`,
     title: t.name,
     detail: detail(t.count, t.earliestExpiry, t.paused),
+    count: t.count,
+    paused: t.paused,
   }));
 }
 
@@ -74,7 +78,13 @@ export function codexResetRows(usage: CodexUsage): ResetRow[] {
   const count = usage.resetCredits ?? 0;
   if (count <= 0) return [];
   return [
-    { key: "codex", title: "Reset", detail: detail(count, usage.resetExpiries?.[0] ?? null) },
+    {
+      key: "codex",
+      title: "Reset",
+      detail: detail(count, usage.resetExpiries?.[0] ?? null),
+      count,
+      paused: false,
+    },
   ];
 }
 
@@ -83,4 +93,17 @@ export function claudeResetsSummary(resets: ClaudeResets): string {
   return resetTypes(resets)
     .map((t) => `${t.count} ${t.name}${t.count === 1 ? "" : "s"}${t.paused ? " (paused)" : ""}`)
     .join(" · ");
+}
+
+/** A reset table cell: "2 Full · 1 Fable" ("2" for a single unnamed type); "" without resets. */
+export function resetCellText(rows: readonly ResetRow[]): string {
+  if (rows.length === 1 && rows[0]!.title === "Reset") return String(rows[0]!.count);
+  return rows
+    .map((r) => `${r.count} ${r.title.replace(/ reset$/i, "")}${r.paused ? " (paused)" : ""}`)
+    .join(" · ");
+}
+
+/** The cell's tooltip: one line per type, "Full reset: 2 left · ends Dec 10". */
+export function resetCellTitle(rows: readonly ResetRow[]): string {
+  return rows.map((r) => `${r.title}: ${r.detail}`).join("\n");
 }
