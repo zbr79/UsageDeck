@@ -70,12 +70,15 @@ export function Section({
 export function SettingRow({
   title,
   description,
+  inline,
   live,
   icon,
   control,
 }: {
   title: string;
   description?: string;
+  /** the description on the title's line, after it, instead of below */
+  inline?: boolean;
   /** announce description changes (the result of an action started from this row) */
   live?: boolean;
   icon?: ReactNode;
@@ -87,7 +90,7 @@ export function SettingRow({
   return (
     <div className="ud-row flex min-h-[68px] items-center gap-4 rounded border border-(--s-cardBorder) bg-(--s-card) p-4">
       {icon && <span className="flex size-5 shrink-0 items-center justify-center">{icon}</span>}
-      <div className="min-w-0 flex-1">
+      <div className={`min-w-0 flex-1 ${inline ? "flex flex-wrap items-baseline gap-x-2" : ""}`}>
         <div id={id} className="text-sm">
           {title}
         </div>

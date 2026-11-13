@@ -22,8 +22,6 @@ pub const STATE_FILE: &str = "settings-window.json";
 /// Default and minimum inner size, logical pixels.
 const DEFAULT_SIZE: (f64, f64) = (960.0, 680.0);
 const MIN_SIZE: (f64, f64) = (640.0, 480.0);
-/// The repository Settings → General → Support opens.
-const REPO_URL: &str = "https://github.com/zbr79/UsageDeck";
 
 /// Bumped on every move / resize; only the last one within the debounce window is saved.
 static SAVE_GENERATION: AtomicU64 = AtomicU64::new(0);
@@ -349,21 +347,13 @@ pub fn hide_settings(app: &AppHandle) {
     let _ = app.emit_to(WIDGET, EVENT_SETTINGS_CHANGED, ());
 }
 
-/// Support links (Settings → General): "logs" opens the log folder, "repo" the repository in the
-/// default browser.
-/// Only these two fixed targets exist; anything else is ignored.
+/// Support buttons (Settings → General): "logs" opens the log folder, "accounts" the data folder
+/// with the account files. Only these two fixed targets exist; anything else is ignored.
 #[tauri::command]
 pub fn open_about_link(app: AppHandle, link: String) {
     match link.as_str() {
         "logs" => crate::open_log_folder(&app),
-        "repo" => {
-            if let Err(e) = std::process::Command::new("explorer.exe")
-                .arg(REPO_URL)
-                .spawn()
-            {
-                log::warn!("could not open the repository link: {e}");
-            }
-        }
+        "accounts" => crate::open_data_folder(&app),
         other => log::warn!("unknown about link {other:?}"),
     }
 }

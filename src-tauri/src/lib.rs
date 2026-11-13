@@ -185,16 +185,26 @@ fn set_start_at_login(app: &AppHandle, on: bool) {
 
 /// Open the app's log folder in Explorer.
 fn open_log_folder(app: &AppHandle) {
-    let dir = match app.path().app_log_dir() {
+    open_folder(app.path().app_log_dir(), "log");
+}
+
+/// UsageDeck's data folder: accounts.json, settings, the usage cache and history.
+fn open_data_folder(app: &AppHandle) {
+    open_folder(app.path().app_data_dir(), "data");
+}
+
+/// Open a folder of UsageDeck's in Explorer, creating it first; `what` names it in the log.
+fn open_folder(dir: tauri::Result<std::path::PathBuf>, what: &str) {
+    let dir = match dir {
         Ok(dir) => dir,
         Err(e) => {
-            log::warn!("no log folder: {e}");
+            log::warn!("no {what} folder: {e}");
             return;
         }
     };
     let _ = std::fs::create_dir_all(&dir);
     if let Err(e) = std::process::Command::new("explorer.exe").arg(&dir).spawn() {
-        log::warn!("could not open the log folder: {e}");
+        log::warn!("could not open the {what} folder: {e}");
     }
 }
 

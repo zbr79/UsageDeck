@@ -166,34 +166,55 @@ export function meterPaceText(
   return parts.join(" · ");
 }
 
-/** One quarter hour of the spend chart: all dollars and Fable's, as hourly rates. */
+/** One step of the spend chart: all dollars and Fable's, as hourly rates. */
 export interface SpendPoint {
   /** USD per hour */
   total: number;
   fable: number;
 }
 
-/** The chart's points oldest first, as $/h: the API sends USD per quarter, index 0 = now. */
-export function spendSeries(quarters: number[], fable: number[]): SpendPoint[] {
-  return quarters.map((q, i) => ({ total: q * 4, fable: (fable[i] ?? 0) * 4 })).reverse();
+/** The chart's ranges: the last 15 minutes and hour minute by minute, 24 hours by quarter hour. */
+export type SpendRange = "15m" | "1h" | "24h";
+
+export const SPEND_RANGES: { value: SpendRange; label: string; title: string }[] = [
+  { value: "15m", label: "15m", title: "Last 15 minutes" },
+  { value: "1h", label: "1h", title: "Last hour" },
+  { value: "24h", label: "24h", title: "Last 24 hours" },
+];
+
+/** Minutes per point of each range. */
+export const RANGE_STEP: Record<SpendRange, number> = { "15m": 1, "1h": 1, "24h": 15 };
+
+/** A range's points oldest first, as $/h. The API sends USD per step, index 0 = now. */
+export function spendSeries(spend: ClaudePace["spend"], range: SpendRange): SpendPoint[] {
+  const [values, fable] =
+    range === "24h" ? [spend.quarters, spend.quartersFable] : [spend.minutes, spend.minutesFable];
+  const count = range === "15m" ? 15 : values.length;
+  const perHour = 60 / RANGE_STEP[range];
+  return values
+    .slice(0, count)
+    .map((v, i) => ({ total: v * perHour, fable: (fable[i] ?? 0) * perHour }))
+    .reverse();
 }
 
 /** The chart's accessible summary: the peak rate and when, and Fable's part of the period. */
-export function spendSeriesSummary(points: readonly SpendPoint[]): string {
-  if (points.length === 0) return "Spend over the last 24 hours: no data yet";
+export function spendSeriesSummary(points: readonly SpendPoint[], range: SpendRange): string {
+  const span = SPEND_RANGES.find((r) => r.value === range)!.title.toLowerCase();
+  if (points.length === 0) return `Spend over the ${span}: no data yet`;
   let peak = 0;
   for (let i = 1; i < points.length; i++) if (points[i]!.total > points[peak]!.total) peak = i;
-  const minsAgo = (points.length - 1 - peak) * 15;
+  const minsAgo = (points.length - 1 - peak) * RANGE_STEP[range];
+  const hours = Math.round(minsAgo / 60);
   const ago =
     minsAgo === 0
       ? "now"
       : minsAgo < 60
-        ? `${minsAgo} minutes ago`
-        : `${Math.round(minsAgo / 60)} ${Math.round(minsAgo / 60) === 1 ? "hour" : "hours"} ago`;
+        ? `${minsAgo} ${minsAgo === 1 ? "minute" : "minutes"} ago`
+        : `${hours} ${hours === 1 ? "hour" : "hours"} ago`;
   const total = points.reduce((a, p) => a + p.total, 0);
   const fable = points.reduce((a, p) => a + p.fable, 0);
   return (
-    `Spend over the last 24 hours. Peak ${formatUsdRate(points[peak]!.total)}, ${ago}. ` +
+    `Spend over the ${span}. Peak ${formatUsdRate(points[peak]!.total)}, ${ago}. ` +
     `Fable ${total > 0 ? formatShare(fable / total) : "0%"} of it.`
   );
 }

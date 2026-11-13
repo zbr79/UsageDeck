@@ -585,6 +585,8 @@ fn is_fable(model: &str) -> bool {
 const QUARTER_MS: i64 = 15 * MINUTE_MS;
 /// 24 hours of quarter hours.
 const QUARTERS: usize = 96;
+/// The last hour, minute by minute.
+const MINUTES: usize = 60;
 
 /// One model family's dollars beside all dollars, over the same span.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
@@ -653,6 +655,10 @@ pub struct Spend {
     pub quarters: Vec<f64>,
     /// Fable's part of each quarter hour, indexed like `quarters`
     pub quarters_fable: Vec<f64>,
+    /// 60 minutes of USD, index 0 = the current minute (the chart's 15-minute and 1-hour views)
+    pub minutes: Vec<f64>,
+    /// Fable's part of each minute, indexed like `minutes`
+    pub minutes_fable: Vec<f64>,
     /// Replies, last 7 days, on models missing from the price table; none of their tokens are in
     /// the dollar figures. Replies without tokens (`<synthetic>`) cost nothing and are left out.
     pub unpriced_replies: u64,
@@ -700,6 +706,8 @@ fn summarize(
         hourly: vec![0.0; 24],
         quarters: vec![0.0; QUARTERS],
         quarters_fable: vec![0.0; QUARTERS],
+        minutes: vec![0.0; MINUTES],
+        minutes_fable: vec![0.0; MINUTES],
         unpriced_replies: 0,
         unpriced_models: Vec::new(),
         scanned_at,
@@ -760,6 +768,13 @@ fn summarize(
                 out.quarters[q as usize] += usd;
                 if is_fable(model) {
                     out.quarters_fable[q as usize] += usd;
+                }
+            }
+            let ago = now / MINUTE_MS - minute;
+            if (0..MINUTES as i64).contains(&ago) {
+                out.minutes[ago as usize] += usd;
+                if is_fable(model) {
+                    out.minutes_fable[ago as usize] += usd;
                 }
             }
         }
@@ -1009,6 +1024,10 @@ mod tests {
         assert!(close(s.quarters[1], 1.0) && close(s.quarters[2], 1.0));
         assert!(close(s.quarters[8], 2.0) && close(s.quarters.iter().sum::<f64>(), 4.0));
         assert!(s.quarters_fable.iter().all(|&v| v == 0.0));
+        // minute by minute: 5 and 30 minutes ago; 120 minutes ago is past the hour
+        assert_eq!(s.minutes.len(), 60);
+        assert!(close(s.minutes[5], 1.0) && close(s.minutes[30], 1.0));
+        assert!(close(s.minutes.iter().sum::<f64>(), 2.0));
     }
 
     #[test]

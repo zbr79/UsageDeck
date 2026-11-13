@@ -38,6 +38,7 @@ const WIDGET_THEMES: { value: ThemeMode; label: string; title?: string }[] = [
 export function GeneralPage({ settings, update }: Props) {
   return (
     <Page title="General">
+      <UpdatesSection settings={settings} update={update} />
       <Section>
         <SettingRow
           title="Start with Windows"
@@ -96,7 +97,6 @@ export function GeneralPage({ settings, update }: Props) {
           )}
         />
       </Section>
-      <UpdatesSection settings={settings} update={update} />
     </Page>
   );
 }
@@ -146,58 +146,63 @@ function UpdatesSection({ settings, update }: Props) {
             ? " · installs when you're away"
             : "")
         }
+        inline
         live
         icon={<img src={appIcon} alt="" className="size-5" />}
-        control={(labelId, descId) =>
-          status.state === "ready" ? (
-            <button
-              type="button"
-              aria-describedby={descId}
-              disabled={restarting}
-              onClick={restart}
-              className={primaryButton}
-            >
-              {restarting ? "Restarting…" : "Restart to update"}
-            </button>
-          ) : (
-            <button
-              type="button"
-              aria-describedby={descId ?? labelId}
-              disabled={busy}
-              onClick={checkForUpdates}
-              className={secondaryButton}
-            >
-              {busy ? "Checking…" : "Check for updates"}
-            </button>
-          )
-        }
-      />
-      <SettingRow
-        title="Install updates automatically"
-        control={(labelId) => (
-          <Toggle
-            labelledBy={labelId}
-            checked={settings.autoInstallUpdates}
-            onChange={(autoInstallUpdates) =>
-              void update(
-                { autoInstallUpdates },
-                autoInstallUpdates
-                  ? "Installs updates automatically"
-                  : "Updates wait for you to install them",
-              )
-            }
-          />
+        control={(labelId, descId) => (
+          <>
+            {status.state === "ready" ? (
+              <button
+                type="button"
+                aria-describedby={descId}
+                disabled={restarting}
+                onClick={restart}
+                className={primaryButton}
+              >
+                {restarting ? "Restarting…" : "Restart to update"}
+              </button>
+            ) : (
+              <button
+                type="button"
+                aria-describedby={descId ?? labelId}
+                disabled={busy}
+                onClick={checkForUpdates}
+                className={secondaryButton}
+              >
+                {busy ? "Checking…" : "Check for updates"}
+              </button>
+            )}
+            <span className="ml-2 text-sm text-(--p-muted)" aria-hidden="true">
+              Auto
+            </span>
+            <Toggle
+              label="Install updates automatically"
+              checked={settings.autoInstallUpdates}
+              onChange={(autoInstallUpdates) =>
+                void update(
+                  { autoInstallUpdates },
+                  autoInstallUpdates
+                    ? "Installs updates automatically"
+                    : "Updates wait for you to install them",
+                )
+              }
+            />
+          </>
         )}
       />
       <SettingRow
         title="Support"
         control={() => (
           <div className="flex flex-wrap justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => openAboutLink("accounts")}
+              className={secondaryButton}
+            >
+              Account folder
+            </button>
             <button type="button" onClick={() => openAboutLink("logs")} className={secondaryButton}>
               Log folder
-            </button>
-            <button type="button" onClick={() => openAboutLink("repo")} className={secondaryButton}>
-              GitHub
             </button>
             <CopyDiagnosticsButton />
           </div>
@@ -421,7 +426,7 @@ export function snoozedEntries(
     .sort((a, b) => a.until - b.until);
 }
 
-function openAboutLink(link: "logs" | "repo") {
+function openAboutLink(link: "logs" | "accounts") {
   if (!inTauri()) return;
   invoke("open_about_link", { link }).catch((err) => console.error("open link failed", err));
 }
