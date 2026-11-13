@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, type PointerEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { inTauri } from "@/lib/bridge";
-import { formatAgo, formatResetDuration } from "@/lib/format";
-import { checkForUpdates, installUpdate, useUpdateStatus, type UpdateStatus } from "@/lib/updates";
+import { formatResetDuration } from "@/lib/format";
+import { installUpdate, useUpdateStatus } from "@/lib/updates";
 import type { SettingsPatch } from "@/lib/settings-schema";
 import type { PanelTheme, Settings, ThemeMode, WidgetProvider } from "@/lib/types";
 import { SegmentedControl } from "@/ui/controls";
@@ -38,7 +38,7 @@ const WIDGET_THEMES: { value: ThemeMode; label: string; title?: string }[] = [
 export function GeneralPage({ settings, update }: Props) {
   return (
     <Page title="General">
-      <UpdatesSection settings={settings} update={update} />
+      <UpdatesSection />
       <Section>
         <SettingRow
           title="Start with Windows"
@@ -101,37 +101,11 @@ export function GeneralPage({ settings, update }: Props) {
   );
 }
 
-/** The update row's description: the last check's result, or when it ran. */
-export function updateDescription(status: UpdateStatus, now: number): string {
-  const checked = status.lastChecked == null ? null : formatAgo(status.lastChecked, now);
-  switch (status.state) {
-    case "checking":
-      return "Checking for updates…";
-    case "downloading":
-      return `Downloading ${status.version}…`;
-    case "upToDate":
-      return `You're up to date · checked ${checked ?? "just now"}`;
-    case "failed":
-      return `Couldn't check for updates: ${status.message}`;
-    case "ready":
-      return `Version ${status.version} is downloaded and ready to install`;
-    case "idle":
-      return checked ? `Last checked ${checked}` : "Not checked yet";
-  }
-}
-
-function UpdatesSection({ settings, update }: Props) {
+/** The version, and "Update available" once one is downloaded: one click installs it. */
+function UpdatesSection() {
   const status = useUpdateStatus();
-  const [now, setNow] = useState(() => Date.now());
   const [restarting, setRestarting] = useState(false);
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 60_000);
-    return () => clearInterval(id);
-  }, []);
-  // "just now" right after a check, not the minute-old clock
-  useEffect(() => setNow(Date.now()), [status]);
   if (!status) return null;
-  const busy = status.state === "checking" || status.state === "downloading";
   const restart = () => {
     setRestarting(true);
     installUpdate().catch(() => setRestarting(false));
@@ -140,55 +114,22 @@ function UpdatesSection({ settings, update }: Props) {
     <Section title="UsageDeck" id="updates">
       <SettingRow
         title={`Version ${status.currentVersion}`}
-        description={
-          updateDescription(status, now) +
-          (settings.autoInstallUpdates && status.state === "ready"
-            ? " · installs when you close Settings"
-            : "")
-        }
-        inline
-        live
         icon={<img src={appIcon} alt="" className="size-5" />}
-        control={(labelId, descId) => (
-          <>
-            {status.state === "ready" ? (
-              <button
-                type="button"
-                aria-describedby={descId}
-                disabled={restarting}
-                onClick={restart}
-                className={primaryButton}
-              >
-                {restarting ? "Restarting…" : "Restart to update"}
-              </button>
-            ) : (
-              <button
-                type="button"
-                aria-describedby={descId ?? labelId}
-                disabled={busy}
-                onClick={checkForUpdates}
-                className={secondaryButton}
-              >
-                {busy ? "Checking…" : "Check for updates"}
-              </button>
-            )}
-            <span className="ml-2 text-sm text-(--p-muted)" aria-hidden="true">
-              Auto
-            </span>
-            <Toggle
-              label="Install updates automatically"
-              checked={settings.autoInstallUpdates}
-              onChange={(autoInstallUpdates) =>
-                void update(
-                  { autoInstallUpdates },
-                  autoInstallUpdates
-                    ? "Installs updates automatically"
-                    : "Updates wait for you to install them",
-                )
-              }
-            />
-          </>
-        )}
+        control={
+          status.state === "ready"
+            ? () => (
+                <button
+                  type="button"
+                  title={`Install version ${status.version}`}
+                  disabled={restarting}
+                  onClick={restart}
+                  className={primaryButton}
+                >
+                  {restarting ? "Updating…" : "Update available"}
+                </button>
+              )
+            : undefined
+        }
       />
       <SettingRow
         title="Support"

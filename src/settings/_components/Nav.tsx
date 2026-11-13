@@ -51,7 +51,7 @@ function NavItem({
   );
 }
 
-/** Bottom of the nav, only once an update is downloaded: restarts into it. */
+/** Bottom of the nav, only once an update is downloaded: one click installs it. */
 function RestartToUpdate() {
   const [restarting, setRestarting] = useState(false);
   const restart = () => {
@@ -67,14 +67,14 @@ function RestartToUpdate() {
         className="ud-nav-item flex min-h-9 w-full items-center gap-3 rounded px-3 text-left text-sm hover:bg-(--s-navHover) disabled:cursor-default disabled:text-(--p-muted) disabled:hover:bg-transparent"
       >
         <DownloadIcon size={16} className="shrink-0" />
-        <span className="truncate">{restarting ? "Restarting…" : "Restart to update"}</span>
+        <span className="truncate">{restarting ? "Updating…" : "Update available"}</span>
       </button>
     </li>
   );
 }
 
 /** Left navigation: General, Widget, Accounts (one item per provider),
- * Restart to update (once an update is downloaded). */
+ * Update available (once an update is downloaded). */
 export function Nav({
   current,
   onSelect,
