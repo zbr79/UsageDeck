@@ -11,14 +11,11 @@ import {
   SPEND_BAND_TONE,
   spendBand,
   spendRateTitle,
-  hourlyOldestFirst,
-  hourlySummary,
+  spendSeries,
+  spendSeriesSummary,
   meterPaceText,
   modelShares,
-  paceTone,
-  paceVsEven,
   usageSeverity,
-  windowForecast,
   WINDOW_MS,
 } from "@/lib/pace";
 import { paceScenario } from "@/lib/mock";
@@ -50,6 +47,8 @@ const pace = (over: Partial<ClaudePace["spend"]> = {}, windows?: ClaudePace["win
       rate15m: 64,
       byModel: [],
       hourly: [],
+      quarters: [],
+      quartersFable: [],
       unpricedReplies: 0,
       unpricedModels: [],
       scannedAt: NOW,
@@ -83,18 +82,6 @@ describe("formatting", () => {
   it("shows a local clock time, with a weekday when not today", () => {
     expect(formatClock(new Date(2026, 9, 18, 15, 40).getTime(), NOW)).toBe("3:40 PM");
     expect(formatClock(new Date(2026, 9, 20, 9, 5).getTime(), NOW)).toBe("Tue 9:05 AM");
-  });
-});
-
-describe("paceTone", () => {
-  it("is muted unless heading for a limit", () => {
-    expect(paceTone(win(), NOW)).toBe("muted");
-    expect(paceTone(null, NOW)).toBe("muted");
-  });
-  it("is amber beyond 30 minutes and red at 30 minutes or less", () => {
-    expect(paceTone(win({ state: "limit", etaToLimit: NOW + 31 * MIN }), NOW)).toBe("amber");
-    expect(paceTone(win({ state: "limit", etaToLimit: NOW + 30 * MIN }), NOW)).toBe("red");
-    expect(paceTone(win({ state: "limit", etaToLimit: NOW + 5 * MIN }), NOW)).toBe("red");
   });
 });
 
@@ -206,19 +193,18 @@ describe("meterPaceText", () => {
 });
 
 describe("settings helpers", () => {
-  it("compares with even pace", () => {
-    expect(paceVsEven(win({ pct: 41, evenPacePct: 30 }))).toBe("ahead of even pace by 11 pts");
-    expect(paceVsEven(win({ pct: 20, evenPacePct: 30 }))).toBe("behind even pace by 10 pts");
-    expect(paceVsEven(win({ evenPacePct: null }))).toBeNull();
-  });
-  it("forecasts until reset", () => {
-    expect(windowForecast(win(), NOW, true)).toBe("lasts until reset");
-  });
-  it("orders bars oldest first and summarises peak and current", () => {
-    expect(hourlyOldestFirst([3, 2, 1])).toEqual([1, 2, 3]);
-    expect(hourlySummary([33, 69, 119, 5])).toBe(
-      "Spend per hour over the last 4 hours. Peak $119/h, 2 hours ago. Current hour so far $33.",
+  it("turns quarter-hour dollars into $/h, oldest first, and summarises the peak", () => {
+    const points = spendSeries([5, 20, 10, 0], [1, 5, 0, 0]);
+    expect(points).toEqual([
+      { total: 0, fable: 0 },
+      { total: 40, fable: 0 },
+      { total: 80, fable: 20 },
+      { total: 20, fable: 4 },
+    ]);
+    expect(spendSeriesSummary(points)).toBe(
+      "Spend over the last 24 hours. Peak $80/h, 15 minutes ago. Fable 17% of it.",
     );
+    expect(spendSeriesSummary([])).toBe("Spend over the last 24 hours: no data yet");
   });
   it("splits spend by model with shares", () => {
     const rows = modelShares([
@@ -239,15 +225,15 @@ describe("settings helpers", () => {
 
 describe("mock scenarios", () => {
   it("cover every state the card can show", () => {
-    const tone = (p: ClaudePace, key: "fiveHour" | "weekly") => paceTone(p.windows[key], NOW);
-    expect(tone(paceScenario("lasts", NOW), "fiveHour")).toBe("muted");
-    expect(tone(paceScenario("limit", NOW), "fiveHour")).toBe("red");
-    expect(tone(paceScenario("weekly", NOW), "weekly")).toBe("amber");
+    const state = (p: ClaudePace, key: "fiveHour" | "weekly") => p.windows[key]?.state;
+    expect(state(paceScenario("lasts", NOW), "fiveHour")).toBe("lasts");
+    expect(state(paceScenario("limit", NOW), "fiveHour")).toBe("limit");
+    expect(state(paceScenario("weekly", NOW), "weekly")).toBe("limit");
     const m = paceScenario("measuring", NOW).windows.fiveHour!;
     expect(meterPaceText(m.pct, m.evenPacePct, m, NOW)).toContain("measuring speed…");
     expect(headerRate(paceScenario("backfill", NOW))).toBeNull();
     expect(paceScenario("unpriced", NOW).spend.unpricedReplies).toBeGreaterThan(0);
     expect(paceScenario("unpriced", NOW).spend.unpricedModels.length).toBeGreaterThan(0);
-    expect(paceScenario("lasts", NOW).spend.hourly).toHaveLength(24);
+    expect(paceScenario("lasts", NOW).spend.quarters).toHaveLength(96);
   });
 });

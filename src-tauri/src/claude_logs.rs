@@ -578,6 +578,14 @@ fn sum_where(buckets: &Buckets, keep: impl Fn(i64) -> bool) -> f64 {
 /// another id (the price table gives both the same prices).
 const FABLE_MODEL_PREFIXES: [&str; 2] = ["claude-fable", "claude-mythos"];
 
+fn is_fable(model: &str) -> bool {
+    FABLE_MODEL_PREFIXES.iter().any(|p| model.starts_with(p))
+}
+
+const QUARTER_MS: i64 = 15 * MINUTE_MS;
+/// 24 hours of quarter hours.
+const QUARTERS: usize = 96;
+
 /// One model family's dollars beside all dollars, over the same span.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -604,7 +612,7 @@ fn fable_share(buckets: &Buckets, since: i64, now: i64) -> Option<ModelShare> {
             };
             let usd = cost(&price, &b.tokens);
             share.total_usd += usd;
-            if FABLE_MODEL_PREFIXES.iter().any(|p| model.starts_with(p)) {
+            if is_fable(model) {
                 share.usd += usd;
             }
         }
@@ -641,6 +649,10 @@ pub struct Spend {
     pub rate15m: f64,
     pub by_model: Vec<ModelSpend>,
     pub hourly: Vec<f64>,
+    /// 96 quarter hours of USD, index 0 = the current partial quarter (the Settings chart)
+    pub quarters: Vec<f64>,
+    /// Fable's part of each quarter hour, indexed like `quarters`
+    pub quarters_fable: Vec<f64>,
     /// Replies, last 7 days, on models missing from the price table; none of their tokens are in
     /// the dollar figures. Replies without tokens (`<synthetic>`) cost nothing and are left out.
     pub unpriced_replies: u64,
@@ -686,6 +698,8 @@ fn summarize(
         rate15m: 0.0,
         by_model: Vec::new(),
         hourly: vec![0.0; 24],
+        quarters: vec![0.0; QUARTERS],
+        quarters_fable: vec![0.0; QUARTERS],
         unpriced_replies: 0,
         unpriced_models: Vec::new(),
         scanned_at,
@@ -696,6 +710,7 @@ fn summarize(
     let mut unpriced: BTreeSet<&str> = BTreeSet::new();
     let mut last15 = 0.0;
     let since = |hours: i64, m: i64| m > now - hours * HOUR_MS && m <= now + MINUTE_MS;
+    let quarter0 = now - now.rem_euclid(QUARTER_MS);
     for (minute, models) in buckets.range((now - 7 * history::DAY_MS) / MINUTE_MS - 1..) {
         let m = mid(*minute);
         if !since(7 * 24, m) {
@@ -736,6 +751,17 @@ fn summarize(
             if (0..24).contains(&h) {
                 out.hourly[h as usize] += usd;
             }
+            let q = if start >= quarter0 {
+                0
+            } else {
+                (quarter0 - start - 1) / QUARTER_MS + 1
+            };
+            if (0..QUARTERS as i64).contains(&q) {
+                out.quarters[q as usize] += usd;
+                if is_fable(model) {
+                    out.quarters_fable[q as usize] += usd;
+                }
+            }
         }
     }
     out.rate60m = out.last_hour;
@@ -761,14 +787,24 @@ pub fn pace_body(engine: &SpendEngine, dir: &Path, now: i64) -> Value {
     let readings = history::load_all(&dir.join(HISTORY_FILE));
     let claude: Vec<history::Reading> = readings.into_iter().filter(|r| r.p == "claude").collect();
     let active = claude.last().map(|r| r.a.clone());
+    // While another account was signed in, its spend is not this account's
+    let others = active
+        .as_deref()
+        .map_or_else(Vec::new, |a| history::other_account_spans(&claude, a));
     let mine: Vec<history::Reading> = claude
         .into_iter()
         .filter(|r| Some(&r.a) == active.as_ref())
         .collect();
     let five = history::points_of(&mine, history::FIVE_HOUR);
     let weekly = history::points_of(&mine, history::WEEKLY);
-    let usd_per_weekly_pct =
-        history::usd_per_weekly_pct(&weekly, now, |t| engine.spend_between(t, now));
+    let usd_per_weekly_pct = history::usd_per_weekly_pct(&weekly, now, |t| {
+        let other: f64 = others
+            .iter()
+            .filter(|(_, end)| *end > t)
+            .map(|&(start, end)| engine.spend_between(start.max(t), end))
+            .sum();
+        (engine.spend_between(t, now) - other).max(0.0)
+    });
     let five_pace = history::window_pace(&five, now, 5 * HOUR_MS);
     let five_start = five_hour_start(five_pace.as_ref().and_then(|p| p.resets_at.as_deref()), now);
     json!({
@@ -968,6 +1004,32 @@ mod tests {
         // 5 and 30 min ago are in the current hour (10:00-10:30); 120 min ago is 08:30 -> index 2
         assert!(close(s.hourly[0], 2.0) && close(s.hourly[2], 2.0));
         assert!(close(s.by_model[0].usd24h, 4.0));
+        // NOW is on a quarter hour: 5 min ago is quarter 1, 30 min ago 2, 120 min ago 8
+        assert_eq!(s.quarters.len(), 96);
+        assert!(close(s.quarters[1], 1.0) && close(s.quarters[2], 1.0));
+        assert!(close(s.quarters[8], 2.0) && close(s.quarters.iter().sum::<f64>(), 4.0));
+        assert!(s.quarters_fable.iter().all(|&v| v == 0.0));
+    }
+
+    #[test]
+    fn quarters_split_out_fable() {
+        let mut b = Buckets::new();
+        for (model, out) in [("claude-fable-5-2", 25_000), ("claude-opus-5-5", 50_000)] {
+            b.entry((NOW - 20 * MINUTE_MS) / MINUTE_MS)
+                .or_default()
+                .entry((model.into(), Tier::Standard))
+                .or_default()
+                .tokens
+                .output += out;
+        }
+        let s = summarize(&b, NOW, NOW - HOUR_MS, NOW - HOUR_MS, Some(NOW));
+        // 20 min ago is quarter 2; Fable is its own part of that quarter's total
+        assert!(s.quarters_fable[2] > 0.0);
+        assert!(s.quarters[2] > s.quarters_fable[2]);
+        assert!(close(
+            s.quarters_fable.iter().sum::<f64>(),
+            s.quarters_fable[2]
+        ));
     }
 
     #[test]

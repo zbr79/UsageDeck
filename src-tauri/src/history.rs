@@ -255,6 +255,23 @@ pub fn points_of(readings: &[Reading], window: &str) -> Vec<Point> {
         .collect()
 }
 
+/// The spans when an account other than `account` was the signed-in one: from each of its
+/// readings to the next reading of any account. `readings` are one provider's, oldest first.
+pub fn other_account_spans(readings: &[Reading], account: &str) -> Vec<(i64, i64)> {
+    let mut spans: Vec<(i64, i64)> = Vec::new();
+    for pair in readings.windows(2) {
+        let (r, next) = (&pair[0], &pair[1]);
+        if r.a == account {
+            continue;
+        }
+        match spans.last_mut() {
+            Some(last) if last.1 == r.t => last.1 = next.t,
+            _ => spans.push((r.t, next.t)),
+        }
+    }
+    spans
+}
+
 /// Dollars per weekly percentage point over the current weekly window: spend between the first
 /// reading of this window and now, divided by the points gained since that reading. None below
 /// 2 points gained. `spend_since(t)` gives the dollars spent from `t` to now.
@@ -442,6 +459,27 @@ mod tests {
         assert!((2 * 287..=2 * 289).contains(&older), "{older}");
         assert!(kept.iter().all(|r| r.t >= NOW - 14 * DAY_MS));
         assert!(kept.windows(2).all(|w| w[0].t <= w[1].t));
+    }
+
+    #[test]
+    fn other_accounts_own_the_time_from_their_reading_to_the_next() {
+        let all: Vec<Reading> = [
+            (0, "me"),
+            (10, "me"),
+            (20, "b"),
+            (30, "b"),
+            (40, "me"),
+            (50, "c"),
+        ]
+        .iter()
+        .map(|&(m, a)| reading(NOW + m * MINUTE_MS, a))
+        .collect();
+        let at = |m: i64| NOW + m * MINUTE_MS;
+        assert_eq!(other_account_spans(&all, "me"), [(at(20), at(40))]);
+        assert_eq!(
+            other_account_spans(&all, "b"),
+            [(at(0), at(20)), (at(40), at(50))]
+        );
     }
 
     #[test]
