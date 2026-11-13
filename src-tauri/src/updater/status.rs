@@ -7,7 +7,6 @@
 use serde::Serialize;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "state", rename_all = "camelCase")]
@@ -213,9 +212,6 @@ impl Machine {
     }
 }
 
-/// No keyboard or mouse input for this long counts as away.
-pub const AWAY_AFTER: Duration = Duration::from_secs(2 * 60);
-
 /// What the auto-install watcher decided on its last look.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AutoInstall {
@@ -224,7 +220,8 @@ pub enum AutoInstall {
     /// A development or cargo-target build never replaces itself.
     DevBuild,
     NothingReady,
-    WaitingForIdle {
+    /// The settings window is open: the restart would close it under the user.
+    WaitingForSettings {
         version: String,
     },
     Install {
@@ -238,21 +235,23 @@ impl fmt::Display for AutoInstall {
             Self::Off => f.write_str("off"),
             Self::DevBuild => f.write_str("on, but never in a development build"),
             Self::NothingReady => f.write_str("on, no update ready"),
-            Self::WaitingForIdle { version } => {
-                write!(f, "waiting for idle (2 min) or a lock to install {version}")
+            Self::WaitingForSettings { version } => {
+                write!(
+                    f,
+                    "waiting for the settings window to close to install {version}"
+                )
             }
             Self::Install { version } => write!(f, "installing {version}"),
         }
     }
 }
 
-/// Install the ready update only when the user turned this on and is away: idle for
-/// [`AWAY_AFTER`], or the workstation is locked.
+/// Install the ready update as soon as it is downloaded when the user turned this on, except while
+/// the settings window is open (the restart would close it); then once it closes.
 pub fn decide_auto_install(
     setting_on: bool,
     ready: Option<&str>,
-    idle: Duration,
-    locked: bool,
+    settings_open: bool,
     dev_build: bool,
 ) -> AutoInstall {
     if !setting_on {
@@ -265,10 +264,10 @@ pub fn decide_auto_install(
         return AutoInstall::NothingReady;
     };
     let version = version.to_string();
-    if locked || idle >= AWAY_AFTER {
-        AutoInstall::Install { version }
+    if settings_open {
+        AutoInstall::WaitingForSettings { version }
     } else {
-        AutoInstall::WaitingForIdle { version }
+        AutoInstall::Install { version }
     }
 }
 
@@ -453,47 +452,34 @@ mod tests {
     }
 
     #[test]
-    fn auto_install_waits_until_the_user_is_away() {
-        let secs = Duration::from_secs;
-        let install = AutoInstall::Install {
-            version: "1.5.3".into(),
-        };
-        let wait = AutoInstall::WaitingForIdle {
-            version: "1.5.3".into(),
-        };
+    fn auto_install_runs_at_once_unless_settings_is_open() {
         let ready = Some("1.5.3");
         assert_eq!(
-            decide_auto_install(true, ready, secs(0), false, false),
-            wait
+            decide_auto_install(true, ready, false, false),
+            AutoInstall::Install {
+                version: "1.5.3".into()
+            }
         );
         assert_eq!(
-            decide_auto_install(true, ready, secs(119), false, false),
-            wait
-        );
-        assert_eq!(
-            decide_auto_install(true, ready, secs(120), false, false),
-            install
-        );
-        assert_eq!(
-            decide_auto_install(true, ready, secs(0), true, false),
-            install,
-            "locked"
+            decide_auto_install(true, ready, true, false),
+            AutoInstall::WaitingForSettings {
+                version: "1.5.3".into()
+            }
         );
     }
 
     #[test]
     fn auto_install_never_runs_off_without_an_update_or_in_a_dev_build() {
-        let away = Duration::from_secs(3600);
         assert_eq!(
-            decide_auto_install(false, Some("1.5.3"), away, true, false),
+            decide_auto_install(false, Some("1.5.3"), false, false),
             AutoInstall::Off
         );
         assert_eq!(
-            decide_auto_install(true, None, away, true, false),
+            decide_auto_install(true, None, false, false),
             AutoInstall::NothingReady
         );
         assert_eq!(
-            decide_auto_install(true, Some("1.5.3"), away, true, true),
+            decide_auto_install(true, Some("1.5.3"), false, true),
             AutoInstall::DevBuild
         );
     }
@@ -507,9 +493,8 @@ mod tests {
         // a failed start of the installer is not retried until a check finds the update again
         m.install_failed("access denied".into());
         assert_eq!(m.ready_version(), None);
-        let away = Duration::from_secs(600);
         assert_eq!(
-            decide_auto_install(true, m.ready_version(), away, true, false),
+            decide_auto_install(true, m.ready_version(), false, false),
             AutoInstall::NothingReady
         );
         check(&mut m, Trigger::Background, ready("1.5.3"));
@@ -520,8 +505,8 @@ mod tests {
     fn auto_install_decisions_read_as_log_lines() {
         let v = || "1.5.3".to_string();
         assert_eq!(
-            AutoInstall::WaitingForIdle { version: v() }.to_string(),
-            "waiting for idle (2 min) or a lock to install 1.5.3"
+            AutoInstall::WaitingForSettings { version: v() }.to_string(),
+            "waiting for the settings window to close to install 1.5.3"
         );
         assert_eq!(
             AutoInstall::Install { version: v() }.to_string(),
