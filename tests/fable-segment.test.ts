@@ -20,12 +20,8 @@ const fable = (share: number | null, allowance: number | null = 50): ClaudeScope
 });
 
 describe("weeklyModelSegment", () => {
-  it("is the model's points of the weekly bar, named with its allowance", () => {
-    expect(weeklyModelSegment(60, fable(18))).toEqual({
-      pct: 18,
-      title: "Fable 18 pts (allowance 50% of weekly)",
-    });
-    expect(weeklyModelSegment(60, fable(18, null))?.title).toBe("Fable 18 pts");
+  it("is the model's points of the weekly bar", () => {
+    expect(weeklyModelSegment(60, fable(18))).toEqual({ pct: 18 });
   });
 
   it("never runs past the weekly fill", () => {
@@ -43,10 +39,9 @@ describe("weeklyModelSegment", () => {
 describe("fiveHourFableSegment", () => {
   const share = (usd: number, totalUsd: number): ModelShare => ({ usd, totalUsd });
 
-  it("is the 5-hour bar times Fable's share of the dollars, marked as an estimate", () => {
+  it("is the 5-hour bar times Fable's share of the dollars", () => {
     expect(fiveHourFableSegment(31, share(135.2, 353.1))).toEqual({
       pct: (31 * 135.2) / 353.1,
-      title: "Fable ≈12 pts (estimate from Claude Code on this PC)",
     });
     expect(fiveHourFableSegment(40, share(10, 10))?.pct).toBe(40);
   });
@@ -70,23 +65,21 @@ describe("Meter segment", () => {
     expect(meter({ segment: null })).toBe(meter());
   });
 
-  it("draws the segment inside the fill and names it in the tooltip and the spoken value", () => {
-    const html = meter({ detail: "60% used", segment: { pct: 18, title: "Fable 18 pts" } });
+  it("draws the segment inside the fill; the tooltip has one line per model", () => {
+    const html = meter({ lines: ["Fable 18 pts", "Other models 42 pts"], segment: { pct: 18 } });
     expect(html).toContain('data-testid="meter-segment"');
     expect(html).toContain("width:30%");
     expect(html).toContain("margin-left:70%");
-    expect(html).toContain('title="Weekly: 60% used · Fable 18 pts"');
-    expect(html).toContain("60%, resets in 2d. 60% used · Fable 18 pts");
+    expect(html).toContain('title="Weekly 60%\nFable 18 pts\nOther models 42 pts"');
+    expect(html).toContain("60%, resets in 2d. Fable 18 pts. Other models 42 pts");
   });
 
   it("sizes the segment against the capped fill of a bar over 100%", () => {
-    expect(meter({ percent: 120, segment: { pct: 60, title: "Fable 60 pts" } })).toContain(
-      "width:60%",
-    );
+    expect(meter({ percent: 120, segment: { pct: 60 } })).toContain("width:60%");
   });
 
   it("draws no segment on an unknown or dimmed meter", () => {
-    const segment = { pct: 18, title: "Fable 18 pts" };
+    const segment = { pct: 18 };
     expect(meter({ unknown: true, segment })).not.toContain("meter-segment");
     expect(meter({ dimmed: true, segment })).not.toContain("meter-segment");
   });
@@ -130,8 +123,7 @@ describe("Claude card", () => {
   it("shows Fable's part on the weekly and 5-hour bars", () => {
     const html = card(usage([fable(18)]), { usd: 40, totalUsd: 100 });
     expect(segments(html)).toBe(2);
-    expect(html).toContain("Fable 18 pts (allowance 50% of weekly)");
-    expect(html).toContain("Fable ≈12 pts (estimate from Claude Code on this PC)");
+    expect(html).toContain("Fable 18 pts\nOther models 42 pts");
   });
 
   it("is unchanged without Fable use", () => {

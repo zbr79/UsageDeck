@@ -523,6 +523,11 @@ impl SpendEngine {
         sum_where(&s.buckets, |mid| mid > since && mid <= now + MINUTE_MS)
     }
 
+    /// Each model's dollars from `since` to `now`, largest first.
+    pub fn models_between(&self, since: i64, now: i64) -> Vec<ModelUsd> {
+        models_between(&self.lock_shared().buckets, since, now)
+    }
+
     /// Fable's part of the dollars spent from `since` to `now`; see `fable_share`.
     pub fn fable_share(&self, since: i64, now: i64) -> Option<ModelShare> {
         fable_share(&self.lock_shared().buckets, since, now)
@@ -620,6 +625,40 @@ fn fable_share(buckets: &Buckets, since: i64, now: i64) -> Option<ModelShare> {
         }
     }
     (share.usd > 0.0 && share.total_usd > 0.0).then_some(share)
+}
+
+/// One model's dollars over a span.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelUsd {
+    pub model: String,
+    pub usd: f64,
+}
+
+/// Each priced model's dollars from `since` to `now`, largest first; models with none are left out.
+fn models_between(buckets: &Buckets, since: i64, now: i64) -> Vec<ModelUsd> {
+    let keep = |mid: i64| mid > since && mid <= now + MINUTE_MS;
+    let mut by_model: BTreeMap<&str, f64> = BTreeMap::new();
+    for (minute, models) in buckets.range(since / MINUTE_MS - 1..) {
+        if !keep(mid(*minute)) {
+            continue;
+        }
+        for ((model, tier), b) in models {
+            if let Some(price) = price_of(model, *tier) {
+                *by_model.entry(model.as_str()).or_default() += cost(&price, &b.tokens);
+            }
+        }
+    }
+    let mut out: Vec<ModelUsd> = by_model
+        .into_iter()
+        .filter(|(_, usd)| *usd > 0.0)
+        .map(|(model, usd)| ModelUsd {
+            model: model.to_string(),
+            usd,
+        })
+        .collect();
+    out.sort_by(|a, b| b.usd.total_cmp(&a.usd));
+    out
 }
 
 /// The start of the current 5-hour window: 5 hours before its reset, else 5 hours ago when the
@@ -829,6 +868,7 @@ pub fn pace_body(engine: &SpendEngine, dir: &Path, now: i64) -> Value {
             "weekly": history::window_pace(&weekly, now, 7 * history::DAY_MS),
         },
         "fableFiveHour": engine.fable_share(five_start, now),
+        "fiveHourByModel": engine.models_between(five_start, now),
         "calibration": { "usdPerWeeklyPct": usd_per_weekly_pct },
         "coverage": "claude-code-this-pc",
     })
@@ -1028,6 +1068,28 @@ mod tests {
         assert_eq!(s.minutes.len(), 60);
         assert!(close(s.minutes[5], 1.0) && close(s.minutes[30], 1.0));
         assert!(close(s.minutes.iter().sum::<f64>(), 2.0));
+    }
+
+    #[test]
+    fn models_between_lists_each_priced_model_largest_first() {
+        let mut b = Buckets::new();
+        for (mins_ago, model, out) in [
+            (10, "claude-opus-5-5", 50_000),
+            (20, "claude-fable-5-2", 100_000),
+            (400, "claude-opus-5-5", 50_000),
+            (30, "no-such-model", 50_000),
+        ] {
+            b.entry((NOW - mins_ago * MINUTE_MS) / MINUTE_MS)
+                .or_default()
+                .entry((model.into(), Tier::Standard))
+                .or_default()
+                .tokens
+                .output += out;
+        }
+        let m = models_between(&b, NOW - 5 * HOUR_MS, NOW);
+        let names: Vec<&str> = m.iter().map(|x| x.model.as_str()).collect();
+        assert_eq!(names, ["claude-fable-5-2", "claude-opus-5-5"]);
+        assert!(m[0].usd > m[1].usd && m[1].usd > 0.0);
     }
 
     #[test]

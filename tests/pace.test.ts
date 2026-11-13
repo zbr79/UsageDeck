@@ -3,8 +3,6 @@ import {
   calibrationText,
   evenPacePct,
   formatShare,
-  formatClock,
-  formatPctPerHour,
   formatUsd,
   formatUsdRate,
   headerRate,
@@ -13,7 +11,8 @@ import {
   spendRateTitle,
   spendSeries,
   spendSeriesSummary,
-  meterPaceText,
+  claudeModelLines,
+  modelLabel,
   modelShares,
   usageSeverity,
   WINDOW_MS,
@@ -59,6 +58,7 @@ const pace = (over: Partial<ClaudePace["spend"]> = {}, windows?: ClaudePace["win
     },
     windows: windows ?? { fiveHour: win(), weekly: win({ pct: 47, pctPerHour: 1 }) },
     fableFiveHour: null,
+    fiveHourByModel: [],
     calibration: { usdPerWeeklyPct: 185 },
     coverage: "claude-code-this-pc",
   }) satisfies ClaudePace;
@@ -72,18 +72,6 @@ describe("formatting", () => {
     expect(formatUsd(1293.2)).toBe("$1,293");
     expect(formatUsdRate(71.4)).toBe("$71/h");
     expect(formatUsdRate(null)).toBe("$—/h");
-  });
-
-  it("signs the percent speed", () => {
-    expect(formatPctPerHour(9.2)).toBe("+9%/h");
-    expect(formatPctPerHour(0.44)).toBe("+0.4%/h");
-    expect(formatPctPerHour(-2)).toBe("-2%/h");
-    expect(formatPctPerHour(0)).toBe("+0%/h");
-  });
-
-  it("shows a local clock time, with a weekday when not today", () => {
-    expect(formatClock(new Date(2026, 9, 18, 15, 40).getTime(), NOW)).toBe("3:40 PM");
-    expect(formatClock(new Date(2026, 9, 20, 9, 5).getTime(), NOW)).toBe("Tue 9:05 AM");
   });
 });
 
@@ -165,32 +153,43 @@ describe("usageSeverity", () => {
   });
 });
 
-describe("meterPaceText", () => {
-  it("reads used, even pace, speed and where it ends at reset", () => {
-    // 2 h left at +7%/h from 37%: ends ~51%
-    const w = win({ pct: 37, pctPerHour: 7 });
-    expect(meterPaceText(37, 69, w, NOW)).toBe(
-      "37% used · even pace 69% · +7%/h · ends ~51% at reset",
-    );
+describe("claudeModelLines", () => {
+  const scoped = (share: number | null) => ({
+    label: "Fable",
+    percent: 40,
+    resetsAt: null,
+    sharePctOfWeekly: share,
+    allowancePctOfWeekly: 50,
   });
-  it("caps the end at 100%", () => {
-    expect(meterPaceText(90, 50, win({ pctPerHour: 20 }), NOW)).toContain("ends ~100% at reset");
+
+  it("names models by family and version", () => {
+    expect(modelLabel("claude-opus-5-5")).toBe("Opus 5.5");
+    expect(modelLabel("claude-fable-5-2-20261001")).toBe("Fable 5.2");
+    expect(modelLabel("claude-haiku-5")).toBe("Haiku 5");
+    expect(modelLabel("gpt-5")).toBe("gpt-5");
   });
-  it("gives the full time when heading for the limit", () => {
-    const w = win({ pctPerHour: 9, state: "limit", etaToLimit: NOW + 100 * MIN });
-    expect(meterPaceText(41, 30, w, NOW)).toBe(
-      "41% used · even pace 30% · +9%/h · full by 3:40 PM",
-    );
+
+  it("splits the weekly bar into the model's own points and the rest", () => {
+    expect(claudeModelLines("weekly", 82, scoped(23), [])).toEqual([
+      "Fable 23 pts",
+      "Other models 59 pts",
+    ]);
+    expect(claudeModelLines("weekly", 82, scoped(null), [])).toEqual([]);
   });
-  it("says measuring while the speed is unknown", () => {
-    const w = win({ state: "measuring", pctPerHour: null });
-    expect(meterPaceText(2, 1, w, NOW)).toBe("2% used · even pace 1% · measuring speed…");
-  });
-  it("drops the parts it does not know", () => {
-    expect(meterPaceText(37, null, null, NOW)).toBe("37% used");
-    expect(meterPaceText(37, 20, win({ resetsAt: null }), NOW)).toBe(
-      "37% used · even pace 20% · +9%/h",
-    );
+
+  it("splits the 5-hour bar by each model's dollars, one line each", () => {
+    const byModel = [
+      { model: "claude-opus-5-5", usd: 60 },
+      { model: "claude-fable-5-2", usd: 30 },
+      { model: "claude-sonnet-5-5", usd: 10 },
+    ];
+    expect(claudeModelLines("fiveHour", 90, undefined, byModel)).toEqual([
+      "Opus 5.5 ≈54 pts",
+      "Fable 5.2 ≈27 pts",
+      "Sonnet 5.5 ≈9 pts",
+    ]);
+    expect(claudeModelLines("fiveHour", 90, undefined, [])).toEqual([]);
+    expect(claudeModelLines("fiveHour", 0, undefined, byModel)).toEqual([]);
   });
 });
 
@@ -246,8 +245,7 @@ describe("mock scenarios", () => {
     expect(state(paceScenario("lasts", NOW), "fiveHour")).toBe("lasts");
     expect(state(paceScenario("limit", NOW), "fiveHour")).toBe("limit");
     expect(state(paceScenario("weekly", NOW), "weekly")).toBe("limit");
-    const m = paceScenario("measuring", NOW).windows.fiveHour!;
-    expect(meterPaceText(m.pct, m.evenPacePct, m, NOW)).toContain("measuring speed…");
+    expect(paceScenario("measuring", NOW).windows.fiveHour?.state).toBe("measuring");
     expect(headerRate(paceScenario("backfill", NOW))).toBeNull();
     expect(paceScenario("unpriced", NOW).spend.unpricedReplies).toBeGreaterThan(0);
     expect(paceScenario("unpriced", NOW).spend.unpricedModels.length).toBeGreaterThan(0);

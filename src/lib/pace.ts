@@ -1,7 +1,7 @@
 // Pure helpers for Claude spend and pace: the widget card (header rate, even-pace tick and meter
 // tooltip) and the settings section.
 // Data comes from GET /api/claude/pace; see docs/plans/claude-spend-and-pace.md.
-import type { ClaudePace, ClaudeScopedWindow, ModelShare, PaceWindow } from "./types";
+import type { ClaudePace, ClaudeScopedWindow, ModelShare } from "./types";
 
 export type PaceWindowKey = "fiveHour" | "weekly";
 
@@ -27,38 +27,11 @@ export function formatUsdRate(v: number | null): string {
   return v == null ? "$—/h" : `${formatUsd(v)}/h`;
 }
 
-/** Signed percent per hour: "+9%/h", "+0.4%/h", "-2%/h". */
-export function formatPctPerHour(v: number): string {
-  const abs = Math.abs(v);
-  const s = abs < 1 && abs > 0 ? abs.toFixed(1) : String(Math.round(abs));
-  const sign = v < 0 && s !== "0" && s !== "0.0" ? "-" : "+";
-  return `${sign}${s}%/h`;
-}
-
 /** Whole percent, or one decimal under 1 ("41%", "0.4%"). */
 export function formatPct(v: number): string {
   const abs = Math.abs(v);
   return `${abs > 0 && abs < 1 ? v.toFixed(1) : Math.round(v)}%`;
 }
-
-const sameDay = (a: Date, b: Date) =>
-  a.getFullYear() === b.getFullYear() &&
-  a.getMonth() === b.getMonth() &&
-  a.getDate() === b.getDate();
-
-/** Local clock time, with a weekday when it is not today: "3:40 PM", "Tue 3:40 PM". */
-export function formatClock(at: number, now: number): string {
-  const d = new Date(at);
-  const time = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
-  if (sameDay(d, new Date(now))) return time;
-  return `${d.toLocaleDateString("en-US", { weekday: "short" })} ${time}`;
-}
-
-/** A window heading for its limit: state "limit" with a known ETA. */
-const limitEta = (w: PaceWindow | null): number | null =>
-  w && w.state === "limit" && w.etaToLimit != null ? w.etaToLimit : null;
-
-const isMeasuring = (w: PaceWindow) => w.state === "measuring" || w.pctPerHour == null;
 
 /** The card header's rate, "$28/h"; null while backfilling or without pace (the call failed). */
 export function headerRate(pace: ClaudePace | null): string | null {
@@ -138,34 +111,6 @@ export function usageSeverity(percent: number): MeterSeverity {
   return percent >= 100 ? "danger" : percent >= 80 ? "warn" : "ok";
 }
 
-/**
- * The pace part of a meter's tooltip: "37% used · even pace 69% · +9%/h · ends ~51% at reset", or
- * "… · full by 3:40 PM", or "… · measuring speed…". The end is pct + speed × hours left, capped at 100.
- */
-export function meterPaceText(
-  pct: number,
-  even: number | null,
-  w: PaceWindow | null,
-  now: number,
-): string {
-  const parts = [`${formatPct(pct)} used`];
-  if (even != null) parts.push(`even pace ${formatPct(even)}`);
-  if (w) {
-    if (isMeasuring(w)) parts.push("measuring speed…");
-    else {
-      parts.push(formatPctPerHour(w.pctPerHour!));
-      const eta = limitEta(w);
-      const reset = resetTime(w.resetsAt);
-      if (eta != null) parts.push(`full by ${formatClock(eta, now)}`);
-      else if (reset != null && reset > now) {
-        const end = Math.max(0, Math.min(100, pct + (w.pctPerHour! * (reset - now)) / H));
-        parts.push(`ends ~${formatPct(end)} at reset`);
-      }
-    }
-  }
-  return parts.join(" · ");
-}
-
 /** One step of the spend chart: all dollars and Fable's, as hourly rates. */
 export interface SpendPoint {
   /** USD per hour */
@@ -241,10 +186,9 @@ export function calibrationText(usdPerWeeklyPct: number | null): string | null {
     : `1% of your weekly limit ≈ ${formatUsd(usdPerWeeklyPct)} of usage`;
 }
 
-/** A lighter part at the end of a meter's fill: the points one model used, and what to say. */
+/** A lighter part at the end of a meter's fill: the points one model used. */
 export interface MeterSegment {
   pct: number;
-  title: string;
 }
 
 const pts = (v: number) => formatPct(v).replace("%", " pts");
@@ -259,11 +203,7 @@ export function weeklyModelSegment(
 ): MeterSegment | null {
   const share = scoped?.sharePctOfWeekly;
   if (share == null || !(share > 0) || !(weeklyPct > 0)) return null;
-  const allowance =
-    scoped!.allowancePctOfWeekly == null
-      ? ""
-      : ` (allowance ${formatPct(scoped!.allowancePctOfWeekly)} of weekly)`;
-  return { pct: Math.min(share, weeklyPct), title: `${scoped!.label} ${pts(share)}${allowance}` };
+  return { pct: Math.min(share, weeklyPct) };
 }
 
 /**
@@ -276,6 +216,38 @@ export function fiveHourFableSegment(
   share: ModelShare | null,
 ): MeterSegment | null {
   if (!share || !(share.totalUsd > 0) || !(share.usd > 0) || !(fiveHourPct > 0)) return null;
-  const pct = fiveHourPct * Math.min(1, share.usd / share.totalUsd);
-  return { pct, title: `Fable ≈${pts(pct)} (estimate from Claude Code on this PC)` };
+  return { pct: fiveHourPct * Math.min(1, share.usd / share.totalUsd) };
+}
+
+/** "claude-opus-5-5" → "Opus 5.5"; other ids stay as they are. */
+export function modelLabel(id: string): string {
+  const m = /^claude-([a-z]+)-(\d+)(?:-(\d+))?/.exec(id);
+  if (!m) return id;
+  const family = m[1]!.charAt(0).toUpperCase() + m[1]!.slice(1);
+  return `${family} ${m[2]}${m[3] ? `.${m[3]}` : ""}`;
+}
+
+/**
+ * A Claude bar's tooltip lines, one per model. The weekly bar: the per-model limit's exact points
+ * (Fable), then the rest. The 5-hour bar: each model's share of this PC's Claude Code dollars in
+ * the window, as points ("≈", an estimate). Empty when nothing splits the bar.
+ */
+export function claudeModelLines(
+  bar: PaceWindowKey,
+  pct: number,
+  scoped: ClaudeScopedWindow | undefined,
+  byModel: readonly { model: string; usd: number }[],
+): string[] {
+  if (!(pct > 0)) return [];
+  if (bar === "weekly") {
+    const share = scoped?.sharePctOfWeekly;
+    if (share == null || !(share > 0)) return [];
+    const own = Math.min(share, pct);
+    return [`${scoped!.label} ${pts(own)}`, `Other models ${pts(pct - own)}`];
+  }
+  const total = byModel.reduce((sum, m) => sum + m.usd, 0);
+  if (!(total > 0)) return [];
+  return byModel
+    .filter((m) => m.usd > 0)
+    .map((m) => `${modelLabel(m.model)} ≈${pts((pct * m.usd) / total)}`);
 }

@@ -178,7 +178,7 @@ export function Meter({
   reset,
   pacePct = null,
   severity,
-  detail = null,
+  lines = [],
   segment = null,
 }: {
   label: string;
@@ -193,9 +193,9 @@ export function Meter({
   pacePct?: number | null;
   /** fill colour; defaults to the usage colours (warn from 80%, danger from 100%) */
   severity?: MeterSeverity;
-  /** pace details, added to the tooltip and the spoken value */
-  detail?: string | null;
-  /** one model's part of the fill, drawn darker from the left; null draws the plain fill */
+  /** tooltip lines under the name and percent, e.g. one per model; also spoken */
+  lines?: readonly string[];
+  /** one model's part of the fill, drawn lighter at its end; null draws the plain fill */
   segment?: MeterSegment | null;
 }) {
   const known = !unknown && percent != null;
@@ -203,13 +203,15 @@ export function Meter({
   const fill =
     !known || dimmed ? "var(--w-barDim)" : SEVERITY_FILL[severity ?? usageSeverity(value)];
   const part = known && !dimmed && segment && value > 0 ? segment : null;
-  const details = [detail, part?.title].filter(Boolean).join(" · ");
   const valueText = known
-    ? `${formatPercent(value)}%${reset ? `, resets in ${reset}` : ""}${details ? `. ${details}` : ""}`
+    ? `${formatPercent(value)}%${reset ? `, resets in ${reset}` : ""}${lines.length ? `. ${lines.join(". ")}` : ""}`
     : "unknown";
   const tick = known && !dimmed && pacePct != null ? Math.min(100, Math.max(0, pacePct)) : null;
   return (
-    <div className="flex-1 min-w-0" title={known && details ? `${name}: ${details}` : name}>
+    <div
+      className="flex-1 min-w-0"
+      title={known ? [`${name} ${formatPercent(value)}%`, ...lines].join("\n") : name}
+    >
       {/* the meter below speaks the full name, value and reset, so the compact text is hidden */}
       <div
         aria-hidden="true"
