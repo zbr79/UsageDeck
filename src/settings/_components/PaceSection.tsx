@@ -2,37 +2,21 @@ import { useEffect, useState, type ReactNode } from "react";
 import { getJson } from "@/lib/api";
 import {
   calibrationText,
-  formatClock,
-  formatPct,
-  formatPctPerHour,
   formatShare,
   formatUsd,
   formatUsdRate,
-  hourlyOldestFirst,
-  hourlySummary,
   modelShares,
-  paceTone,
-  paceVsEven,
-  SPEND_BAND_TONE,
-  spendBand,
-  windowForecast,
-  WINDOW_LABELS,
-  type PaceTone,
+  spendSeries,
+  spendSeriesSummary,
+  type SpendPoint,
 } from "@/lib/pace";
 import { sanitizeHourlyTarget } from "@/lib/settings-schema";
-import type { ClaudePace, PaceWindow, Settings } from "@/lib/types";
-import { PANEL_SPEND_TONE } from "@/ui/palette";
+import type { ClaudePace, Settings } from "@/lib/types";
 import { inputClass, Section, secondaryButton, SettingRow } from "./fields";
 
 type Update = (patch: Partial<Settings>, success?: string) => Promise<boolean>;
 
 const PACE_MS = 60_000;
-
-const TONE_COLORS: Record<PaceTone, string> = {
-  muted: "var(--p-text)",
-  amber: "var(--p-badge-amber-fg)",
-  red: "var(--p-danger)",
-};
 
 export interface PaceState {
   pace: ClaudePace | null;
@@ -76,80 +60,85 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
-/** 24 hourly bars, oldest on the left; plain SVG with an accessible summary. */
-export function HourlyChart({ hourly }: { hourly: number[] }) {
-  const bars = hourlyOldestFirst(hourly);
-  const max = Math.max(1, ...bars);
+const TOTAL_LINE = "var(--p-badge-blue-fg)";
+const FABLE_LINE = "var(--p-badge-amber-fg)";
+
+/** Spend over 24 h in quarter hours, oldest on the left: all spend as a filled line, Fable as a
+ * yellow line. Plain SVG with an accessible summary. */
+export function SpendChart({ quarters, fable }: { quarters: number[]; fable: number[] }) {
+  const points = spendSeries(quarters, fable);
   const W = 480;
-  const H = 96;
-  const step = W / Math.max(1, bars.length);
+  const H = 110;
+  const max = Math.max(1, ...points.map((p) => p.total)) * 1.1;
+  const x = (i: number) => (points.length > 1 ? (i / (points.length - 1)) * W : 0);
+  const y = (v: number) => H - (v / max) * H;
+  const line = (pick: (p: SpendPoint) => number) =>
+    points.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(pick(p)).toFixed(1)}`).join("");
+  const total = line((p) => p.total);
   return (
     <div>
-      <svg
-        role="img"
-        aria-label={hourlySummary(hourly)}
-        viewBox={`0 0 ${W} ${H}`}
-        preserveAspectRatio="none"
-        className="block h-24 w-full"
+      <div className="relative">
+        <svg
+          role="img"
+          aria-label={spendSeriesSummary(points)}
+          viewBox={`0 0 ${W} ${H}`}
+          preserveAspectRatio="none"
+          className="block h-28 w-full overflow-visible"
+        >
+          <defs>
+            <linearGradient id="spend-fill" x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0" stopColor={TOTAL_LINE} stopOpacity={0.3} />
+              <stop offset="1" stopColor={TOTAL_LINE} stopOpacity={0} />
+            </linearGradient>
+          </defs>
+          <line x1={0} x2={W} y1={H - 0.5} y2={H - 0.5} stroke="var(--p-border)" strokeWidth={1} />
+          {points.length > 1 && (
+            <>
+              <path d={`${total}L${W},${H}L0,${H}Z`} fill="url(#spend-fill)" />
+              <path
+                d={total}
+                fill="none"
+                stroke={TOTAL_LINE}
+                strokeWidth={2}
+                strokeLinejoin="round"
+                vectorEffect="non-scaling-stroke"
+              />
+              <path
+                d={line((p) => p.fable)}
+                fill="none"
+                stroke={FABLE_LINE}
+                strokeWidth={2}
+                strokeLinejoin="round"
+                vectorEffect="non-scaling-stroke"
+              />
+            </>
+          )}
+        </svg>
+        <span
+          aria-hidden="true"
+          className="absolute top-0 left-0 text-xs tabular-nums text-(--p-muted)"
+        >
+          {formatUsdRate(max / 1.1)}
+        </span>
+      </div>
+      <div
+        className="mt-1 flex items-center justify-between gap-4 text-xs text-(--p-muted)"
+        aria-hidden="true"
       >
-        <line x1={0} x2={W} y1={H - 0.5} y2={H - 0.5} stroke="var(--p-border)" strokeWidth={1} />
-        {bars.map((v, i) => {
-          const h = v > 0 ? Math.max(1.5, (v / max) * (H - 4)) : 0;
-          const hoursAgo = bars.length - 1 - i;
-          return (
-            <rect
-              key={i}
-              x={i * step + 1.5}
-              y={H - h}
-              width={step - 3}
-              height={h}
-              rx={1.5}
-              fill="var(--p-accent)"
-              opacity={hoursAgo === 0 ? 1 : 0.7}
-            >
-              <title>
-                {hoursAgo === 0 ? "This hour so far" : `${hoursAgo} h ago`}: {formatUsd(v)}
-              </title>
-            </rect>
-          );
-        })}
-      </svg>
-      <div className="mt-1 flex justify-between text-xs text-(--p-muted)" aria-hidden="true">
         <span>24 h ago</span>
+        <span className="flex items-center gap-3">
+          <span className="flex items-center gap-1.5">
+            <span className="h-0.5 w-3 rounded-full" style={{ background: TOTAL_LINE }} />
+            All
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="h-0.5 w-3 rounded-full" style={{ background: FABLE_LINE }} />
+            Fable
+          </span>
+        </span>
         <span>now</span>
       </div>
     </div>
-  );
-}
-
-function WindowRow({ name, w, now }: { name: string; w: PaceWindow | null; now: number }) {
-  if (!w)
-    return (
-      <Row title={name} detail="No reading yet">
-        <span className="text-(--p-muted)">—</span>
-      </Row>
-    );
-  const parts = [`${formatPct(w.pct)} used`];
-  if (w.state !== "measuring" && w.pctPerHour != null) parts.push(formatPctPerHour(w.pctPerHour));
-  if (w.evenPacePct != null) parts.push(`even pace ${formatPct(w.evenPacePct)}`);
-  const vs = paceVsEven(w);
-  if (vs) parts.push(vs);
-  const tone = paceTone(w, now);
-  const reset = w.resetsAt ? Date.parse(w.resetsAt) : NaN;
-  return (
-    <Row title={name} detail={parts.join(" · ")}>
-      <div className="text-right">
-        <div
-          className={`text-sm ${tone === "muted" ? "" : "font-semibold"}`}
-          style={{ color: TONE_COLORS[tone] }}
-        >
-          {windowForecast(w, now, true)}
-        </div>
-        {Number.isFinite(reset) && (
-          <div className="text-xs text-(--p-muted)">resets {formatClock(reset, now)}</div>
-        )}
-      </div>
-    </Row>
   );
 }
 
@@ -237,7 +226,7 @@ function TargetRow({ target, update }: { target: number | null; update: Update }
   );
 }
 
-/** Settings → Claude: API-equivalent spend of Claude Code on this PC, and each window's pace. */
+/** Settings → Claude: API-equivalent spend of Claude Code on this PC, and the calibration. */
 export default function PaceSection({
   target,
   update,
@@ -286,7 +275,7 @@ function PaceBody({ pace, now, target }: { pace: ClaudePace; now: number; target
 
       <div className={box}>
         <div className="mb-2 text-sm">Last 24 hours</div>
-        <HourlyChart hourly={s.hourly} />
+        <SpendChart quarters={s.quarters} fable={s.quartersFable} />
         {models.length > 0 && (
           <ul className="mt-3 flex flex-col gap-1 text-xs" aria-label="Spend by model, last 24 h">
             {models.map((m) => (
@@ -300,9 +289,6 @@ function PaceBody({ pace, now, target }: { pace: ClaudePace; now: number; target
           </ul>
         )}
       </div>
-
-      <WindowRow name={WINDOW_LABELS.fiveHour.long} w={pace.windows.fiveHour} now={now} />
-      <WindowRow name={WINDOW_LABELS.weekly.long} w={pace.windows.weekly} now={now} />
 
       <Row
         title="Calibration"

@@ -275,6 +275,10 @@ export interface PaceSpend {
   byModel: { model: string; usd24h: number }[];
   /** 24 entries, index 0 = current partial hour, USD per hour */
   hourly: number[];
+  /** 96 quarter hours of USD, index 0 = the current partial quarter */
+  quarters: number[];
+  /** Fable's part of each quarter, indexed like `quarters` */
+  quartersFable: number[];
   /** last 7 days, replies with tokens on models the price table lacks */
   unpricedReplies: number;
   /** those models' ids, sorted */

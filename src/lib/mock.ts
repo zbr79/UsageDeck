@@ -544,6 +544,13 @@ export function paceScenario(scenario: PaceScenario, now = NOW): ClaudePace {
         { model: "claude-haiku-5-5", usd24h: 4.2 },
       ],
       hourly: [...PROBE_HOURLY],
+      // each hour's spend over its four quarters, wobbling; Fable about a third of it
+      quarters: PROBE_HOURLY.flatMap((h, i) =>
+        [0.8, 1.2, 0.9, 1.1].map((k, q) => (h / 4) * (((i + q) % 3) * 0.15 + k)),
+      ),
+      quartersFable: PROBE_HOURLY.flatMap((h, i) =>
+        [0.3, 0.45, 0.2, 0.35].map((k) => (h / 4) * k * (i % 4 === 1 ? 0.2 : 1)),
+      ),
       unpricedReplies: 0,
       unpricedModels: [],
       scannedAt: now - 20_000,

@@ -3,18 +3,9 @@
 // Data comes from GET /api/claude/pace; see docs/plans/claude-spend-and-pace.md.
 import type { ClaudePace, ClaudeScopedWindow, ModelShare, PaceWindow } from "./types";
 
-export type PaceTone = "muted" | "amber" | "red";
 export type PaceWindowKey = "fiveHour" | "weekly";
 
-/** Red once the projected limit is this close (or closer). */
-export const RED_WITHIN_MS = 30 * 60_000;
-
 const H = 3_600_000;
-
-export const WINDOW_LABELS: Record<PaceWindowKey, { long: string }> = {
-  fiveHour: { long: "5-hour" },
-  weekly: { long: "Weekly" },
-};
 
 /** Length of each Claude usage window. */
 export const WINDOW_MS: Record<PaceWindowKey, number> = { fiveHour: 5 * H, weekly: 7 * 24 * H };
@@ -67,22 +58,7 @@ export function formatClock(at: number, now: number): string {
 const limitEta = (w: PaceWindow | null): number | null =>
   w && w.state === "limit" && w.etaToLimit != null ? w.etaToLimit : null;
 
-/** Muted normally; amber when heading for a limit; red when that is 30 minutes away or less. */
-export function paceTone(w: PaceWindow | null, now: number): PaceTone {
-  const eta = limitEta(w);
-  if (eta == null) return "muted";
-  return eta - now <= RED_WITHIN_MS ? "red" : "amber";
-}
-
 const isMeasuring = (w: PaceWindow) => w.state === "measuring" || w.pctPerHour == null;
-
-/** One window's forecast in words: "measuring…", "lasts", "limit 3:40 PM". */
-export function windowForecast(w: PaceWindow, now: number, untilReset = false): string {
-  if (isMeasuring(w)) return "measuring…";
-  const eta = limitEta(w);
-  if (eta != null) return `limit ${formatClock(eta, now)}`;
-  return untilReset ? "lasts until reset" : "lasts";
-}
 
 /** The card header's rate, "$28/h"; null while backfilling or without pace (the call failed). */
 export function headerRate(pace: ClaudePace | null): string | null {
@@ -190,29 +166,35 @@ export function meterPaceText(
   return parts.join(" · ");
 }
 
-/** "ahead of even pace by 12 pts" / "behind even pace by 5 pts" / "on even pace". */
-export function paceVsEven(w: PaceWindow): string | null {
-  if (w.evenPacePct == null) return null;
-  const diff = Math.round(w.pct - w.evenPacePct);
-  if (diff === 0) return "on even pace";
-  return `${diff > 0 ? "ahead of" : "behind"} even pace by ${Math.abs(diff)} pts`;
+/** One quarter hour of the spend chart: all dollars and Fable's, as hourly rates. */
+export interface SpendPoint {
+  /** USD per hour */
+  total: number;
+  fable: number;
 }
 
-/** Bars oldest first: the API sends index 0 = the current partial hour. */
-export function hourlyOldestFirst(hourly: number[]): number[] {
-  return [...hourly].reverse();
+/** The chart's points oldest first, as $/h: the API sends USD per quarter, index 0 = now. */
+export function spendSeries(quarters: number[], fable: number[]): SpendPoint[] {
+  return quarters.map((q, i) => ({ total: q * 4, fable: (fable[i] ?? 0) * 4 })).reverse();
 }
 
-/** The chart's accessible summary: the peak hour and the current hour. */
-export function hourlySummary(hourly: number[]): string {
-  if (hourly.length === 0) return "Spend per hour: no data yet";
+/** The chart's accessible summary: the peak rate and when, and Fable's part of the period. */
+export function spendSeriesSummary(points: readonly SpendPoint[]): string {
+  if (points.length === 0) return "Spend over the last 24 hours: no data yet";
   let peak = 0;
-  for (let i = 1; i < hourly.length; i++) if (hourly[i] > hourly[peak]) peak = i;
-  const ago = peak === 0 ? "this hour" : `${peak} ${peak === 1 ? "hour" : "hours"} ago`;
+  for (let i = 1; i < points.length; i++) if (points[i]!.total > points[peak]!.total) peak = i;
+  const minsAgo = (points.length - 1 - peak) * 15;
+  const ago =
+    minsAgo === 0
+      ? "now"
+      : minsAgo < 60
+        ? `${minsAgo} minutes ago`
+        : `${Math.round(minsAgo / 60)} ${Math.round(minsAgo / 60) === 1 ? "hour" : "hours"} ago`;
+  const total = points.reduce((a, p) => a + p.total, 0);
+  const fable = points.reduce((a, p) => a + p.fable, 0);
   return (
-    `Spend per hour over the last ${hourly.length} hours. ` +
-    `Peak ${formatUsdRate(hourly[peak])}, ${ago}. ` +
-    `Current hour so far ${formatUsd(hourly[0])}.`
+    `Spend over the last 24 hours. Peak ${formatUsdRate(points[peak]!.total)}, ${ago}. ` +
+    `Fable ${total > 0 ? formatShare(fable / total) : "0%"} of it.`
   );
 }
 
