@@ -130,7 +130,7 @@ function OpenCursorHint({ onClick, reason }: { onClick: () => void; reason?: str
   );
 }
 
-function planTone(plan: string): Tone {
+export function planTone(plan: string): Tone {
   const normalized = plan.toLowerCase();
   if (normalized === "free") return "green";
   if (normalized === "ultra") return "amber";

@@ -1,19 +1,17 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import type { CardHeader } from "@/widget/_components/Card";
 import { accountKey } from "@/lib/account-key";
-import { claudeResetRows, codexResetRows, type ResetRow } from "@/lib/claude-resets";
 import type {
   ClaudeUsage,
   CodexUsage,
   CursorAttemptNote,
   CursorUsage,
   GrokUsage,
-  ModelShare,
   ProviderId,
   Settings,
   TrackedAccount,
 } from "@/lib/types";
-import { ClaudeCard, CodexCard, CursorCard, GrokCard } from "@/widget/_components/cards";
+import { CursorCard, GrokCard, planTone } from "@/widget/_components/cards";
 import { slotFromAccount as widgetSlot } from "@/widget/_lib/useWidgetData";
 import { cardErrorKind } from "@/lib/errors";
 import type { SettingsPatch } from "@/lib/settings-schema";
@@ -23,7 +21,8 @@ import { orderTracked } from "../_lib/order";
 import { usePanelTheme } from "../_lib/theme";
 import { AccountCell, CardGrid, cardSettings, EmptyState, ProviderLogo, useNow } from "./CardGrid";
 import BarsSection from "./BarsSection";
-import ResetsAside from "./ResetsAside";
+import { AccountRow, AccountTable } from "./AccountTable";
+import { claudeRow, codexRow, tableColumns, type TableRowData } from "../_lib/table-rows";
 import { RenameDialog } from "./dialogs";
 import { CursorDiagnostics } from "./Diagnostics";
 import PaceSection, { usePace } from "./PaceSection";
@@ -48,17 +47,15 @@ function slotFromAccount<T>(account: TrackedAccount<T>) {
   return { ...widgetSlot(account), error: cardErrorKind(account.error, account.active) };
 }
 
-/** The widget's own card for one account, fed from its cached or live usage. */
+/** The widget's own card for a Cursor or Grok Bot account, fed from its cached or live usage. */
 function providerCard(
-  id: ProviderId,
+  id: "cursor" | "grok",
   account: AnyAccount,
   settings: Settings,
   now: number,
   header: CardHeader,
   hidden: boolean,
-  light: boolean,
   cursorNote: CursorAttemptNote | null,
-  fableFiveHour: ModelShare | null,
 ) {
   // Cached usage looks like fresh usage: no status note and no dimming. A hidden account is gray.
   const extras = { active: account.active, dimmed: hidden, hidden, ...header };
@@ -89,39 +86,13 @@ function providerCard(
         <GrokCard slot={slotFromAccount(a)} accountLabel={label ?? a.usage?.email} {...common} />
       );
     }
-    case "codex": {
-      const a = account as TrackedAccount<CodexUsage>;
-      return (
-        <CodexCard
-          slot={slotFromAccount(a)}
-          accountLabel={label ?? a.usage?.email}
-          light={light}
-          {...common}
-        />
-      );
-    }
-    case "claude": {
-      const a = account as TrackedAccount<ClaudeUsage>;
-      return (
-        <ClaudeCard
-          slot={slotFromAccount(a)}
-          accountLabel={label ?? a.usage?.email}
-          // the logs are this PC's: only the account signed in now gets the 5-hour estimate
-          fableFiveHour={a.active ? fableFiveHour : null}
-          {...common}
-        />
-      );
-    }
   }
 }
 
-/** The lines beside a Claude or Codex card (none without usage); null on other pages. */
-function resetRowsOf(id: ProviderId, account: AnyAccount): ResetRow[] | null {
-  if (id === "claude") {
-    const resets = (account.usage as ClaudeUsage | null)?.resets;
-    return resets ? claudeResetRows(resets) : [];
-  }
-  if (id === "codex") return account.usage ? codexResetRows(account.usage as CodexUsage) : [];
+/** A Claude or Codex account's table row; null for the providers shown as cards. */
+function tableRowOf(id: ProviderId, account: AnyAccount, now: number): TableRowData | null {
+  if (id === "claude") return claudeRow(account as TrackedAccount<ClaudeUsage>, now);
+  if (id === "codex") return codexRow(account as TrackedAccount<CodexUsage>, now);
   return null;
 }
 
@@ -154,6 +125,15 @@ export default function ProviderPanel({
   const sorted = accounts ? orderTracked(id, accounts, hidden, settings.hiddenBars, now) : null;
   const nickname = (accountId: string) => settings.displayNames[accountKey(id, accountId)] ?? "";
   const renameAccount = accounts?.find((a) => a.id === renaming) ?? null;
+  const tableProvider = id === "claude" || id === "codex" ? id : null;
+  const columns =
+    tableProvider && sorted
+      ? tableColumns(
+          tableProvider,
+          sorted as TrackedAccount<ClaudeUsage | CodexUsage>[],
+          settings.hiddenBars,
+        )
+      : [];
   const scopedLabel =
     id === "claude"
       ? accounts?.map((a) => (a.usage as ClaudeUsage | null)?.weeklyScoped[0]?.label).find(Boolean)
@@ -173,12 +153,12 @@ export default function ProviderPanel({
           here.
         </EmptyState>
       ) : (
-        <CardGrid single={id === "claude" || id === "codex"}>
-          {sorted.map((account) => {
+        (() => {
+          const cells = sorted.map((account) => {
             const key = accountKey(id, account.id);
             const isHidden = hidden(account.id);
             const shownName = nickname(account.id) || labelOf(id, account);
-            const resetRows = resetRowsOf(id, account);
+            const row = tableRowOf(id, account, now);
             return (
               <AccountCell
                 key={account.id}
@@ -202,24 +182,42 @@ export default function ProviderPanel({
                     onSelect: () => refreshWidget(summaries.reloadAll),
                   },
                 ]}
-                aside={resetRows && <ResetsAside rows={resetRows} />}
                 card={(header) =>
-                  providerCard(
-                    id,
-                    account,
-                    settings,
-                    now,
-                    header,
-                    isHidden,
-                    light,
-                    summaries.cursor?.attempt ?? null,
-                    pace.pace?.fableFiveHour ?? null,
+                  row ? (
+                    <AccountRow
+                      name={shownName}
+                      hint={labelOf(id, account)}
+                      plan={row.plan ? { label: row.plan, tone: planTone(row.plan) } : null}
+                      active={account.active}
+                      hidden={isHidden}
+                      columns={columns}
+                      cells={row.cells}
+                      note={row.note}
+                      resets={row.resets}
+                      warning={row.warning}
+                      actions={header.headerActions}
+                    />
+                  ) : (
+                    providerCard(
+                      id as "cursor" | "grok",
+                      account,
+                      settings,
+                      now,
+                      header,
+                      isHidden,
+                      summaries.cursor?.attempt ?? null,
+                    )
                   )
                 }
               />
             );
-          })}
-        </CardGrid>
+          });
+          return tableProvider ? (
+            <AccountTable columns={columns}>{cells}</AccountTable>
+          ) : (
+            <CardGrid>{cells}</CardGrid>
+          );
+        })()
       )}
       <BarsSection
         provider={id}

@@ -1,7 +1,12 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { claudeResetRows, codexResetRows } from "@/lib/claude-resets";
+import {
+  claudeResetRows,
+  codexResetRows,
+  resetCellText,
+  resetCellTitle,
+} from "@/lib/claude-resets";
 import { DEFAULT_SETTINGS } from "@/lib/settings-schema";
 import type { ClaudeResetGroup, ClaudeResets, ClaudeUsage, CodexUsage } from "@/lib/types";
 import { ClaudeCard } from "@/widget/_components/cards";
@@ -110,10 +115,33 @@ describe("codexResetRows", () => {
     const usage = (resetCredits: number | null, resetExpiries?: string[]) =>
       ({ resetCredits, resetExpiries }) as CodexUsage;
     expect(codexResetRows(usage(2, ["2026-12-01T12:00:00Z"]))).toEqual([
-      { key: "codex", title: "Reset", detail: "2 left · ends Dec 1" },
+      { key: "codex", title: "Reset", detail: "2 left · ends Dec 1", count: 2, paused: false },
     ]);
     expect(codexResetRows(usage(1))[0]?.detail).toBe("1 left");
     expect(codexResetRows(usage(0))).toEqual([]);
     expect(codexResetRows(usage(null))).toEqual([]);
+  });
+});
+
+describe("reset table cell", () => {
+  it("counts each type without dates; the dates are in the tooltip", () => {
+    const rows = claudeResetRows({
+      groups: [
+        group({ count: 2, earliestExpiry: "2026-12-10T12:00:00Z" }),
+        group({ kind: "weekly", label: "one Fable reset", earliestExpiry: "2027-03-08T12:00:00Z" }),
+        group({ kind: "fiveHour", label: "", paused: true }),
+      ],
+      weeklyFiveHourAvailable: null,
+    });
+    expect(resetCellText(rows)).toBe("2 Full · 1 Fable · 1 5-hour (paused)");
+    expect(resetCellTitle(rows)).toBe(
+      "Full reset: 2 left · ends Dec 10\nFable reset: 1 left · ends Mar 8\n5-hour reset: 1 left · paused",
+    );
+    expect(resetCellText([])).toBe("");
+  });
+
+  it("is just the count for Codex's single kind", () => {
+    const rows = codexResetRows({ resetCredits: 3, resetExpiries: [] } as unknown as CodexUsage);
+    expect(resetCellText(rows)).toBe("3");
   });
 });
