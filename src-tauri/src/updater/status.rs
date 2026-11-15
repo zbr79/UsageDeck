@@ -215,8 +215,6 @@ impl Machine {
 /// What the auto-install watcher decided on its last look.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AutoInstall {
-    /// "Install updates automatically" is off.
-    Off,
     /// A development or cargo-target build never replaces itself.
     DevBuild,
     NothingReady,
@@ -232,9 +230,8 @@ pub enum AutoInstall {
 impl fmt::Display for AutoInstall {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Off => f.write_str("off"),
-            Self::DevBuild => f.write_str("on, but never in a development build"),
-            Self::NothingReady => f.write_str("on, no update ready"),
+            Self::DevBuild => f.write_str("never in a development build"),
+            Self::NothingReady => f.write_str("no update ready"),
             Self::WaitingForSettings { version } => {
                 write!(
                     f,
@@ -246,17 +243,13 @@ impl fmt::Display for AutoInstall {
     }
 }
 
-/// Install the ready update as soon as it is downloaded when the user turned this on, except while
-/// the settings window is open (the restart would close it); then once it closes.
+/// Install the ready update as soon as it is downloaded, except while the settings window is open
+/// (the restart would close it; it offers "Update available" instead); then once it closes.
 pub fn decide_auto_install(
-    setting_on: bool,
     ready: Option<&str>,
     settings_open: bool,
     dev_build: bool,
 ) -> AutoInstall {
-    if !setting_on {
-        return AutoInstall::Off;
-    }
     if dev_build {
         return AutoInstall::DevBuild;
     }
@@ -455,13 +448,13 @@ mod tests {
     fn auto_install_runs_at_once_unless_settings_is_open() {
         let ready = Some("1.5.3");
         assert_eq!(
-            decide_auto_install(true, ready, false, false),
+            decide_auto_install(ready, false, false),
             AutoInstall::Install {
                 version: "1.5.3".into()
             }
         );
         assert_eq!(
-            decide_auto_install(true, ready, true, false),
+            decide_auto_install(ready, true, false),
             AutoInstall::WaitingForSettings {
                 version: "1.5.3".into()
             }
@@ -469,17 +462,13 @@ mod tests {
     }
 
     #[test]
-    fn auto_install_never_runs_off_without_an_update_or_in_a_dev_build() {
+    fn auto_install_never_runs_without_an_update_or_in_a_dev_build() {
         assert_eq!(
-            decide_auto_install(false, Some("1.5.3"), false, false),
-            AutoInstall::Off
-        );
-        assert_eq!(
-            decide_auto_install(true, None, false, false),
+            decide_auto_install(None, false, false),
             AutoInstall::NothingReady
         );
         assert_eq!(
-            decide_auto_install(true, Some("1.5.3"), false, true),
+            decide_auto_install(Some("1.5.3"), false, true),
             AutoInstall::DevBuild
         );
     }
@@ -494,7 +483,7 @@ mod tests {
         m.install_failed("access denied".into());
         assert_eq!(m.ready_version(), None);
         assert_eq!(
-            decide_auto_install(true, m.ready_version(), false, false),
+            decide_auto_install(m.ready_version(), false, false),
             AutoInstall::NothingReady
         );
         check(&mut m, Trigger::Background, ready("1.5.3"));
@@ -512,7 +501,7 @@ mod tests {
             AutoInstall::Install { version: v() }.to_string(),
             "installing 1.5.3"
         );
-        assert_eq!(AutoInstall::Off.to_string(), "off");
+        assert_eq!(AutoInstall::NothingReady.to_string(), "no update ready");
     }
 
     #[test]

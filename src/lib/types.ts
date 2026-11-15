@@ -16,6 +16,8 @@ export interface Settings {
   /** hide the widget while a full-screen app is in front on its monitor */
   hideInFullscreen: boolean;
   showProviderNames: boolean;
+  /** Claude bars draw Fable's part in a lighter shade of the fill */
+  fableShade: boolean;
   themeMode: ThemeMode;
   panelTheme: PanelTheme;
   /** nickname per OpenCode account email, or per provider id */
@@ -26,8 +28,6 @@ export interface Settings {
   providerOrder: WidgetProvider[];
   /** start the app when the user signs in to Windows */
   startAtLogin: boolean;
-  /** install a downloaded update once the user is away, then reopen */
-  autoInstallUpdates: boolean;
   /** Claude Code hourly spend target in whole USD per hour (1-10000); null = off */
   claudeHourlyTarget: number | null;
   /** used-up cards hidden from the widget until they reset: account key → epoch ms */

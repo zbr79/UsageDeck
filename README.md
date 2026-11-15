@@ -83,21 +83,14 @@ all shortcuts. Each release also has the plain NSIS installer, `UsageDeck_<versi
 ### Updates
 
 UsageDeck checks GitHub 15 seconds after it starts and then every hour. When a newer version is
-out, it downloads the installer in the background and checks its size and SHA-256 against the
-release. The widget shows nothing about updates. Everything is in Settings → About → Updates,
-and a dot on **About** in the settings navigation means an update is ready:
+out, it downloads the installer in the background, checks its size and SHA-256 against the
+release, and installs it silently: the widget disappears for a few seconds and comes back updated.
+No installer window opens and nothing asks first.
 
-- **Restart to update** installs the update silently and starts the new version. No installer
-  window opens; the widget disappears for a few seconds and comes back updated. Until you restart,
-  the download is kept, so it is not downloaded again.
-- **Install updates automatically** (off by default) installs a downloaded update by itself once
-  you have been away for 2 minutes or have locked Windows, then reopens UsageDeck.
-- **Check for updates** checks at once. The same page shows the installed version, when UsageDeck
-  last checked and what that check found (also a background check that showed nothing).
-
-Background checks show nothing else: no "up to date" note and no errors. The tray menu's **Check
-for updates** also checks at once and opens Settings → General, where the result shows. The tray
-menu's first line shows the installed version.
+The only exception is while Settings is open, since the restart would close it. Then Settings →
+General shows **Update available** next to the version (and in the navigation); one click installs
+it, and closing Settings installs it too. The tray menu's **Check for updates** checks at once; its
+first line shows the installed version.
 
 ### Coming from UsageDeck 1.0.x
 
@@ -177,9 +170,8 @@ You do not need the log files to see why a card is stale or an update did not sh
   token is stored (plain or `cursor-safe-storage:v1`) and whether it decrypted, the first 8 hex
   characters of the token's SHA-256 and when the token expires, each request with its endpoint,
   HTTP status and the server's error text, which source gave the usage, and the reason in one line.
-- **Settings → About → Updates** shows the last update check: when, manual or background, the
-  result, and the newest release GitHub named.
-- **Copy diagnostics** (on both pages) copies all of it as text, with the UsageDeck and Windows
+- **Copy diagnostics** (Settings → General and the Cursor page) also records the last update check
+  (when, manual or background, the result and the newest release GitHub named). It copies all of it as text, with the UsageDeck and Windows
   versions, the Claude models of the last 7 days that have no price, and the reset fields of
   Claude's last usage reply (which keys came back, eligibility, and each grant's name, count and
   dates, without grant ids), ready to paste into an issue.
@@ -242,11 +234,9 @@ uninstaller to also remove settings, logs and the stored OpenCode keys (details 
   higher rate for a prompt over 100K tokens. A model without a price is never counted as $0: a
   "Not priced: <model ids>" line names it, and its replies stay out of the dollars
   The widget's Claude card shows the spend rate after its name (`$71/h`); its meter colours follow
-  the percentage only (amber from 80%, red from 100%), and pace stays in the meter tooltip
-- About: version, log folder, the repository and Updates (installed version and the last check's
-  result, Install updates automatically, Copy diagnostics). **Check for updates** sits at the
-  bottom of the navigation, above About; once an update is downloaded it reads **Restart to
-  update**
+  the percentage only (amber from 80%, red from 100%), and each meter's tooltip lists its usage by model, one per line
+- General → UsageDeck: the version (with **Update available** while an update waits for Settings
+  to close) and Support: Account folder, Log folder, Copy diagnostics
 - Fully keyboard accessible: modal dialogs trap focus and Esc closes the topmost one first; menus
   use the arrow keys, Home and End; forced-colors (high contrast) is supported
 - `settings.html?page=<general|widget|claude|codex|cursor|grok|opencode|about>` opens a

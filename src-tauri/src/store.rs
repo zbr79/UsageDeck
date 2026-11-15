@@ -431,6 +431,8 @@ pub struct Settings {
     /// hide the widget while a full-screen app is in front on its monitor
     pub hide_in_fullscreen: bool,
     pub show_provider_names: bool,
+    /// Claude bars draw Fable's part in a lighter shade of the fill
+    pub fable_shade: bool,
     pub theme_mode: ThemeMode,
     pub panel_theme: PanelTheme,
     /// nickname per OpenCode account email, or per provider id; values are always strings
@@ -440,8 +442,6 @@ pub struct Settings {
     pub provider_order: Vec<WidgetProvider>,
     /// register the app in the Windows Run key so it starts with Windows
     pub start_at_login: bool,
-    /// install a downloaded update by itself once the user is away (updater.rs)
-    pub auto_install_updates: bool,
     /// Claude Code hourly spend target in whole USD per hour (1-10000); None = off
     pub claude_hourly_target: Option<u32>,
     /// used-up cards hidden from the widget until they reset: account key -> epoch ms
@@ -461,13 +461,13 @@ impl Default for Settings {
             deepseek_peak_hour_warning: true,
             hide_in_fullscreen: true,
             show_provider_names: false,
+            fable_shade: true,
             theme_mode: ThemeMode::Auto,
             panel_theme: PanelTheme::Dark,
             display_names: Map::new(),
             disabled_accounts: Vec::new(),
             provider_order: DEFAULT_PROVIDER_ORDER.to_vec(),
             start_at_login: true,
-            auto_install_updates: false,
             claude_hourly_target: None,
             snoozed_until: BTreeMap::new(),
             hidden_bars: BTreeMap::new(),
@@ -662,8 +662,8 @@ pub fn apply_settings_patch_at(current: &Settings, patch: &Value, now_ms: u64) -
             ),
             ("hideInFullscreen", &mut next.hide_in_fullscreen),
             ("showProviderNames", &mut next.show_provider_names),
+            ("fableShade", &mut next.fable_shade),
             ("startAtLogin", &mut next.start_at_login),
-            ("autoInstallUpdates", &mut next.auto_install_updates),
         ];
         for (key, slot) in bools {
             if let Some(Value::Bool(b)) = obj.get(key) {
@@ -1093,25 +1093,12 @@ mod tests {
     }
 
     #[test]
-    fn settings_patch_auto_install_updates() {
-        let current = Settings::default();
-        assert!(!current.auto_install_updates);
-        assert_eq!(
-            serde_json::to_value(&current).unwrap()["autoInstallUpdates"],
-            json!(false)
-        );
-        let on = apply_settings_patch(&current, &json!({ "autoInstallUpdates": true }));
-        assert!(on.auto_install_updates);
-        // wrong types are ignored
-        let same = apply_settings_patch(&on, &json!({ "autoInstallUpdates": "false" }));
-        assert!(same.auto_install_updates);
-        let off = apply_settings_patch(&on, &json!({ "autoInstallUpdates": false }));
-        assert!(!off.auto_install_updates);
-        // an old settings file without the field leaves installs to the user
-        assert!(!normalize_settings(Some(&json!({ "grokEnabled": false }))).auto_install_updates);
-        assert!(
-            normalize_settings(Some(&json!({ "autoInstallUpdates": true }))).auto_install_updates
-        );
+    fn fable_shade_is_on_by_default_and_takes_a_boolean() {
+        assert!(Settings::default().fable_shade);
+        assert!(normalize_settings(Some(&json!({ "grokEnabled": false }))).fable_shade);
+        let off = apply_settings_patch(&Settings::default(), &json!({ "fableShade": false }));
+        assert!(!off.fable_shade);
+        assert!(!apply_settings_patch(&off, &json!({ "fableShade": "yes" })).fable_shade);
     }
 
     #[test]

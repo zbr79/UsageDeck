@@ -1,5 +1,6 @@
 import { BARS, type BarId, type HiddenBars } from "@/lib/bars";
 import type { Settings, WidgetProvider } from "@/lib/types";
+import type { ReactNode } from "react";
 import { Section, SettingRow } from "./fields";
 
 const LAST_BAR = "At least one bar stays on — turn the provider off to hide the card";
@@ -14,12 +15,15 @@ export default function BarsSection({
   settings,
   update,
   scopedName,
+  children,
 }: {
   provider: WidgetProvider;
   settings: Settings;
   update: (patch: { hiddenBars: HiddenBars }, success?: string) => Promise<boolean>;
   /** Claude's per-model bar after its model, e.g. "Fable weekly", when the data names one */
   scopedName?: string | null;
+  /** more rows about the bars, under this one */
+  children?: ReactNode;
 }) {
   const hidden: readonly string[] = settings.hiddenBars[provider] ?? [];
   const bars: readonly { id: BarId<WidgetProvider>; name: string }[] = BARS[provider];
@@ -79,6 +83,7 @@ export default function BarsSection({
           </div>
         )}
       />
+      {children}
     </Section>
   );
 }

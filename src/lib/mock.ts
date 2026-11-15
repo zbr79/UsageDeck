@@ -45,13 +45,13 @@ let settings: Settings = {
   deepseekPeakHourWarning: true,
   hideInFullscreen: true,
   showProviderNames: false,
+  fableShade: true,
   themeMode: "dark",
   panelTheme: "dark",
   displayNames: { "main@example.com": "Main", "spare@example.com": "Spare" },
   disabledAccounts: ["hidden@example.com", "claude:hidden@example.com"],
   providerOrder: ["opencode", "cursor", "grok", "codex", "claude"],
   startAtLogin: true,
-  autoInstallUpdates: false,
   claudeHourlyTarget: null,
   // `?snoozed=1` starts with two cards hidden until they reset (browser preview only).
   snoozedUntil: query().get("snoozed")
@@ -754,7 +754,6 @@ function mockReport(): Diagnostics {
       ? `Last check: ${new Date(updateStatus.lastChecked).toISOString()} (${check.trigger}) -> ${check.result}; latest release seen: ${check.latestVersion ?? "not learned"}`
       : "Last check: none since UsageDeck started",
     `Status: ${updateStatus.state}`,
-    `Auto-install: ${settings.autoInstallUpdates ? "on" : "off"}`,
   ].join("\n");
   const system = "Windows 11 Pro 24H2 (build 26100)";
   const report = [

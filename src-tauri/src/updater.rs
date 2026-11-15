@@ -117,22 +117,18 @@ pub fn start(app: AppHandle) {
     });
 }
 
-/// Every 30 s for the life of the app: install the ready update when "Install updates
-/// automatically" is on and the settings window is closed. A failed start leaves the Ready phase,
-/// so it is not retried until a check finds the update again.
+/// Every 30 s for the life of the app: install the ready update once the settings window is
+/// closed. A failed start leaves the Ready phase, so it is not retried until a check finds the
+/// update again.
 pub fn watch_auto_install(app: AppHandle, dev_build: bool) {
     tauri::async_runtime::spawn(async move {
         loop {
-            let setting_on = app
-                .try_state::<crate::Core>()
-                .is_some_and(|core| core.store.get_settings().auto_install_updates);
             let ready = app
                 .state::<Updater>()
                 .lock()
                 .ready_version()
                 .map(str::to_string);
             let decision = decide_auto_install(
-                setting_on,
                 ready.as_deref(),
                 app.get_webview_window(crate::SETTINGS).is_some(),
                 dev_build,

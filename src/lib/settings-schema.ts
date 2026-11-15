@@ -52,8 +52,8 @@ const BOOLEAN_KEYS = [
   "deepseekPeakHourWarning",
   "hideInFullscreen",
   "showProviderNames",
+  "fableShade",
   "startAtLogin",
-  "autoInstallUpdates",
 ] as const;
 
 export const MAX_NICKNAME_LENGTH = 64;
@@ -69,13 +69,13 @@ export const DEFAULT_SETTINGS: Settings = {
   deepseekPeakHourWarning: true,
   hideInFullscreen: true,
   showProviderNames: false,
+  fableShade: true,
   themeMode: "auto",
   panelTheme: "dark",
   displayNames: {},
   disabledAccounts: [],
   providerOrder: [...DEFAULT_PROVIDER_ORDER],
   startAtLogin: true,
-  autoInstallUpdates: false,
   claudeHourlyTarget: null,
   snoozedUntil: {},
   hiddenBars: {},

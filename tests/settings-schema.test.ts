@@ -109,13 +109,12 @@ describe("applySettingsPatch", () => {
     );
   });
 
-  it("leaves automatic update installs off by default and keeps a boolean change", () => {
-    expect(DEFAULT_SETTINGS.autoInstallUpdates).toBe(false);
-    expect(normalizeSettings({}).autoInstallUpdates).toBe(false);
-    const on = applySettingsPatch(DEFAULT_SETTINGS, { autoInstallUpdates: true });
-    expect(on.autoInstallUpdates).toBe(true);
-    expect(applySettingsPatch(on, { autoInstallUpdates: "false" }).autoInstallUpdates).toBe(true);
-    expect(applySettingsPatch(on, { autoInstallUpdates: false }).autoInstallUpdates).toBe(false);
+  it("keeps the Fable shade on by default and takes a boolean change", () => {
+    expect(DEFAULT_SETTINGS.fableShade).toBe(true);
+    expect(normalizeSettings({}).fableShade).toBe(true);
+    const off = applySettingsPatch(DEFAULT_SETTINGS, { fableShade: false });
+    expect(off.fableShade).toBe(false);
+    expect(applySettingsPatch(off, { fableShade: "yes" }).fableShade).toBe(false);
   });
 
   it("normalises garbage from disk to defaults", () => {

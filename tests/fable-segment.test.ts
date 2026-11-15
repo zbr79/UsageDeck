@@ -126,6 +126,25 @@ describe("Claude card", () => {
     expect(html).toContain("Fable 18 pts\nOther models 42 pts");
   });
 
+  it("draws no Fable shade when the setting is off", () => {
+    const html = renderToStaticMarkup(
+      createElement(ClaudeCard, {
+        slot: {
+          data: usage([fable(18)]),
+          stale: false,
+          cachedAt: null,
+          authExpired: false,
+          error: null,
+          loaded: true,
+        },
+        settings: { ...DEFAULT_SETTINGS, fableShade: false },
+        now: NOW,
+        fableFiveHour: { usd: 40, totalUsd: 100 },
+      }),
+    );
+    expect(segments(html)).toBe(0);
+  });
+
   it("is unchanged without Fable use", () => {
     const plain = card(usage([fable(0)]), null);
     expect(segments(plain)).toBe(0);

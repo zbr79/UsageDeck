@@ -756,11 +756,12 @@ export function ClaudeCard({
               .filter(([, , , key]) => show?.has(key))
               .map(([label, name, w, key]) => {
                 const unknown = windowUnknown(w);
-                const segment = unknown
-                  ? null
-                  : key === "weekly"
-                    ? weeklyModelSegment(w.percent!, c.weeklyScoped[0])
-                    : fiveHourFableSegment(w.percent!, fableFiveHour);
+                const segment =
+                  unknown || !settings.fableShade
+                    ? null
+                    : key === "weekly"
+                      ? weeklyModelSegment(w.percent!, c.weeklyScoped[0])
+                      : fiveHourFableSegment(w.percent!, fableFiveHour);
                 return (
                   <Meter
                     key={key}
