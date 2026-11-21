@@ -23,13 +23,27 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use usagedeck_core::store::{CredentialVault, Store};
 use usagedeck_core::{crash, default_data_dir, default_log_dir};
-use windows::core::w;
+use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS};
 use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
 use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
+use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+
+fn show_fatal_dialog(msg: &str) {
+    let text: Vec<u16> = msg.encode_utf16().chain(std::iter::once(0)).collect();
+    // SAFETY: NUL-terminated UTF-16 message box shown only when GUI startup fails fatally.
+    unsafe {
+        let _ = MessageBoxW(
+            None,
+            PCWSTR(text.as_ptr()),
+            w!("UsageDeck"),
+            MB_OK | MB_ICONERROR,
+        );
+    }
+}
 
 fn main() {
     crash::install(default_log_dir());
@@ -43,6 +57,10 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let demo = cli::wants_demo(&args);
     let open_settings_on_start = cli::wants_settings(&args);
+    log::info!(
+        "UsageDeck v{} starting (demo={demo}, settings={open_settings_on_start})",
+        env!("CARGO_PKG_VERSION")
+    );
 
     // Single-instance guard so launching twice doesn't stack two strips on the taskbar.
     // SAFETY: named local mutex held for the lifetime of the process.
@@ -50,6 +68,7 @@ fn main() {
         match CreateMutexW(None, true, w!("Local\\UsageDeckTaskbarSingleton")) {
             Ok(h) => {
                 if GetLastError() == ERROR_ALREADY_EXISTS {
+                    log::info!("another UsageDeck instance is already running; exiting");
                     let _ = CloseHandle(h);
                     return;
                 }
@@ -85,6 +104,9 @@ fn main() {
     let shared = SharedSnapshot::new(demo);
     if let Err(e) = window::run_ui(shared, updater_handle.clone(), demo, open_settings_on_start) {
         log::error!("UsageDeck taskbar UI exited with error: {e}");
+        show_fatal_dialog(&format!(
+            "UsageDeck could not start its taskbar UI:\n\n{e}\n\nCheck %LOCALAPPDATA%\\com.usagedeck.app\\logs\\usagedeck.log for details."
+        ));
     }
 
     updater_handle.stop();

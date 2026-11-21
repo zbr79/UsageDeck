@@ -586,7 +586,7 @@ thread_local! {
 }
 
 fn with_state<R>(f: impl FnOnce(&mut UiState) -> R) -> Option<R> {
-    STATE.with(|cell| cell.borrow_mut().as_mut().map(f))
+    STATE.with(|cell| cell.try_borrow_mut().ok()?.as_mut().map(f))
 }
 
 /// Open the sleek native Win32/Direct2D installer window and run the Win32 message loop.
@@ -927,43 +927,44 @@ fn drain_worker_events(state: &mut UiState) {
     paint_window(state);
 }
 
-fn close_window(state: &UiState) {
-    if state.is_busy() {
-        return;
-    }
-    // SAFETY: destroys our own window and exits the message loop.
-    unsafe {
-        let _ = DestroyWindow(state.hwnd);
-    }
-}
-
-fn handle_click(state: &mut UiState, target: HitTarget) {
+fn handle_click(state: &mut UiState, target: HitTarget) -> bool {
     match target {
-        HitTarget::Close | HitTarget::SecondaryClose => close_window(state),
+        HitTarget::Close | HitTarget::SecondaryClose => !state.is_busy(),
         HitTarget::DesktopCheckbox => {
             state.desktop_shortcut = !state.desktop_shortcut;
             paint_window(state);
+            false
         }
         HitTarget::AutostartCheckbox => {
             state.start_with_windows = !state.start_with_windows;
             paint_window(state);
+            false
         }
-        HitTarget::PrimaryAction => start_install(state),
+        HitTarget::PrimaryAction => {
+            start_install(state);
+            false
+        }
         HitTarget::UninstallLink => {
             state.delete_data_on_uninstall = false;
             state.hovered = None;
             state.phase = Phase::ConfirmUninstall;
             paint_window(state);
+            false
         }
         HitTarget::DeleteDataCheckbox => {
             state.delete_data_on_uninstall = !state.delete_data_on_uninstall;
             paint_window(state);
+            false
         }
-        HitTarget::ConfirmUninstall => start_uninstall(state),
+        HitTarget::ConfirmUninstall => {
+            start_uninstall(state);
+            false
+        }
         HitTarget::CancelUninstall => {
             state.hovered = None;
             state.phase = Phase::Idle;
             paint_window(state);
+            false
         }
         HitTarget::LaunchApp => {
             let exe = match &state.phase {
@@ -973,13 +974,14 @@ fn handle_click(state: &mut UiState, target: HitTarget) {
                 _ => install::installed_exe(),
             };
             match install::launch_app(&exe) {
-                Ok(()) => close_window(state),
+                Ok(()) => !state.is_busy(),
                 Err(e) => {
                     state.phase = Phase::Error {
                         message: format!("Could not start {}: {e}", exe.display()),
                         was_uninstall: false,
                     };
                     paint_window(state);
+                    false
                 }
             }
         }
@@ -996,6 +998,7 @@ fn handle_click(state: &mut UiState, target: HitTarget) {
             } else {
                 start_install(state);
             }
+            false
         }
     }
 }
@@ -1594,23 +1597,26 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
         WM_LBUTTONUP => {
-            with_state(|s| {
+            let should_close = with_state(|s| {
                 let (dx, dy) = cursor_dip(lparam, s.scale());
-                if let Some(target) = s.hit_test(dx, dy) {
-                    handle_click(s, target);
-                }
-            });
+                s.hit_test(dx, dy).is_some_and(|t| handle_click(s, t))
+            })
+            .unwrap_or(false);
+            if should_close {
+                let _ = DestroyWindow(hwnd);
+            }
             LRESULT(0)
         }
         WM_KEYDOWN => {
             let vk = wparam.0;
-            with_state(|s| {
+            let should_close = with_state(|s| {
                 if vk == usize::from(VK_ESCAPE.0) {
                     if matches!(s.phase, Phase::ConfirmUninstall) {
                         s.phase = Phase::Idle;
                         paint_window(s);
+                        false
                     } else {
-                        close_window(s);
+                        !s.is_busy()
                     }
                 } else if vk == usize::from(VK_RETURN.0) || vk == usize::from(VK_SPACE.0) {
                     match &s.phase {
@@ -1622,10 +1628,16 @@ unsafe extern "system" fn wnd_proc(
                             uninstalled: true, ..
                         } => handle_click(s, HitTarget::SecondaryClose),
                         Phase::Error { .. } => handle_click(s, HitTarget::Retry),
-                        _ => {}
+                        _ => false,
                     }
+                } else {
+                    false
                 }
-            });
+            })
+            .unwrap_or(false);
+            if should_close {
+                let _ = DestroyWindow(hwnd);
+            }
             LRESULT(0)
         }
         WM_DPICHANGED => {

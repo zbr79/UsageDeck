@@ -161,6 +161,51 @@ jobs:
           Start-Sleep -Milliseconds 500
           Write-Host "/P /UPDATE verified: $installed"
 
+      - name: Live launch smoke test (usagedeck.exe --demo stays alive without crashing)
+        shell: pwsh
+        run: |
+          $exe = Join-Path $env:LOCALAPPDATA 'UsageDeck\usagedeck.exe'
+          $logDir = Join-Path $env:LOCALAPPDATA 'com.usagedeck.app\logs'
+          $logFile = Join-Path $logDir 'usagedeck.log'
+          if (Test-Path $logDir) {
+            Get-ChildItem $logDir -Filter 'crash-*.txt' -ErrorAction SilentlyContinue | Remove-Item -Force
+          }
+
+          $p = Start-Process -FilePath $exe -ArgumentList '--demo' -PassThru
+          Start-Sleep -Seconds 3
+
+          $alive = Get-Process -Id $p.Id -ErrorAction SilentlyContinue
+          $crashes = @()
+          if (Test-Path $logDir) {
+            $crashes = @(Get-ChildItem $logDir -Filter 'crash-*.txt' -ErrorAction SilentlyContinue)
+          }
+
+          if (Test-Path $logFile) {
+            Write-Host '--- usagedeck.log tail ---'
+            Get-Content $logFile -Tail 30 | ForEach-Object { Write-Host $_ }
+          }
+
+          if (-not $alive) {
+            if ($crashes.Count -gt 0) {
+              $crashHead = (Get-Content $crashes[0].FullName -TotalCount 12) -join ' | '
+              Write-Host "::error::usagedeck.exe crashed on startup: $crashHead"
+            } else {
+              Write-Host "::error::usagedeck.exe exited early with code $($p.ExitCode)"
+            }
+            throw "usagedeck.exe --demo died within 3 seconds (exit=$($p.ExitCode))"
+          }
+
+          if ($crashes.Count -gt 0) {
+            $crashHead = (Get-Content $crashes[0].FullName -TotalCount 12) -join ' | '
+            Write-Host "::error::crash dump written during live smoke test: $crashHead"
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            throw "crash dump found: $($crashes[0].Name)"
+          }
+
+          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Milliseconds 500
+          Write-Host 'Live launch smoke test passed: usagedeck.exe --demo stayed alive for 3s with zero crashes'
+
       - name: Silent uninstall (/UNINSTALL /S) removes binary and registry key
         shell: pwsh
         run: |

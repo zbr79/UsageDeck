@@ -121,15 +121,9 @@ pub fn query_taskbar() -> Option<TaskbarMetrics> {
         if tray_hwnd.is_invalid() {
             return None;
         }
-        let notify_hwnd = FindWindowExW(Some(tray_hwnd), None, w!("TrayNotifyWnd"), None).ok()?;
-        if notify_hwnd.is_invalid() {
-            return None;
-        }
 
         let mut tray_rect = RECT::default();
         GetWindowRect(tray_hwnd, &mut tray_rect).ok()?;
-        let mut notify_rect = RECT::default();
-        GetWindowRect(notify_hwnd, &mut notify_rect).ok()?;
 
         let mon = MonitorFromWindow(tray_hwnd, MONITOR_DEFAULTTONEAREST);
         let mut mon_info = MONITORINFO {
@@ -145,6 +139,26 @@ pub fn query_taskbar() -> Option<TaskbarMetrics> {
         let raw_dpi = GetDpiForWindow(tray_hwnd);
         let dpi = if raw_dpi == 0 { 96 } else { raw_dpi };
         let scale = dpi as f32 / 96.0;
+
+        // Locate `TrayNotifyWnd` (clock + system tray). If a future Windows build renames or
+        // hides it, fall back to a conservative right-hand reserve so the strip still renders.
+        let mut notify_rect = RECT {
+            left: (tray_rect.right - (220.0 * scale).round() as i32).max(tray_rect.left),
+            top: tray_rect.top,
+            right: tray_rect.right,
+            bottom: tray_rect.bottom,
+        };
+        if let Ok(notify_hwnd) = FindWindowExW(Some(tray_hwnd), None, w!("TrayNotifyWnd"), None) {
+            if !notify_hwnd.is_invalid() {
+                let mut candidate = RECT::default();
+                if GetWindowRect(notify_hwnd, &mut candidate).is_ok()
+                    && candidate.right > candidate.left
+                    && candidate.left > tray_rect.left
+                {
+                    notify_rect = candidate;
+                }
+            }
+        }
 
         // Detect auto-hide or off-screen collapsed taskbar.
         let mut abd = APPBARDATA {
@@ -162,21 +176,24 @@ pub fn query_taskbar() -> Option<TaskbarMetrics> {
             || (auto_hide && visible_h < (tray_h / 2));
 
         // Measure free width to the left of `TrayNotifyWnd`.
-        // On Windows 10, `ReBarWindow32` / `MSTaskSwWClass` gives the exact task band rect.
-        // On Windows 11, the XAML island spans the taskbar, so we reserve a generous safe zone
-        // for the centered (or left-aligned) app icons while capping cleanly on ultrawide monitors.
+        // On Windows 11, the XAML island spans the taskbar, so we reserve a safe zone for the
+        // centered (or left-aligned) app icons while leaving enough room on 150%-200% DPI screens.
         let tray_w = (tray_rect.right - tray_rect.left).max(0);
         let right_edge = notify_rect.left - (8.0 * scale).round() as i32;
         let left_bound = if is_taskbar_centered() {
-            // Leave the center 28% of the taskbar clear for Start + pinned/open apps.
-            tray_rect.left + ((tray_w as f32) * 0.64) as i32
+            tray_rect.left + ((tray_w as f32) * 0.56) as i32
         } else {
-            // Left-aligned taskbar: reserve left 42% for Start, search, and open windows.
-            tray_rect.left + ((tray_w as f32) * 0.42) as i32
+            tray_rect.left + ((tray_w as f32) * 0.38) as i32
         };
 
-        let available_px = (right_edge - left_bound).max(0);
-        let available_width_dip = (available_px as f32 / scale).min(520.0);
+        let raw_available_px = (right_edge - left_bound).max(0);
+        let mut available_width_dip = (raw_available_px as f32 / scale).min(560.0);
+        // Never collapse to Hidden if there is clearly space left of `TrayNotifyWnd` for at
+        // least the compact summary pill (e.g. narrow laptops at 175%-200% DPI).
+        let total_left_of_notify_dip = (right_edge - tray_rect.left).max(0) as f32 / scale;
+        if available_width_dip < 72.0 && total_left_of_notify_dip >= 140.0 {
+            available_width_dip = 72.0;
+        }
 
         Some(TaskbarMetrics {
             tray_hwnd,

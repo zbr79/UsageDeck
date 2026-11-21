@@ -20,10 +20,12 @@ mod ui;
 #[cfg(windows)]
 fn main() {
     use decide::LaunchMode;
+    use windows::core::{w, PCWSTR};
     use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
     use windows::Win32::UI::HiDpi::{
         SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
     };
+    use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
 
     // SAFETY: enable PerMonitorV2 DPI awareness and initialize STA COM before creating any HWND.
     let com_initialized = unsafe {
@@ -38,7 +40,17 @@ fn main() {
         LaunchMode::Gui => match ui::run() {
             Ok(()) => 0,
             Err(e) => {
-                eprintln!("UsageDeck Setup UI failed: {e}");
+                let msg = format!("UsageDeck Setup could not open its window:\n\n{e}");
+                let wide: Vec<u16> = msg.encode_utf16().chain(std::iter::once(0)).collect();
+                // SAFETY: NUL-terminated UTF-16 error dialog shown on fatal GUI startup failure.
+                unsafe {
+                    let _ = MessageBoxW(
+                        None,
+                        PCWSTR(wide.as_ptr()),
+                        w!("UsageDeck Setup"),
+                        MB_OK | MB_ICONERROR,
+                    );
+                }
                 1
             }
         },
