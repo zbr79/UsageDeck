@@ -171,7 +171,7 @@ jobs:
             Get-ChildItem $logDir -Filter 'crash-*.txt' -ErrorAction SilentlyContinue | Remove-Item -Force
           }
 
-          $p = Start-Process -FilePath $exe -ArgumentList '--demo' -PassThru
+          $p = Start-Process -FilePath $exe -ArgumentList '--demo', '--settings' -PassThru
           Start-Sleep -Seconds 3
 
           $alive = Get-Process -Id $p.Id -ErrorAction SilentlyContinue
