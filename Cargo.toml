@@ -1,0 +1,23 @@
+[workspace]
+members = [
+    "crates/usagedeck-core",
+    "crates/usagedeck-taskbar",
+    "crates/usagedeck-installer",
+]
+resolver = "2"
+
+[workspace.package]
+version = "2.0.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+log = "0.4"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["sync", "time", "macros", "rt", "rt-multi-thread"] }

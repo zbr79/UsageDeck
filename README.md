@@ -1,348 +1,145 @@
 # UsageDeck
 
-An always-on-top floating Windows widget that tracks AI subscription usage across **five
-providers**. One `usagedeck.exe` (Tauri 2: Rust core, React frontend in WebView2): no local server,
-no Electron, no Node at runtime.
+A **100% pure-Rust** Windows 11/10 taskbar monitor that tracks AI subscription usage across **five
+providers**. It renders a compact right-side taskbar strip, an anchored hover/click flyout, and a
+native Windows Settings dialog directly with Win32 + Direct2D/DirectWrite — **zero WebView2, zero
+Node.js, zero Tauri, zero Electron**.
 
-| Provider        | What's shown                                                                             | Data source                                                                   |
-| --------------- | ---------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| **OpenCode Go** | Rolling / Weekly / Monthly usage per account, reset countdowns, DeepSeek peak-hour timer | `opencode.ai/zen/go/v1/usage` (API key you add in Settings)                   |
-| **Cursor**      | First Party & API usage, plan badge, billing-cycle reset; API dollars this cycle and the models they went to | Cursor's local sign-in → `api2.cursor.sh`, else `cursor.com/api/usage-summary`; API dollars from `cursor.com/api/dashboard/get-filtered-usage-events` |
-| **Grok Bot**    | Weekly usage %, plan badge, reset countdown                                              | Grok Bot's own sign-in (falls back to Cursor's) → `api2.cursor.sh` sand usage |
-| **Codex**       | Usage %, plan badge (Free/Plus/Pro), reset credits, reset countdown                      | Codex CLI sign-in → ChatGPT `wham/usage`                                      |
-| **Claude**      | 5-hour and weekly usage, plus a model's own weekly limit (Fable) when the plan has one, plan badge, reset countdowns; spend rate ($/h) and pace (%/h, projected limit time) | Claude desktop / Claude Code sign-in → Anthropic OAuth usage; dollars from the Claude Code logs on this PC (usage fields only) |
+| Provider        | What's shown                                                                                                  | Data source                                                                                                                                    |
+| --------------- | ------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| **OpenCode Go** | Rolling / Weekly / Monthly usage per account, reset countdowns, DeepSeek peak-hour timer                      | `opencode.ai/zen/go/v1/usage` (API key added in Settings)                                                                                      |
+| **Cursor**      | First Party & API usage, plan badge, billing-cycle reset, API dollars and top models                          | Cursor local sign-in → `api2.cursor.sh` (fallback `cursor.com/api/usage-summary`); spend from `cursor.com/api/dashboard/get-filtered-usage-events` |
+| **Grok Bot**    | Weekly usage %, plan badge, reset countdown                                                                   | Grok Bot local sign-in (falls back to Cursor's) → `api2.cursor.sh`                                                                             |
+| **Codex**       | 5-hour & weekly usage %, plan badge (Free/Plus/Pro), reset credits, reset countdown                           | Codex CLI sign-in → ChatGPT `wham/usage`                                                                                                       |
+| **Claude**      | 5-hour, weekly, and model-specific weekly (Fable) limits, banked resets (`↺ N`), spend rate ($/h) and pace    | Claude desktop / Claude Code sign-in → Anthropic OAuth usage; dollars from local Claude Code logs (usage fields only)                          |
 
-Other apps' sign-ins are **read, never written**: UsageDeck never refreshes or rewrites another
-app's tokens (doing so rotates their refresh tokens and logs them out). If a sign-in has expired,
-the card shows the last known numbers with a `re-auth` hint — open that app once to refresh it.
-For Cursor the numbers turn gray and the hint is an **Open Cursor** button: it starts Cursor,
-which renews its own sign-in, and the card shows live numbers again within about 10 seconds of that.
-Cursor 3.27 and later store that sign-in encrypted; UsageDeck opens it with the key in Cursor's own
-`Local State`, and reads a private copy of `state.vscdb` when Cursor has the file busy. When
-`api2.cursor.sh` refuses a token that has not expired, the same token is sent to
-`https://cursor.com/api/usage-summary` as the `WorkosCursorSessionToken` cookie.
-Whenever the card has no fresh numbers, its header says so (`Open Cursor`, `can't read sign-in` or
-`not updating`) and the hint's tooltip gives the reason in one line, for example
-"api2.cursor.sh replied 401 unauthenticated at 14:02; token valid until Dec 3". The full record is
-in Settings → Cursor → Diagnostics (see [Diagnostics](#diagnostics)).
-The Cursor card turns red when both included buckets are at 100% and on-demand usage is off (or its
-monthly limit is spent); with on-demand budget left it stays usable.
-When the API bucket has spend, the reset line adds it (`Resets 9d · API $10.80 / $20`: the dollars
-Cursor took for API models this billing cycle, and the plan's included usage). The API meter's
-tooltip and Settings → Cursor name the three largest models, the rest as "other". The numbers are
-summed from the cycle's usage events, read at most every five minutes; if they cannot be read, the
-card shows the percentages alone.
-
-When Anthropic gives a model a weekly limit of its own (Fable), the Claude card shows it as a third
-bar: `5h | W | Fable`, like the OpenCode card's three bars. A full Fable limit turns only that bar
-red: the other models still work, so the card is not used up.
-
-Fable's own use also shows as a lighter part at the end of the 5h and W bars; hover a bar for the
-numbers. On W the number is exact: Anthropic reports Fable's use in points of the weekly bar
-(`Fable 12 pts (allowance 50% of weekly)`). On 5h it is an estimate, marked `≈`: the 5h bar times
-Fable's share of the dollars Claude Code on this PC spent in the current 5-hour window. Use on
-claude.ai or other PCs is not in those logs, and only the account signed in now gets it.
-
-When Claude has banked limit resets for the account, the Claude card shows a `↺ N` badge with the
-number in hand. Its tooltip, and a line under the cards in Settings → Claude, lists each kind with
-its count and nearest expiry (`2 full resets (earliest ends Dec 3) · 1 five-hour reset`), paused
-grants marked `paused`. At the 5-hour limit it also says whether the weekly free 5-hour reset is
-available; an available one counts toward N. UsageDeck only reads resets: redeem them in Claude.
-
-Each provider's Settings page has a **Bars** section with one switch per bar (for example OpenCode's
-Rolling, Weekly and Monthly), so a card can show only the bars you watch; the rest take the freed
-width. One bar always stays on: the provider's own switch hides the whole card. A full bar you
-turned off does not make the card red or offer to hide it until reset.
-See [SECURITY.md](SECURITY.md) for exactly what is read, stored and sent.
+Other apps' sign-ins are **read, never written**: UsageDeck never refreshes or rotates another
+app's tokens. When a sign-in expires, the provider shows its last known numbers with a `re-auth`
+hint (or an **Open Cursor** action for Cursor). See [SECURITY.md](SECURITY.md) for everything
+UsageDeck reads, stores, and sends.
 
 ---
 
 ## Install
 
-Download and run the installer:
+Download and run the per-user installer:
 **<https://github.com/zbr79/UsageDeck/releases/latest/download/UsageDeck-Setup.exe>**
 
-This link always serves the newest version. The installer is one small window: click **Install**,
-watch the progress bar, then click **Launch UsageDeck**. If UsageDeck is already installed, the
-button says **Update** or **Reinstall** instead, and your settings and keys stay. **Options** has
-two switches, both on for a new install:
+- One small native Windows window: click **Install** (or **Update** / **Reinstall** on an existing
+  install — your settings, accounts, and keys are preserved).
+- Installs per-user under `%LOCALAPPDATA%\UsageDeck\usagedeck.exe` with no admin rights required.
+- Not code-signed, so Windows SmartScreen may show "Windows protected your PC" — choose
+  **More info → Run anyway**.
+- Each release also attaches the standalone portable executable (`usagedeck-v<version>-x64.exe`).
 
-- **Create desktop shortcut**. The Start menu entry is always created.
-- **Start UsageDeck with Windows**. This sets the same option as Settings, so you can change it
-  later there.
+### Scripted & silent installer flags
 
-The installer is per-user and needs no admin rights. It is not code-signed, so Windows SmartScreen
-may show "Windows protected your PC": choose **More info → Run anyway**. On a PC without the
-WebView2 runtime, the installer shows the classic setup wizard instead, which installs WebView2
-first.
+| Flags                  | Behaviour                                                                 |
+| ---------------------- | ------------------------------------------------------------------------- |
+| `/S`                   | Silent install to `%LOCALAPPDATA%\UsageDeck` (no window)                  |
+| `/P /UPDATE`, `/S /UPDATE` | Silent in-place upgrade (also compatible with UsageDeck v1.x updaters) |
+| `/UNINSTALL`           | Interactive uninstaller                                                   |
+| `/UNINSTALL /S`        | Silent uninstall (removes `usagedeck.exe`, shortcuts, and registry entry) |
 
-For scripted installs, `UsageDeck-Setup.exe` accepts the NSIS installer's own switches and then
-shows no window: `/S` installs silently, `/D=<folder>` (last) picks the folder, and `/NS` skips
-all shortcuts. Each release also has the plain NSIS installer, `UsageDeck_<version>_x64-setup.exe`.
+### Automatic updates
 
-### Updates
+UsageDeck checks GitHub Releases shortly after startup and periodically in the background. When a
+newer version is published, it downloads `UsageDeck-Setup.exe`, verifies its SHA-256 digest against
+the release metadata, and runs a silent in-place update automatically. Existing UsageDeck v1.x
+installations also upgrade seamlessly to v2.0.0 through the same `UsageDeck-Setup.exe` release URL.
 
-UsageDeck checks GitHub 15 seconds after it starts and then every hour. When a newer version is
-out, it downloads the installer in the background, checks its size and SHA-256 against the
-release, and installs it silently: the widget disappears for a few seconds and comes back updated.
-No installer window opens and nothing asks first.
+---
 
-The only exception is while Settings is open, since the restart would close it. Then Settings →
-General shows **Update available** next to the version (and in the navigation); one click installs
-it, and closing Settings installs it too. The tray menu's **Check for updates** checks at once; its
-first line shows the installed version.
+## UI & Features
 
-### Coming from UsageDeck 1.0.x
+- **Right-side taskbar strip** — sits cleanly beside the Windows 11/10 system tray, adapts to the
+  Windows taskbar light/dark theme, supports per-monitor DPI scaling, and hides automatically during
+  full-screen apps.
+- **Anchored flyout** — hover or click the strip to inspect per-provider bars, reset countdowns,
+  Claude Code spend/pace metrics, Cursor API dollar breakdowns, and quick actions (Refresh, Open
+  Cursor, Copy OpenCode key, Hide until reset).
+- **Native Settings dialog** — right-click the strip or tray icon → **Settings** to configure
+  Start with Windows, provider visibility & order, per-bar toggles, OpenCode API keys, nicknames,
+  hidden cards, theme mode, and diagnostics.
+- **Change detection & ranking** — active accounts float to the top when usage rises, while
+  exhausted accounts (100% weekly/monthly) sink to the bottom sorted by soonest reset.
 
-Versions 1.0.0 and 1.0.1 were a different app (Electron). Both apps appear as "UsageDeck" under
-Settings → Apps; the old one has version 1.0.x. The old app does not update to this one, and it
-keeps its own data. To move your accounts and settings across:
+---
 
-1. Install this version, then quit it (tray menu → **Quit**) and quit the old app.
-2. In a Command Prompt, copy the old app's data:
+## Data & Security
 
-   ```bat
-   "%LOCALAPPDATA%\UsageDeck\usagedeck.exe" --import-old-data "%APPDATA%\UsageDeck\data"
-   ```
+UsageDeck v2.0.0 keeps full compatibility with v1.x data directories:
 
-   This reads the old `accounts.json`, `settings.json` and `.api-secret` and moves the OpenCode
-   keys into Windows Credential Manager. It never prints a key.
+- **Settings & caches**: `%APPDATA%\com.usagedeck.app` (`settings.json`, `accounts.json`,
+  `seen-accounts.json`, `usage-cache.json`) — all writes are atomic (temp file + rename).
+- **OpenCode API keys**: stored exclusively in **Windows Credential Manager** (service
+  `UsageDeck`), never on disk.
+- **Logs & crash reports**: `%LOCALAPPDATA%\com.usagedeck.app\logs\`.
 
-3. Uninstall the 1.0.x "UsageDeck" from Settings → Apps, then start UsageDeck again.
+---
+
+## Command-line modes
+
+```bat
+usagedeck.exe --demo
+usagedeck.exe --dump
+usagedeck.exe --import-old-data "%APPDATA%\UsageDeck\data"
+```
+
+- `--demo` — launches the taskbar strip and flyout with realistic sample data across providers.
+- `--dump` — polls all enabled providers once and prints a redacted JSON snapshot to stdout, then
+  exits.
+- `--import-old-data <dir>` — one-time migration from UsageDeck 1.0.x (`%APPDATA%\UsageDeck\data`),
+  moving OpenCode keys into Windows Credential Manager without printing secrets.
+
+---
 
 ## Architecture
 
 ```
-Rust core (src-tauri/)                           React frontend (src/)
-├── providers/  one module per provider          ├── widget/    floating panel (widget.html)
-├── store.rs    settings, accounts, caches       ├── settings/  settings window (settings.html)
-├── api.rs      commands the frontend invokes    ├── ui/        palette + accessible primitives
-├── win/        DPAPI, screen sampling           └── lib/       ranking, formatting, settings rules
-├── cli.rs      --import-old-data, --dump
-└── lib.rs      windows, tray, autostart, log
+crates/
+├── usagedeck-core/       # Providers, store, pricing, Claude Code logs, history, diagnostics, updater
+├── usagedeck-taskbar/    # usagedeck.exe: Win32 + Direct2D/DirectWrite taskbar strip, flyout, Settings, tray, CLI
+└── usagedeck-installer/  # UsageDeck-Setup.exe: pure-Rust Win32 installer & uninstaller (embeds usagedeck.exe)
 ```
 
-- The frontend calls Rust through Tauri `invoke`; nothing listens on a port.
-- Providers share one caching policy: short TTL, a single in-flight request, and a persisted
-  last-known value used when a provider is unreachable.
-- Each widget card loads independently: one slow or failing provider never blanks the others.
-
-## Requirements
-
-- **Windows 10/11** with WebView2 (preinstalled on Windows 11)
-- To build: Node.js 22.13+, the Rust stable toolchain (rustup), and the Tauri 2 Windows
-  prerequisites (MSVC build tools)
-- Optional: Cursor, Grok Bot, Codex CLI, Claude desktop / Claude Code — each is auto-detected
-
-## Your data
-
-Everything UsageDeck stores lives in `%APPDATA%\com.usagedeck.app`:
-
-- `settings.json` — toggles, themes, nicknames, hidden accounts, provider order.
-- `settings-window.json` — the settings window's last position and size.
-- `accounts.json` — OpenCode account labels (emails only, no keys).
-- `seen-accounts.json` — emails of Cursor, Grok Bot, Codex and Claude accounts already seen, so
-  switching accounts in those apps does not drop the earlier one. Tokens are not stored.
-- `usage-cache.json` — last known usage per provider and account, so the widget has something to
-  show after a restart or outage (shown like fresh usage: it is the latest the app has seen).
-- `window-pos.json` — where the widget was last placed.
-
-OpenCode API keys live in **Windows Credential Manager** (service `UsageDeck`), never in a file.
-The settings window only ever shows a hint (`sk-…a1b2`). All file writes are atomic (temp file +
-rename), so a crash can't corrupt settings.
-
-The installed app starts at login by default; turn it off with **Start with Windows** in
-Settings → General (applied at once). Copies run from a cargo `target` folder never register
-autostart.
-
-Logs (about 1 MB per file, 5 files kept) are in `%LOCALAPPDATA%\com.usagedeck.app\logs\`; the
-tray menu's **Open log folder** opens it in Explorer. A crash leaves a `crash-<time>.txt` report
-there (panic message, location, backtrace, version; newest 10 kept).
-A Cursor failure is logged once each time its kind changes, with the same one-line reason the
-card's tooltip shows.
-
-### Diagnostics
-
-You do not need the log files to see why a card is stale or an update did not show.
-
-- **Settings → Cursor → Diagnostics** lists what the last attempt to read Cursor's usage did:
-  whether `state.vscdb` was found and how it was read (opened, read from a copy, locked), how the
-  token is stored (plain or `cursor-safe-storage:v1`) and whether it decrypted, the first 8 hex
-  characters of the token's SHA-256 and when the token expires, each request with its endpoint,
-  HTTP status and the server's error text, which source gave the usage, and the reason in one line.
-- **Copy diagnostics** (Settings → General and the Cursor page) also records the last update check
-  (when, manual or background, the result and the newest release GitHub named). It copies all of it as text, with the UsageDeck and Windows
-  versions, the Claude models of the last 7 days that have no price, and the reset fields of
-  Claude's last usage reply (which keys came back, eligibility, and each grant's name, count and
-  dates, without grant ids), ready to paste into an issue.
-
-The report never contains a token, a key or an account name. Server replies are cut to 200
-characters and anything that looks like a token is replaced with `[redacted]`.
-
-Uninstalling removes the start-at-login entry. Tick **Delete the application data** in the
-uninstaller to also remove settings, logs and the stored OpenCode keys (details in SECURITY.md).
-
-## Features
-
-### Widget
-
-- Compact panel with the active OpenCode account plus every enabled provider; right-click (or the
-  tray menu) → _Expand_ / _Collapse_ for all OpenCode accounts, _Refresh_, _Settings_, _Quit_.
-  The tray menu also has _Check for updates_ and _Open log folder_
-- **Adaptive theme** — in `auto`, samples the screen around the widget and switches card style
-  with hysteresis; `light` and `dark` are fixed (no sampling)
-- **Change detection** — when an account's usage rises, a ▲ shows for 20 s and the most recently
-  used account floats to the top
-- **Reset countdowns** (`5d 7h 45m`) and **reset memory** — cached usage looks exactly like fresh
-  usage, with no "cached" or "updated … ago" note; a window whose stored reset time has passed
-  shows `--` until fresh data arrives
-- **States, consistently on every card** — a card shows text only when you must act: loading,
-  unavailable, `re-auth` (Cursor: an `Open Cursor` button, numbers in gray), `key rejected` (OpenCode 401 / 403), `not signed in`, exhausted (red).
-  Passing failures (rate limit, network, service error, busy, changed reply format) show nothing
-  on the card; they stay in the log and `--dump`. The Cursor card is the exception: it names a
-  failure that lasts (`not updating`, `can't read sign-in`) and explains it in the tooltip
-- **Hide until reset** — a used-up (red) card has a small eye-slash button next to its name. Click
-  it to hide the card until it can be used again: the latest reset among its full windows (5-hour
-  and weekly both full waits for the weekly reset). The card comes back on its own at that time,
-  or sooner if usage drops. A hidden card leaves nothing on the widget; right-click → **Show
-  hidden** brings it back early
-- **Unavailable banner** — "Usage unavailable · updated 3m ago" with Retry
-- **Copy key** — hover the OpenCode icon on a card (a copy glyph appears) and click; the key is
-  copied by the Rust side and never passes through the page
-- Settings changes apply live; right-click or **Shift+F10** opens the menu
-
-### Settings (right-click widget → Settings)
-
-- A normal window with a title bar and a taskbar button (960x680, resizable). It reopens where you
-  left it, kept on a visible monitor, and closes only when asked: the X, Alt+F4, Ctrl+W or Esc
-- General: start with Windows, hide during full-screen apps, DeepSeek peak-hour warning, settings
-  theme, widget theme, show provider names
-- Widget: provider order (drag the grip, or Move up / Move down), a "Show on widget" switch per
-  provider, and **Hidden until reset**: the used-up cards you hid from the widget, each with a
-  **Show** button that brings it back at once
-- Accounts: one page per provider with the widget's own cards, 2 per row. Each card header has a
-  "Show on widget" switch and a "⋯" menu (also right-click, Shift+F10 or the Menu key): Rename,
-  Refresh now and, for OpenCode, Copy API key, Replace API key and Remove account. OpenCode
-  accounts are added with an API key; Cursor, Grok Bot, Codex and Claude read that app's own
-  sign-in and only the signed-in account shows on the widget. Under the cards, **Bars** turns each
-  of the provider's bars on or off
-- Claude page: a "Spend & pace" section with the API-equivalent spend of Claude Code on this PC
-  (last hour, 5 h, today, 7 days, $/h), a 24-hour bar chart, spend per model, each window's
-  speed, even pace and projected limit time, and what 1% of the weekly limit is worth in dollars.
-  Dollars use Anthropic's API list price of each model (input, output, cache reads, and cache
-  writes at 1.25x input for 5 minutes or 2x for 1 hour); Haiku 5.5 is priced per reply, at the
-  higher rate for a prompt over 100K tokens. A model without a price is never counted as $0: a
-  "Not priced: <model ids>" line names it, and its replies stay out of the dollars
-  The widget's Claude card shows the spend rate after its name (`$71/h`); its meter colours follow
-  the percentage only (amber from 80%, red from 100%), and each meter's tooltip lists its usage by model, one per line
-- General → UsageDeck: the version (with **Update available** while an update waits for Settings
-  to close) and Support: Account folder, Log folder, Copy diagnostics
-- Fully keyboard accessible: modal dialogs trap focus and Esc closes the topmost one first; menus
-  use the arrow keys, Home and End; forced-colors (high contrast) is supported
-- `settings.html?page=<general|widget|claude|codex|cursor|grok|opencode|about>` opens a
-  page directly (browser preview: add `&panel=light` or `&panel=dark`)
-- Browser preview of spend and pace: add `?pace=<lasts|limit|weekly|measuring|backfill|unpriced|fail>`
-  to `widget.html` or `settings.html`
-- Browser preview of the Cursor card and its diagnostics: add
-  `?cursorFail=<rejected|expired|sealed|locked|network|schema|http|web>`; `?snoozed=1` starts with
-  two cards hidden until reset; `?hiddenBars={"opencode":["rolling"],"codex":["fiveHour"]}` starts
-  with those bars turned off
-- Browser preview of the updater: add `?update=<idle|never|checking|downloading|upToDate|failed|ready>`
-  for the starting state and `&updateResult=<ready|upToDate|failed>` for what Check for updates
-  finds
-
-### Ranking rules
-
-1. Accounts at 100% on **monthly or weekly** usage sink to the bottom (red glow)
-2. Among exhausted accounts, the one resetting soonest is ranked first
-3. Otherwise, the most recently used account floats to the top (green glow)
-
-## Command-line modes
-
-Headless: each prints a short report and exits.
-
-- `usagedeck.exe --import-old-data <dir>`: one-time copy of the old Next.js or Electron app's
-  `data/` folder (the installed 1.0.x app kept it in `%APPDATA%\UsageDeck\data`).
-  Settings go through the usual validation; the seen-accounts list and usage cache are copied when
-  their shape matches; OpenCode keys (plaintext or `enc:v1:`) move into Windows Credential Manager.
-  Keys are never printed.
-- `usagedeck.exe --dump`: fetch every provider once and print a redacted JSON summary (label cut to
-  two characters, plan, each window's percent and reset, stale / authExpired / error).
+---
 
 ## Development
 
-| Command                | Description                                                                      |
-| ---------------------- | -------------------------------------------------------------------------------- |
-| `npm install`          | Install the frontend and the Tauri CLI                                           |
-| `npm run tauri dev`    | Run the app with hot reload (Vite on port 1420)                                  |
-| `npm run tauri build`  | Release `usagedeck.exe` plus the per-user NSIS installer                         |
-| `npm run build`        | Type-check and build the frontend into `dist/`                                   |
-| `npm test`             | Frontend unit tests (Vitest)                                                     |
-| `npm run format`       | Format with Prettier                                                             |
-| `npm run check`        | Type-check, format check, frontend tests and `cargo test`                        |
+### Requirements
 
-CI (GitHub Actions, Windows) runs the frontend build, tests and format check, `cargo fmt --check`,
-`cargo clippy -D warnings`, `cargo test` and `cargo audit` for both crates (`src-tauri/` and
-`installer/`), and `npm audit` on every push and pull request.
+- **Windows 10/11** (x64)
+- **Rust stable toolchain** (`rustup`) with the MSVC build tools — no Node.js, npm, or WebView2 SDK
+  required.
 
-To see the installer window with a real installer inside, build the app's NSIS installer first,
-then build the window around it:
+### Commands
 
-```bash
-npm run tauri build
-USAGEDECK_NSIS_PATH="$PWD/src-tauri/target/release/bundle/nsis/UsageDeck_<version>_x64-setup.exe" \
-  cargo build --release --manifest-path installer/Cargo.toml
+| Command                                                     | Description                                              |
+| ----------------------------------------------------------- | -------------------------------------------------------- |
+| `cargo run --bin usagedeck -- --demo`                       | Run the taskbar strip & flyout with demo data            |
+| `cargo run --bin usagedeck -- --dump`                       | Poll providers once and print redacted JSON              |
+| `cargo fmt --all -- --check`                                | Check Rust formatting across the workspace               |
+| `cargo clippy --workspace --all-targets -- -D warnings`     | Lint all crates with warnings as errors                  |
+| `cargo test --workspace`                                    | Run workspace unit and integration tests                 |
+| `cargo build --release --bin usagedeck`                     | Build release `target/release/usagedeck.exe`             |
+
+To build `UsageDeck-Setup.exe` with the release `usagedeck.exe` embedded (PowerShell):
+
+```powershell
+cargo build --release --bin usagedeck
+$env:USAGEDECK_EXE_PATH = (Resolve-Path 'target\release\usagedeck.exe').Path
+cargo build --release --bin UsageDeck-Setup
 ```
 
-A plain `cargo build` in `installer/` embeds nothing, and its Install button reports that. A
-release build fails without `USAGEDECK_NSIS_PATH`, and also when the file is not that version's
-installer.
+---
 
 ## Releasing
 
-1. Raise the version in `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`,
-   `installer/Cargo.toml` and `package.json`, then run `npm install` and `cargo check` (in
-   `src-tauri/` and in `installer/`) so the lock files follow. `tests/version.test.ts` fails if
-   any of the eight disagree.
+1. Bump `version` under `[workspace.package]` in root `Cargo.toml`.
 2. Merge to `main`.
 
-The **Release** workflow (`.github/workflows/release.yml`) runs when `tauri.conf.json` changes on
-`main`. If `v<version>` has no release yet, it builds the NSIS installer and publishes release
-`v<version>` with it as `UsageDeck_<version>_x64-setup.exe`. It then builds the installer window
-(`installer/`) with that NSIS installer inside and uploads it as `UsageDeck-Setup.exe`. The
-permanent download link and the in-app updater both use `UsageDeck-Setup.exe`.
-
-The updater in installed copies runs `UsageDeck-Setup.exe /S /R /UPDATE` (1.4.0 and later) or
-`/P /R /UPDATE` (1.1.0 to 1.3.1). Started with any arguments, the installer window shows nothing
-and runs the NSIS installer inside with the same arguments, with one change: when `/UPDATE` is
-present, `/P` (passive mode, which shows a progress window) becomes `/S`, so updates from older
-copies install silently too. Keep that behaviour (`installer/src/decide.rs`, `launch` and
-`nsis_args`) for as long as those copies exist.
-
-A version whose release already has `UsageDeck-Setup.exe` is skipped, so other edits to
-`tauri.conf.json` publish nothing. A release missing it, from a run that failed after publishing,
-is built again. The workflow can also be started by hand from the Actions tab.
-
-## History
-
-UsageDeck started as a Next.js server plus an Electron widget. That app was retired and removed;
-this Tauri app keeps its providers, cards, ranking and settings. `--import-old-data` carries a
-user's old data across. The design notes are in [`docs/plans/`](docs/plans/).
-
-## Project layout
-
-```
-src/                  # React frontend
-├── widget/           # floating panel (_components/ cards, _lib/ data + theme)
-├── settings/         # settings window (_components/, _lib/hooks.ts)
-├── components/toast/ # toast system
-├── ui/               # design tokens (palette.ts) + accessible primitives
-├── lib/              # bridge to Rust, ranking, formatting, settings rules (unit-tested)
-└── public/           # provider icons
-src-tauri/            # Rust core (providers/, win/, store, cli, tray), tauri.conf.json, icons
-installer/            # installer window (UsageDeck-Setup.exe) around the NSIS installer
-tests/                # frontend unit tests (Vitest)
-widget.html           # widget page entry
-settings.html         # settings page entry
-docs/plans/           # design and build notes
-```
+The **Release** workflow (`.github/workflows/release.yml`) triggers when `Cargo.toml` changes on
+`main`. If tag `v<version>` does not yet have `UsageDeck-Setup.exe`, it builds release
+`usagedeck.exe`, embeds it into `UsageDeck-Setup.exe`, and publishes GitHub release `v<version>`
+with both `UsageDeck-Setup.exe` and `usagedeck-v<version>-x64.exe`.
