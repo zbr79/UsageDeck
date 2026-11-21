@@ -4,6 +4,12 @@
 //! - FlyoutWindow (anchored above the right-side taskbar strip, dismisses on blur or Esc)
 //! - System Tray icon (`Shell_NotifyIconW`) with native context menu & `TaskbarCreated` recovery
 //! - Wiring for native Settings dialog, clipboard key copy, hide-until-reset, and auto-updater.
+//!
+//! Re-entrancy invariant: Win32 calls that synchronously dispatch window messages or run nested
+//! modal loops (`ShowWindow`, `SetWindowPos`, `SetForegroundWindow`, `TrackPopupMenu`,
+//! `DestroyWindow`, `open_settings_dialog_with_updater`) are ALWAYS invoked strictly outside any
+//! `STATE` `RefCell` borrow, and `try_with_state` uses `try_borrow_mut()` so a re-entrant callback
+//! can never panic across an `extern "system"` FFI boundary.
 
 use crate::clipboard;
 use crate::layout::{
@@ -16,6 +22,7 @@ use crate::taskbar::{query_taskbar, TaskbarMetrics};
 use crate::tooltip::{pill_screen_rect_px, TooltipWindow};
 use crate::updater::UpdaterHandle;
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use usagedeck_core::store::{CredentialVault, Store};
@@ -61,6 +68,10 @@ const MENU_QUIT: usize = 1008;
 
 const APP_ICON_BYTES: &[u8] = include_bytes!("../assets/icon.ico");
 
+/// Registered `TaskbarCreated` message ID stored in an atomic so `strip_wnd_proc` never
+/// needs to borrow `STATE` on unrelated Win32 messages.
+static TASKBAR_CREATED_MSG: AtomicU32 = AtomicU32::new(0);
+
 struct AppState {
     renderer: Renderer,
     tooltip: Option<TooltipWindow>,
@@ -70,7 +81,6 @@ struct AppState {
     strip_hwnd: HWND,
     flyout_hwnd: HWND,
     tray_icon: HICON,
-    taskbar_created_msg: u32,
     metrics: Option<TaskbarMetrics>,
     strip_layout: Option<StripLayout>,
     flyout_layout: Option<FlyoutLayout>,
@@ -83,15 +93,18 @@ struct AppState {
     flyout_tracking_leave: bool,
     fullscreen_debounce: fullscreen::Debounce,
     strip_visible: bool,
+    last_status_log: Option<String>,
 }
 
 thread_local! {
     static STATE: RefCell<Option<AppState>> = const { RefCell::new(None) };
 }
 
-fn with_state<R>(f: impl FnOnce(&mut AppState) -> R) -> Option<R> {
+fn try_with_state<R>(f: impl FnOnce(&mut AppState) -> R) -> Option<R> {
     STATE.with(|cell| {
-        let mut borrow = cell.borrow_mut();
+        let Ok(mut borrow) = cell.try_borrow_mut() else {
+            return None;
+        };
         borrow.as_mut().map(f)
     })
 }
@@ -166,8 +179,11 @@ fn add_tray_icon(hwnd: HWND, icon: HICON) {
         ..Default::default()
     };
     // SAFETY: valid `NOTIFYICONDATAW` bound to our live message window.
-    unsafe {
-        let _ = Shell_NotifyIconW(NIM_ADD, &nid);
+    let ok = unsafe { Shell_NotifyIconW(NIM_ADD, &nid).as_bool() };
+    if ok {
+        log::info!("system tray icon registered");
+    } else {
+        log::warn!("Shell_NotifyIconW(NIM_ADD) returned false");
     }
 }
 
@@ -190,15 +206,29 @@ fn open_folder(dir: Option<std::path::PathBuf>) {
     let _ = std::process::Command::new("explorer.exe").arg(&dir).spawn();
 }
 
-fn open_settings(state: &mut AppState) {
-    hide_flyout(state);
-    hide_tooltip(state);
-    let poller_tx = state.poller_tx.clone();
-    let updater_for_btn = state.updater.clone();
-    state.updater.set_pause_auto_install(true);
+fn log_status_if_changed(state: &mut AppState, summary: String) {
+    if state.last_status_log.as_deref() != Some(summary.as_str()) {
+        log::info!("taskbar strip: {summary}");
+        state.last_status_log = Some(summary);
+    }
+}
+
+fn open_settings_ui() {
+    hide_flyout_ui();
+    let Some((strip_hwnd, poller_tx, updater_for_btn)) = try_with_state(|state| {
+        hide_tooltip(state);
+        state.updater.set_pause_auto_install(true);
+        (
+            state.strip_hwnd,
+            state.poller_tx.clone(),
+            state.updater.clone(),
+        )
+    }) else {
+        return;
+    };
 
     settings_dialog::open_settings_dialog_with_updater(
-        state.strip_hwnd,
+        strip_hwnd,
         Box::new(move || {
             if let Some(ref tx) = poller_tx {
                 let _ = tx.send(PollerCmd::RefreshNow);
@@ -210,14 +240,21 @@ fn open_settings(state: &mut AppState) {
     );
 }
 
-fn show_context_menu(state: &mut AppState) {
-    hide_tooltip(state);
+fn show_context_menu_ui() {
+    let Some((strip_hwnd, flyout_visible)) = try_with_state(|state| {
+        hide_tooltip(state);
+        (state.strip_hwnd, state.flyout_visible)
+    }) else {
+        return;
+    };
+
     // SAFETY: standard Win32 popup menu anchored at the current cursor position.
-    unsafe {
+    // Runs completely outside any `STATE` borrow so 300ms timers never collide.
+    let cmd_id = unsafe {
         let Ok(menu) = CreatePopupMenu() else {
             return;
         };
-        let flyout_label = if state.flyout_visible {
+        let flyout_label = if flyout_visible {
             w!("Hide UsageDeck")
         } else {
             w!("Show UsageDeck")
@@ -236,43 +273,48 @@ fn show_context_menu(state: &mut AppState) {
 
         let mut pt = POINT::default();
         let _ = GetCursorPos(&mut pt);
-        let _ = SetForegroundWindow(state.strip_hwnd);
+        let _ = SetForegroundWindow(strip_hwnd);
         let cmd = TrackPopupMenu(
             menu,
             TPM_LEFTALIGN | TPM_BOTTOMALIGN | TPM_RIGHTBUTTON | TPM_RETURNCMD,
             pt.x,
             pt.y,
             Some(0),
-            state.strip_hwnd,
+            strip_hwnd,
             None,
         );
         let _ = DestroyMenu(menu);
+        cmd.0 as usize
+    };
 
-        match cmd.0 as usize {
-            MENU_TOGGLE_FLYOUT => toggle_flyout(state),
-            MENU_REFRESH => request_refresh(state),
-            MENU_SHOW_HIDDEN => clear_snoozed_cards(state),
-            MENU_SETTINGS => open_settings(state),
-            MENU_CHECK_UPDATES => {
-                open_settings(state);
-                let _ = state.updater.check_now();
-            }
-            MENU_OPEN_DATA => open_folder(default_data_dir()),
-            MENU_OPEN_LOGS => open_folder(default_log_dir()),
-            MENU_QUIT => quit_app(state),
-            _ => {}
+    match cmd_id {
+        MENU_TOGGLE_FLYOUT => toggle_flyout_ui(),
+        MENU_REFRESH => request_refresh_ui(),
+        MENU_SHOW_HIDDEN => clear_snoozed_cards_ui(),
+        MENU_SETTINGS => open_settings_ui(),
+        MENU_CHECK_UPDATES => {
+            open_settings_ui();
+            try_with_state(|s| {
+                let _ = s.updater.check_now();
+            });
         }
+        MENU_OPEN_DATA => open_folder(default_data_dir()),
+        MENU_OPEN_LOGS => open_folder(default_log_dir()),
+        MENU_QUIT => quit_app_ui(),
+        _ => {}
     }
 }
 
-fn request_refresh(state: &AppState) {
-    if let Some(ref tx) = state.poller_tx {
-        let _ = tx.send(PollerCmd::RefreshNow);
-    }
+fn request_refresh_ui() {
+    try_with_state(|state| {
+        if let Some(ref tx) = state.poller_tx {
+            let _ = tx.send(PollerCmd::RefreshNow);
+        }
+    });
 }
 
-fn clear_snoozed_cards(state: &AppState) {
-    let poller_tx = state.poller_tx.clone();
+fn clear_snoozed_cards_ui() {
+    let poller_tx = try_with_state(|state| state.poller_tx.clone()).flatten();
     std::thread::spawn(move || {
         let Some(dir) = default_data_dir() else {
             return;
@@ -294,13 +336,8 @@ fn clear_snoozed_cards(state: &AppState) {
     });
 }
 
-fn hide_card_until_reset(
-    state: &AppState,
-    provider: ProviderKind,
-    account_id: String,
-    until_ms: u64,
-) {
-    let poller_tx = state.poller_tx.clone();
+fn hide_card_until_reset_ui(provider: ProviderKind, account_id: String, until_ms: u64) {
+    let poller_tx = try_with_state(|state| state.poller_tx.clone()).flatten();
     let key = format!("{}:{}", provider.key_prefix(), account_id).to_lowercase();
     std::thread::spawn(move || {
         let Some(dir) = default_data_dir() else {
@@ -350,17 +387,23 @@ fn copy_opencode_key(email: String) {
     });
 }
 
-fn quit_app(state: &mut AppState) {
-    hide_tooltip(state);
-    state.updater.stop();
-    if let Some(ref tx) = state.poller_tx {
-        let _ = tx.send(PollerCmd::Stop);
-    }
-    remove_tray_icon(state.strip_hwnd);
-    // SAFETY: destroys our windows and terminates the Win32 message loop cleanly.
+fn quit_app_ui() {
+    let Some((strip_hwnd, flyout_hwnd)) = try_with_state(|state| {
+        hide_tooltip(state);
+        state.updater.stop();
+        if let Some(ref tx) = state.poller_tx {
+            let _ = tx.send(PollerCmd::Stop);
+        }
+        (state.strip_hwnd, state.flyout_hwnd)
+    }) else {
+        return;
+    };
+
+    remove_tray_icon(strip_hwnd);
+    // SAFETY: destroys our windows outside any `STATE` borrow and exits the message loop cleanly.
     unsafe {
-        let _ = DestroyWindow(state.flyout_hwnd);
-        let _ = DestroyWindow(state.strip_hwnd);
+        let _ = DestroyWindow(flyout_hwnd);
+        let _ = DestroyWindow(strip_hwnd);
         PostQuitMessage(0);
     }
 }
@@ -397,96 +440,175 @@ fn update_strip_tooltip(state: &mut AppState) {
     }
 }
 
-fn sync_and_paint_strip(state: &mut AppState) {
-    // Keep auto-updater pause flag synchronized with the native Settings window open state.
-    state
-        .updater
-        .set_pause_auto_install(settings_dialog::is_settings_open());
-
-    let Some(metrics) = query_taskbar() else {
-        hide_strip(state);
-        return;
-    };
-    state.metrics = Some(metrics);
-
-    let (snapshot, loading) = state.shared.get();
-
-    // Hide during full-screen apps (debounced over 2 ticks, reusing usagedeck_core::win::fullscreen).
-    if snapshot.hide_in_fullscreen {
-        let reading = fullscreen::read(Some(metrics.tray_hwnd));
-        let _ = state.fullscreen_debounce.update(reading.full_screen);
-    } else {
-        state.fullscreen_debounce.reset();
-    }
-
-    if metrics.hidden || state.fullscreen_debounce.state() {
-        hide_strip(state);
-        return;
-    }
-
-    let layout = compute_strip_layout(&snapshot, metrics.available_width_dip, loading);
-    if matches!(layout.mode, StripMode::Hidden) {
-        state.strip_layout = Some(layout);
-        hide_strip(state);
-        return;
-    }
-
-    let width_px = (layout.width_dip * metrics.scale).ceil() as i32;
-    let height_px = (layout.height_dip * metrics.scale).ceil() as i32;
-    let (x, y) = metrics.strip_origin_px(width_px, height_px);
-    state.strip_pos = (x, y, width_px, height_px);
-
-    if let Err(e) = state.renderer.render_strip(
-        state.strip_hwnd,
-        x,
-        y,
-        metrics.dpi,
-        metrics.theme,
-        &snapshot,
-        &layout,
-        state.strip_hovered,
-        state.strip_hovered_pill,
-    ) {
-        log::warn!("render_strip failed: {e}");
-    }
-    state.strip_layout = Some(layout);
-
-    // Ensure the strip stays visible and ordered above `Shell_TrayWnd` without stealing focus.
-    // SAFETY: non-activating topmost Z-order maintenance on our own HWND.
-    unsafe {
-        if !state.strip_visible {
-            let _ = ShowWindow(state.strip_hwnd, SW_SHOWNOACTIVATE);
-            state.strip_visible = true;
-        }
-        let needs_raise = !is_above_tray(state.strip_hwnd, metrics.tray_hwnd);
-        if needs_raise {
-            let _ = SetWindowPos(
-                state.strip_hwnd,
-                Some(HWND_TOPMOST),
-                0,
-                0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
-            );
-        }
-    }
-
-    update_strip_tooltip(state);
-
-    if state.flyout_visible {
-        paint_flyout(state);
-    }
+enum StripWindowOp {
+    None,
+    Hide(HWND),
+    Show {
+        strip_hwnd: HWND,
+        tray_hwnd: HWND,
+        need_show: bool,
+    },
 }
 
-fn hide_strip(state: &mut AppState) {
-    hide_tooltip(state);
-    if state.strip_visible {
-        // SAFETY: hides our own strip window.
-        unsafe {
-            let _ = ShowWindow(state.strip_hwnd, SW_HIDE);
+fn sync_and_paint_strip_ui() {
+    let op = try_with_state(|state| -> StripWindowOp {
+        // Keep auto-updater pause flag synchronized with the native Settings window open state.
+        state
+            .updater
+            .set_pause_auto_install(settings_dialog::is_settings_open());
+
+        let Some(metrics) = query_taskbar() else {
+            log_status_if_changed(state, "hidden (Shell_TrayWnd unavailable)".to_string());
+            hide_tooltip(state);
+            if state.strip_visible {
+                state.strip_visible = false;
+                return StripWindowOp::Hide(state.strip_hwnd);
+            }
+            return StripWindowOp::None;
+        };
+        state.metrics = Some(metrics);
+
+        let (snapshot, loading) = state.shared.get();
+
+        // Hide during full-screen apps (debounced over 2 ticks, reusing usagedeck_core::win::fullscreen).
+        if snapshot.hide_in_fullscreen {
+            let reading = fullscreen::read(Some(metrics.tray_hwnd));
+            let _ = state.fullscreen_debounce.update(reading.full_screen);
+        } else {
+            state.fullscreen_debounce.reset();
         }
-        state.strip_visible = false;
+
+        if metrics.hidden || state.fullscreen_debounce.state() {
+            let reason = if metrics.hidden {
+                "taskbar hidden/auto-hide"
+            } else {
+                "fullscreen app active"
+            };
+            log_status_if_changed(state, format!("hidden ({reason})"));
+            hide_tooltip(state);
+            if state.strip_visible {
+                state.strip_visible = false;
+                return StripWindowOp::Hide(state.strip_hwnd);
+            }
+            return StripWindowOp::None;
+        }
+
+        let layout = compute_strip_layout(&snapshot, metrics.available_width_dip, loading);
+        if matches!(layout.mode, StripMode::Hidden) {
+            log_status_if_changed(
+                state,
+                format!(
+                    "hidden (insufficient width: {:.0} DIP, dpi={}, tray={}..{}, notify={}..{})",
+                    metrics.available_width_dip,
+                    metrics.dpi,
+                    metrics.tray_rect.left,
+                    metrics.tray_rect.right,
+                    metrics.notify_rect.left,
+                    metrics.notify_rect.right,
+                ),
+            );
+            state.strip_layout = Some(layout);
+            hide_tooltip(state);
+            if state.strip_visible {
+                state.strip_visible = false;
+                return StripWindowOp::Hide(state.strip_hwnd);
+            }
+            return StripWindowOp::None;
+        }
+
+        let width_px = (layout.width_dip * metrics.scale).ceil() as i32;
+        let height_px = (layout.height_dip * metrics.scale).ceil() as i32;
+        let (x, y) = metrics.strip_origin_px(width_px, height_px);
+        state.strip_pos = (x, y, width_px, height_px);
+
+        let mode_label = match &layout.mode {
+            StripMode::Pills {
+                slots,
+                overflow_badge,
+            } => format!(
+                "pills({}{})",
+                slots.len(),
+                overflow_badge
+                    .map(|(_, n)| format!("+{n}"))
+                    .unwrap_or_default()
+            ),
+            StripMode::CompactSummary { .. } => "compact-summary".to_string(),
+            StripMode::Empty { label, .. } => format!("empty({label})"),
+            StripMode::Hidden => "hidden".to_string(),
+        };
+        log_status_if_changed(
+            state,
+            format!(
+                "visible mode={mode_label} pos=({x},{y}) size=({width_px}x{height_px}) dpi={} avail={:.0}dip",
+                metrics.dpi, metrics.available_width_dip
+            ),
+        );
+
+        if let Err(e) = state.renderer.render_strip(
+            state.strip_hwnd,
+            x,
+            y,
+            metrics.dpi,
+            metrics.theme,
+            &snapshot,
+            &layout,
+            state.strip_hovered,
+            state.strip_hovered_pill,
+        ) {
+            log::warn!("render_strip failed: {e}");
+        }
+        state.strip_layout = Some(layout);
+
+        let need_show = !state.strip_visible;
+        state.strip_visible = true;
+
+        update_strip_tooltip(state);
+
+        if state.flyout_visible {
+            paint_flyout(state);
+        }
+
+        StripWindowOp::Show {
+            strip_hwnd: state.strip_hwnd,
+            tray_hwnd: metrics.tray_hwnd,
+            need_show,
+        }
+    })
+    .unwrap_or(StripWindowOp::None);
+
+    // Perform `ShowWindow` / `SetWindowPos` strictly outside any `STATE` borrow so synchronous
+    // Win32 messages (`WM_SHOWWINDOW`, `WM_WINDOWPOSCHANGING`, etc.) never collide with `RefCell`.
+    match op {
+        StripWindowOp::None => {}
+        StripWindowOp::Hide(strip_hwnd) => {
+            // SAFETY: hides our own strip window.
+            unsafe {
+                let _ = ShowWindow(strip_hwnd, SW_HIDE);
+            }
+        }
+        StripWindowOp::Show {
+            strip_hwnd,
+            tray_hwnd,
+            need_show,
+        } => {
+            // SAFETY: non-activating topmost Z-order maintenance on our own HWND.
+            unsafe {
+                if need_show {
+                    let _ = ShowWindow(strip_hwnd, SW_SHOWNOACTIVATE);
+                }
+                if !is_above_tray(strip_hwnd, tray_hwnd) {
+                    let _ = SetWindowPos(
+                        strip_hwnd,
+                        Some(HWND_TOPMOST),
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -507,34 +629,49 @@ unsafe fn is_above_tray(strip: HWND, tray: HWND) -> bool {
     false
 }
 
-fn toggle_flyout(state: &mut AppState) {
-    if state.flyout_visible {
-        hide_flyout(state);
+fn toggle_flyout_ui() {
+    let currently_visible = try_with_state(|s| s.flyout_visible).unwrap_or(false);
+    if currently_visible {
+        hide_flyout_ui();
     } else {
-        show_flyout(state);
+        show_flyout_ui();
     }
 }
 
-fn show_flyout(state: &mut AppState) {
-    hide_tooltip(state);
-    state.flyout_visible = true;
-    state.flyout_hovered_action = None;
-    paint_flyout(state);
-    // SAFETY: shows and focuses our own flyout so clicking outside triggers `WM_ACTIVATE(WA_INACTIVE)`.
-    unsafe {
-        let _ = ShowWindow(state.flyout_hwnd, SW_SHOW);
-        let _ = SetForegroundWindow(state.flyout_hwnd);
-    }
-}
-
-fn hide_flyout(state: &mut AppState) {
-    if state.flyout_visible {
-        state.flyout_visible = false;
+fn show_flyout_ui() {
+    let Some(flyout_hwnd) = try_with_state(|state| {
+        hide_tooltip(state);
+        state.flyout_visible = true;
         state.flyout_hovered_action = None;
-        // SAFETY: hides our own flyout window.
-        unsafe {
-            let _ = ShowWindow(state.flyout_hwnd, SW_HIDE);
+        paint_flyout(state);
+        state.flyout_hwnd
+    }) else {
+        return;
+    };
+    // SAFETY: shows and focuses our own flyout outside any `STATE` borrow so clicking outside
+    // triggers `WM_ACTIVATE(WA_INACTIVE)` without re-entrancy.
+    unsafe {
+        let _ = ShowWindow(flyout_hwnd, SW_SHOW);
+        let _ = SetForegroundWindow(flyout_hwnd);
+    }
+}
+
+fn hide_flyout_ui() {
+    let Some(flyout_hwnd) = try_with_state(|state| {
+        if state.flyout_visible {
+            state.flyout_visible = false;
+            state.flyout_hovered_action = None;
+            Some(state.flyout_hwnd)
+        } else {
+            None
         }
+    })
+    .flatten() else {
+        return;
+    };
+    // SAFETY: hides our own flyout window outside any `STATE` borrow.
+    unsafe {
+        let _ = ShowWindow(flyout_hwnd, SW_HIDE);
     }
 }
 
@@ -595,27 +732,26 @@ unsafe extern "system" fn strip_wnd_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    let is_taskbar_created =
-        with_state(|s| s.taskbar_created_msg != 0 && msg == s.taskbar_created_msg).unwrap_or(false);
-    if is_taskbar_created {
-        with_state(|s| {
-            add_tray_icon(s.strip_hwnd, s.tray_icon);
-            sync_and_paint_strip(s);
-        });
+    let taskbar_created = TASKBAR_CREATED_MSG.load(Ordering::Relaxed);
+    if taskbar_created != 0 && msg == taskbar_created {
+        if let Some((strip_hwnd, tray_icon)) = try_with_state(|s| (s.strip_hwnd, s.tray_icon)) {
+            add_tray_icon(strip_hwnd, tray_icon);
+        }
+        sync_and_paint_strip_ui();
         return LRESULT(0);
     }
 
     match msg {
         WM_TIMER if wparam.0 == TIMER_SYNC_ID => {
-            with_state(sync_and_paint_strip);
+            sync_and_paint_strip_ui();
             LRESULT(0)
         }
         WM_APP_SNAPSHOT | WM_SETTINGCHANGE => {
-            with_state(sync_and_paint_strip);
+            sync_and_paint_strip_ui();
             LRESULT(0)
         }
         WM_MOUSEMOVE => {
-            with_state(|s| {
+            let needs_repaint = try_with_state(|s| {
                 if !s.strip_tracking_leave {
                     track_mouse_leave(hwnd);
                     s.strip_tracking_leave = true;
@@ -629,39 +765,47 @@ unsafe extern "system" fn strip_wnd_proc(
                 if !s.strip_hovered || hit_pill != s.strip_hovered_pill {
                     s.strip_hovered = true;
                     s.strip_hovered_pill = hit_pill;
-                    sync_and_paint_strip(s);
+                    true
+                } else {
+                    false
                 }
-            });
+            })
+            .unwrap_or(false);
+            if needs_repaint {
+                sync_and_paint_strip_ui();
+            }
             LRESULT(0)
         }
         WM_MOUSELEAVE => {
-            with_state(|s| {
+            let needs_repaint = try_with_state(|s| {
                 s.strip_tracking_leave = false;
                 if s.strip_hovered || s.strip_hovered_pill.is_some() {
                     s.strip_hovered = false;
                     s.strip_hovered_pill = None;
                     hide_tooltip(s);
-                    sync_and_paint_strip(s);
+                    true
+                } else {
+                    false
                 }
-            });
+            })
+            .unwrap_or(false);
+            if needs_repaint {
+                sync_and_paint_strip_ui();
+            }
             LRESULT(0)
         }
         WM_LBUTTONUP => {
-            with_state(toggle_flyout);
+            toggle_flyout_ui();
             LRESULT(0)
         }
         WM_RBUTTONUP => {
-            with_state(show_context_menu);
+            show_context_menu_ui();
             LRESULT(0)
         }
         WM_TRAY_ICON => {
             match lparam.0 as u32 {
-                WM_LBUTTONUP => {
-                    with_state(toggle_flyout);
-                }
-                WM_RBUTTONUP => {
-                    with_state(show_context_menu);
-                }
+                WM_LBUTTONUP => toggle_flyout_ui(),
+                WM_RBUTTONUP => show_context_menu_ui(),
                 _ => {}
             }
             LRESULT(0)
@@ -685,18 +829,18 @@ unsafe extern "system" fn flyout_wnd_proc(
         WM_ACTIVATE => {
             let active_state = (wparam.0 & 0xffff) as u32;
             if active_state == WA_INACTIVE {
-                with_state(hide_flyout);
+                hide_flyout_ui();
             }
             LRESULT(0)
         }
         WM_KEYDOWN => {
             if wparam.0 == usize::from(VK_ESCAPE.0) {
-                with_state(hide_flyout);
+                hide_flyout_ui();
             }
             LRESULT(0)
         }
         WM_MOUSEMOVE => {
-            with_state(|s| {
+            try_with_state(|s| {
                 if !s.flyout_tracking_leave {
                     track_mouse_leave(hwnd);
                     s.flyout_tracking_leave = true;
@@ -712,7 +856,7 @@ unsafe extern "system" fn flyout_wnd_proc(
             LRESULT(0)
         }
         WM_MOUSELEAVE => {
-            with_state(|s| {
+            try_with_state(|s| {
                 s.flyout_tracking_leave = false;
                 if s.flyout_hovered_action.is_some() {
                     s.flyout_hovered_action = None;
@@ -722,37 +866,39 @@ unsafe extern "system" fn flyout_wnd_proc(
             LRESULT(0)
         }
         WM_LBUTTONUP => {
-            with_state(|s| {
+            let hit = try_with_state(|s| {
                 let scale = s.metrics.map_or(1.0, |m| m.scale);
                 let (dx, dy) = cursor_dip(lparam, scale);
-                let hit = s.flyout_layout.as_ref().and_then(|l| l.hit_test(dx, dy));
-                match hit {
-                    Some(FlyoutAction::Refresh) => request_refresh(s),
-                    Some(FlyoutAction::OpenSettings) => open_settings(s),
-                    Some(FlyoutAction::OpenDataFolder) => {
-                        hide_flyout(s);
-                        open_folder(default_data_dir());
-                    }
-                    Some(FlyoutAction::OpenCursor) => {
-                        hide_flyout(s);
-                        if let Err(e) = usagedeck_core::providers::cursor::open_cursor() {
-                            log::warn!("open_cursor failed: {e}");
-                        }
-                    }
-                    Some(FlyoutAction::CopyOpenCodeKey(email)) => {
-                        copy_opencode_key(email);
-                    }
-                    Some(FlyoutAction::HideUntilReset {
-                        provider,
-                        account_id,
-                        until_ms,
-                    }) => {
-                        hide_card_until_reset(s, provider, account_id, until_ms);
-                    }
-                    Some(FlyoutAction::Quit) => quit_app(s),
-                    None => {}
+                s.flyout_layout.as_ref().and_then(|l| l.hit_test(dx, dy))
+            })
+            .flatten();
+
+            match hit {
+                Some(FlyoutAction::Refresh) => request_refresh_ui(),
+                Some(FlyoutAction::OpenSettings) => open_settings_ui(),
+                Some(FlyoutAction::OpenDataFolder) => {
+                    hide_flyout_ui();
+                    open_folder(default_data_dir());
                 }
-            });
+                Some(FlyoutAction::OpenCursor) => {
+                    hide_flyout_ui();
+                    if let Err(e) = usagedeck_core::providers::cursor::open_cursor() {
+                        log::warn!("open_cursor failed: {e}");
+                    }
+                }
+                Some(FlyoutAction::CopyOpenCodeKey(email)) => {
+                    copy_opencode_key(email);
+                }
+                Some(FlyoutAction::HideUntilReset {
+                    provider,
+                    account_id,
+                    until_ms,
+                }) => {
+                    hide_card_until_reset_ui(provider, account_id, until_ms);
+                }
+                Some(FlyoutAction::Quit) => quit_app_ui(),
+                None => {}
+            }
             LRESULT(0)
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
@@ -829,6 +975,7 @@ pub fn run_ui(
         )?;
 
         let taskbar_created_msg = RegisterWindowMessageW(w!("TaskbarCreated"));
+        TASKBAR_CREATED_MSG.store(taskbar_created_msg, Ordering::Relaxed);
         add_tray_icon(strip_hwnd, tray_icon);
 
         let poller_tx = crate::poller::start_poller(strip_hwnd.0 as isize, shared.clone(), demo);
@@ -843,7 +990,6 @@ pub fn run_ui(
                 strip_hwnd,
                 flyout_hwnd,
                 tray_icon,
-                taskbar_created_msg,
                 metrics: None,
                 strip_layout: None,
                 flyout_layout: None,
@@ -856,14 +1002,16 @@ pub fn run_ui(
                 flyout_tracking_leave: false,
                 fullscreen_debounce: fullscreen::Debounce::default(),
                 strip_visible: false,
+                last_status_log: None,
             });
         });
 
-        with_state(sync_and_paint_strip);
+        sync_and_paint_strip_ui();
         if open_settings_on_start {
-            with_state(open_settings);
+            open_settings_ui();
         }
         SetTimer(Some(strip_hwnd), TIMER_SYNC_ID, TIMER_SYNC_MS, None);
+        log::info!("UI message loop started");
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).0 > 0 {
