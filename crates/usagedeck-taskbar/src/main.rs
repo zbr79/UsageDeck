@@ -8,6 +8,7 @@
 mod autostart;
 mod cli;
 mod clipboard;
+mod icons;
 mod layout;
 mod logging;
 mod poller;
@@ -97,6 +98,11 @@ fn main() {
         on_status_change: Some(Arc::new(|status| {
             let text = format_update_status(status);
             settings_dialog::set_update_status_text(&text);
+            let ready_ver = match &status.phase {
+                updater::Phase::Ready { version, .. } => Some(version.as_str()),
+                _ => None,
+            };
+            settings_dialog::set_update_ready(ready_ver);
         })),
         ..Default::default()
     });

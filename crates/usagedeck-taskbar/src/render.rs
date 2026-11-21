@@ -5,6 +5,7 @@
 //! `UpdateLayeredWindow` (`ULW_ALPHA`), giving crisp rounded corners, transparent
 //! integration with Windows 11's Mica/Acrylic taskbar, and ~10-15 MB idle RAM.
 
+use crate::icons::IconAtlas;
 use crate::layout::{
     DipRect, FlyoutAction, FlyoutLayout, PillSlot, StripLayout, StripMode, FLYOUT_CARD_PAD_DIP,
     FLYOUT_HEADER_HEIGHT_DIP, FLYOUT_PAD_DIP,
@@ -41,6 +42,7 @@ use windows::Win32::UI::WindowsAndMessaging::{UpdateLayeredWindow, ULW_ALPHA};
 pub struct Renderer {
     d2d: ID2D1Factory,
     dwrite: IDWriteFactory,
+    icons: IconAtlas,
     fmt_icon: IDWriteTextFormat,
     fmt_pct: IDWriteTextFormat,
     fmt_rate: IDWriteTextFormat,
@@ -89,44 +91,44 @@ fn palette(theme: TaskbarTheme) -> Palette {
             pill_bg_hover: rgba(255, 255, 255, 0.145),
             pill_border: rgba(255, 255, 255, 0.11),
             pill_border_hover: rgba(255, 255, 255, 0.28),
-            pill_border_danger: rgba(239, 68, 68, 0.65),
-            pill_border_warn: rgba(251, 191, 36, 0.55),
+            pill_border_danger: rgba(0xff, 0x64, 0x67, 0.65),
+            pill_border_warn: rgba(0xff, 0xb9, 0x00, 0.55),
             flyout_bg: rgba(30, 29, 31, 0.96),
             flyout_border: rgba(255, 255, 255, 0.13),
             card_bg: rgba(255, 255, 255, 0.055),
             card_border: rgba(255, 255, 255, 0.09),
             btn_bg: rgba(255, 255, 255, 0.08),
             btn_bg_hover: rgba(255, 255, 255, 0.16),
-            track: rgba(255, 255, 255, 0.16),
+            track: rgba(255, 255, 255, 0.15),
             sep: rgba(255, 255, 255, 0.14),
             text: rgba(244, 244, 245, 0.97),
             muted: rgba(212, 212, 216, 0.68),
-            ok: rgba(52, 211, 153, 1.0),
-            warn: rgba(251, 191, 36, 1.0),
-            danger: rgba(239, 68, 68, 1.0),
-            bar_muted: rgba(161, 161, 170, 0.60),
+            ok: rgba(0x00, 0xd4, 0x92, 1.0),
+            warn: rgba(0xff, 0xb9, 0x00, 1.0),
+            danger: rgba(0xff, 0x64, 0x67, 1.0),
+            bar_muted: rgba(0x71, 0x71, 0x7b, 1.0),
         },
         TaskbarTheme::Light => Palette {
             pill_bg: rgba(255, 255, 255, 0.68),
             pill_bg_hover: rgba(255, 255, 255, 0.95),
             pill_border: rgba(0, 0, 0, 0.10),
             pill_border_hover: rgba(0, 0, 0, 0.24),
-            pill_border_danger: rgba(220, 38, 38, 0.65),
-            pill_border_warn: rgba(217, 119, 6, 0.55),
+            pill_border_danger: rgba(0xc1, 0x00, 0x07, 0.65),
+            pill_border_warn: rgba(0xbb, 0x4d, 0x00, 0.55),
             flyout_bg: rgba(247, 248, 250, 0.97),
             flyout_border: rgba(0, 0, 0, 0.12),
             card_bg: rgba(255, 255, 255, 0.88),
             card_border: rgba(0, 0, 0, 0.08),
             btn_bg: rgba(0, 0, 0, 0.06),
             btn_bg_hover: rgba(0, 0, 0, 0.12),
-            track: rgba(0, 0, 0, 0.12),
+            track: rgba(113, 113, 123, 0.25),
             sep: rgba(0, 0, 0, 0.14),
             text: rgba(24, 24, 27, 0.96),
             muted: rgba(63, 63, 70, 0.72),
-            ok: rgba(16, 163, 108, 1.0),
-            warn: rgba(217, 119, 6, 1.0),
-            danger: rgba(220, 38, 38, 1.0),
-            bar_muted: rgba(113, 113, 122, 0.65),
+            ok: rgba(0x00, 0x7a, 0x55, 1.0),
+            warn: rgba(0xbb, 0x4d, 0x00, 1.0),
+            danger: rgba(0xc1, 0x00, 0x07, 1.0),
+            bar_muted: rgba(0x71, 0x71, 0x7b, 1.0),
         },
     }
 }
@@ -191,6 +193,27 @@ fn bar_color(sev: BarSeverity, pal: &Palette) -> D2D1_COLOR_F {
         BarSeverity::Warn => pal.warn,
         BarSeverity::Danger => pal.danger,
         BarSeverity::Muted => pal.bar_muted,
+    }
+}
+
+fn rate_color(sev: BarSeverity, pal: &Palette) -> D2D1_COLOR_F {
+    match sev {
+        BarSeverity::Ok => pal.ok,
+        BarSeverity::Warn => pal.warn,
+        BarSeverity::Danger => pal.danger,
+        BarSeverity::Muted => pal.muted,
+    }
+}
+
+/// Mix `base` with white in sRGB space (`base_weight * base + (1 - base_weight) * white`).
+fn mix_with_white(base: D2D1_COLOR_F, base_weight: f32) -> D2D1_COLOR_F {
+    let w = base_weight.clamp(0.0, 1.0);
+    let white = 1.0 - w;
+    D2D1_COLOR_F {
+        r: (base.r * w + white).clamp(0.0, 1.0),
+        g: (base.g * w + white).clamp(0.0, 1.0),
+        b: (base.b * w + white).clamp(0.0, 1.0),
+        a: base.a,
     }
 }
 
@@ -287,9 +310,12 @@ impl Renderer {
                 DWRITE_TEXT_ALIGNMENT_CENTER,
             )?;
 
+            let icons = IconAtlas::new();
+
             Ok(Self {
                 d2d,
                 dwrite,
+                icons,
                 fmt_icon,
                 fmt_pct,
                 fmt_rate,
@@ -483,10 +509,145 @@ impl Renderer {
         }
     }
 
+    fn draw_provider_icon(
+        &self,
+        rt: &ID2D1DCRenderTarget,
+        kind: ProviderKind,
+        badge_rect: DipRect,
+        theme: TaskbarTheme,
+    ) -> Result<()> {
+        if self.icons.draw_provider(
+            rt,
+            kind,
+            to_d2d_rect(badge_rect),
+            theme == TaskbarTheme::Light,
+        ) {
+            return Ok(());
+        }
+        let (glyph, badge_bg, badge_fg) = provider_badge_style(kind, theme);
+        self.fill_rounded(rt, badge_rect, 4.0, badge_bg)?;
+        self.draw_text(rt, glyph, &self.fmt_icon, badge_rect, badge_fg)
+    }
+
+    /// Draw a subtle highlight ring behind and a miniature copy badge over a hover-targeted
+    /// OpenCode icon so users immediately see that clicking copies the API key.
+    fn draw_copyable_provider_icon(
+        &self,
+        rt: &ID2D1DCRenderTarget,
+        kind: ProviderKind,
+        badge_rect: DipRect,
+        theme: TaskbarTheme,
+        pal: &Palette,
+        copy_hovered: bool,
+    ) -> Result<()> {
+        if copy_hovered {
+            let ring = DipRect {
+                x: badge_rect.x - 2.5,
+                y: badge_rect.y - 2.5,
+                w: badge_rect.w + 5.0,
+                h: badge_rect.h + 5.0,
+            };
+            let ring_fill = D2D1_COLOR_F { a: 0.22, ..pal.ok };
+            let ring_stroke = D2D1_COLOR_F { a: 0.90, ..pal.ok };
+            self.fill_rounded(rt, ring, 5.0, ring_fill)?;
+            self.stroke_rounded(rt, ring, 5.0, 1.25, ring_stroke)?;
+        }
+
+        self.draw_provider_icon(rt, kind, badge_rect, theme)?;
+
+        if copy_hovered {
+            // Miniature overlapping-pages copy badge in bottom-right corner of the icon.
+            let pill = DipRect {
+                x: badge_rect.x + badge_rect.w - 6.5,
+                y: badge_rect.y + badge_rect.h - 6.5,
+                w: 8.5,
+                h: 8.5,
+            };
+            let fg = if theme == TaskbarTheme::Dark {
+                rgba(16, 18, 22, 0.96)
+            } else {
+                rgba(255, 255, 255, 0.98)
+            };
+            self.fill_rounded(rt, pill, 2.5, pal.ok)?;
+            let back_sheet = DipRect {
+                x: pill.x + 1.8,
+                y: pill.y + 1.4,
+                w: 3.4,
+                h: 4.0,
+            };
+            let front_sheet = DipRect {
+                x: pill.x + 3.3,
+                y: pill.y + 2.9,
+                w: 3.4,
+                h: 4.0,
+            };
+            self.stroke_rounded(rt, back_sheet, 0.8, 0.9, fg)?;
+            self.fill_rounded(rt, front_sheet, 0.8, pal.ok)?;
+            self.stroke_rounded(rt, front_sheet, 0.8, 0.9, fg)?;
+        }
+
+        Ok(())
+    }
+
+    /// Render a progress bar track, filled portion, and optional Fable lighter right-end segment.
+    fn draw_bar_fill(
+        &self,
+        rt: &ID2D1DCRenderTarget,
+        track_rect: DipRect,
+        radius: f32,
+        bar: &BarView,
+        pal: &Palette,
+    ) -> Result<()> {
+        self.fill_rounded(rt, track_rect, radius, pal.track)?;
+        let Some(pct) = bar.percent else {
+            return Ok(());
+        };
+        let clamped_pct = pct.clamp(0.0, 100.0);
+        let fill_w = (track_rect.w * (clamped_pct as f32 / 100.0)).clamp(0.0, track_rect.w);
+        if fill_w <= 0.5 {
+            return Ok(());
+        }
+        let base = bar_color(bar.severity, pal);
+        self.fill_rounded(
+            rt,
+            DipRect {
+                x: track_rect.x,
+                y: track_rect.y,
+                w: fill_w,
+                h: track_rect.h,
+            },
+            radius,
+            base,
+        )?;
+        if let Some(seg) = bar
+            .fable_segment_pct
+            .filter(|&s| s.is_finite() && s > 0.0 && clamped_pct > 0.0)
+        {
+            let seg_ratio = (seg / clamped_pct).clamp(0.0, 1.0) as f32;
+            let seg_w = (fill_w * seg_ratio).clamp(0.0, fill_w);
+            if seg_w > 0.5 {
+                let lighter = mix_with_white(base, 0.55);
+                self.fill_rounded(
+                    rt,
+                    DipRect {
+                        x: track_rect.x + fill_w - seg_w,
+                        y: track_rect.y,
+                        w: seg_w,
+                        h: track_rect.h,
+                    },
+                    radius,
+                    lighter,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     /// Paint the Variant A taskbar strip window at physical position `(x, y)`.
     ///
     /// When `hovered_pill` is `Some(item_index)`, only that provider pill receives the hover
-    /// highlight so hovering individual pills matches the per-pill tooltip cleanly.
+    /// highlight so hovering individual pills matches the per-pill tooltip cleanly. When
+    /// `hovered_icon_pill` matches an OpenCode pill, its icon shows a copy-key affordance.
     #[allow(clippy::too_many_arguments)]
     pub fn render_strip(
         &self,
@@ -499,6 +660,7 @@ impl Renderer {
         layout: &StripLayout,
         hovered: bool,
         hovered_pill: Option<usize>,
+        hovered_icon_pill: Option<usize>,
     ) -> Result<()> {
         let scale = dpi as f32 / 96.0;
         let width_px = (layout.width_dip * scale).ceil() as i32;
@@ -597,7 +759,16 @@ impl Renderer {
                     for slot in slots {
                         if let Some(item) = snapshot.items.get(slot.item_index) {
                             let pill_hovered = hovered_pill == Some(slot.item_index);
-                            self.draw_provider_pill(rt, item, slot, theme, &pal, pill_hovered)?;
+                            let icon_hovered = hovered_icon_pill == Some(slot.item_index);
+                            self.draw_provider_pill(
+                                rt,
+                                item,
+                                slot,
+                                theme,
+                                &pal,
+                                pill_hovered,
+                                icon_hovered,
+                            )?;
                         }
                     }
                     if let Some((rect, count)) = overflow_badge {
@@ -632,6 +803,7 @@ impl Renderer {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_provider_pill(
         &self,
         rt: &ID2D1DCRenderTarget,
@@ -640,6 +812,7 @@ impl Renderer {
         theme: TaskbarTheme,
         pal: &Palette,
         hovered: bool,
+        icon_hovered: bool,
     ) -> Result<()> {
         let r = slot.rect;
         let bg = if hovered {
@@ -660,16 +833,23 @@ impl Renderer {
         self.fill_rounded(rt, r, 6.0, bg)?;
         self.stroke_rounded(rt, r, 6.0, 1.0, border)?;
 
-        // Provider icon badge (16x16 DIPs).
-        let (glyph, badge_bg, badge_fg) = provider_badge_style(item.provider, theme);
+        // Real provider icon (16x16 DIPs) with optional OpenCode copy-key hover highlight.
         let badge_rect = DipRect {
             x: r.x + 7.0,
             y: r.y + (r.h - 16.0) * 0.5,
             w: 16.0,
             h: 16.0,
         };
-        self.fill_rounded(rt, badge_rect, 4.0, badge_bg)?;
-        self.draw_text(rt, glyph, &self.fmt_icon, badge_rect, badge_fg)?;
+        let show_copy_hover =
+            icon_hovered && item.provider == ProviderKind::OpenCode && !item.account_id.is_empty();
+        self.draw_copyable_provider_icon(
+            rt,
+            item.provider,
+            badge_rect,
+            theme,
+            pal,
+            show_copy_hover,
+        )?;
 
         // Twin slim stacked bars + right-aligned percentage.
         let bars_x = badge_rect.x + badge_rect.w + 6.0;
@@ -684,23 +864,7 @@ impl Renderer {
                 w: bar_w,
                 h: bar_h,
             };
-            self.fill_rounded(rt, track_rect, 2.0, pal.track)?;
-            if let Some(p) = bar.percent {
-                let fill_w = (bar_w * (p as f32 / 100.0)).clamp(0.0, bar_w);
-                if fill_w > 0.5 {
-                    self.fill_rounded(
-                        rt,
-                        DipRect {
-                            x: track_rect.x,
-                            y: track_rect.y,
-                            w: fill_w,
-                            h: bar_h,
-                        },
-                        2.0,
-                        bar_color(bar.severity, pal),
-                    )?;
-                }
-            }
+            self.draw_bar_fill(rt, track_rect, 2.0, bar, pal)?;
             let pct_color = match bar.severity {
                 BarSeverity::Danger => pal.danger,
                 BarSeverity::Warn => pal.warn,
@@ -760,7 +924,7 @@ impl Renderer {
                         w: col_w,
                         h: 12.5,
                     },
-                    pal.ok,
+                    rate_color(item.spend_rate_severity, pal),
                 )?;
             }
             if let Some(ref reset) = item.reset_short {
@@ -889,15 +1053,22 @@ impl Renderer {
                 self.fill_rounded(rt, r, 8.0, pal.card_bg)?;
                 self.stroke_rounded(rt, r, 8.0, 1.0, border)?;
 
-                let (glyph, badge_bg, badge_fg) = provider_badge_style(item.provider, theme);
                 let badge = DipRect {
                     x: r.x + FLYOUT_CARD_PAD_DIP,
                     y: r.y + FLYOUT_CARD_PAD_DIP + 1.0,
                     w: 16.0,
                     h: 16.0,
                 };
-                self.fill_rounded(rt, badge, 4.0, badge_bg)?;
-                self.draw_text(rt, glyph, &self.fmt_icon, badge, badge_fg)?;
+                let copy_hovered =
+                    card.icon_action.is_some() && hovered_action == card.icon_action.as_ref();
+                self.draw_copyable_provider_icon(
+                    rt,
+                    item.provider,
+                    badge,
+                    theme,
+                    &pal,
+                    copy_hovered,
+                )?;
 
                 // Render right-aligned quick-action chips (Open Cursor, Copy key, Hide).
                 for btn in &card.buttons {
@@ -964,7 +1135,10 @@ impl Renderer {
                             pal.muted,
                         )?;
                         right_bound_x = reset_x - 4.0;
-                    } else if item.subtitle.is_none() && item.spend_rate_text.is_none() {
+                    } else if item.subtitle.is_none()
+                        && item.spend_rate_text.is_none()
+                        && item.display_email.is_none()
+                    {
                         let reset_w = 54.0;
                         let reset_x = right_bound_x - 6.0 - reset_w;
                         if reset_x > title_x + title_w + 4.0 {
@@ -1000,7 +1174,7 @@ impl Renderer {
                                 w: meta_w,
                                 h: 18.0,
                             },
-                            pal.ok,
+                            rate_color(item.spend_rate_severity, &pal),
                         )?;
                     } else if let Some(ref sub) = item.subtitle {
                         if !item.can_open_cursor {
@@ -1022,10 +1196,24 @@ impl Renderer {
                                 },
                             )?;
                         }
+                    } else if let Some(ref email) = item.display_email {
+                        self.draw_text_left(
+                            rt,
+                            email,
+                            9.5,
+                            false,
+                            DipRect {
+                                x: meta_x,
+                                y: r.y + FLYOUT_CARD_PAD_DIP,
+                                w: meta_w,
+                                h: 18.0,
+                            },
+                            pal.muted,
+                        )?;
                     }
                 }
 
-                // Bar columns (1..=3 equal-width columns across the card)
+                // Bar columns (1..=3+ equal-width columns across the card)
                 let count = item.flyout_bars.len().max(1);
                 let grid_x = r.x + FLYOUT_CARD_PAD_DIP;
                 let grid_y = r.y + FLYOUT_CARD_PAD_DIP + 24.0;
@@ -1073,23 +1261,7 @@ impl Renderer {
                         w: col_w,
                         h: 5.0,
                     };
-                    self.fill_rounded(rt, bar_rect, 2.5, pal.track)?;
-                    if let Some(p) = bar.percent {
-                        let fill_w = (col_w * (p as f32 / 100.0)).clamp(0.0, col_w);
-                        if fill_w > 0.5 {
-                            self.fill_rounded(
-                                rt,
-                                DipRect {
-                                    x: bar_rect.x,
-                                    y: bar_rect.y,
-                                    w: fill_w,
-                                    h: 5.0,
-                                },
-                                2.5,
-                                bar_color(bar.severity, &pal),
-                            )?;
-                        }
-                    }
+                    self.draw_bar_fill(rt, bar_rect, 2.5, bar, &pal)?;
                 }
             }
 

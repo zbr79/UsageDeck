@@ -42,6 +42,8 @@ impl DipRect {
 pub struct PillSlot {
     pub item_index: usize,
     pub rect: DipRect,
+    /// Clickable icon region on the left of each pill (e.g. OpenCode click-to-copy).
+    pub icon_rect: DipRect,
     /// True when the pill includes the right-hand rate / reset column (Claude).
     pub extended: bool,
 }
@@ -79,6 +81,18 @@ impl StripLayout {
             StripMode::Pills { slots, .. } => slots
                 .iter()
                 .find(|slot| slot.rect.contains(px, py))
+                .map(|slot| slot.item_index),
+            StripMode::Hidden | StripMode::CompactSummary { .. } | StripMode::Empty { .. } => None,
+        }
+    }
+
+    /// Return the `snapshot.items` index of the provider pill whose clickable icon region
+    /// contains `(px, py)` (in strip DIPs).
+    pub fn hit_test_pill_icon(&self, px: f32, py: f32) -> Option<usize> {
+        match &self.mode {
+            StripMode::Pills { slots, .. } => slots
+                .iter()
+                .find(|slot| slot.icon_rect.contains(px, py))
                 .map(|slot| slot.item_index),
             StripMode::Hidden | StripMode::CompactSummary { .. } | StripMode::Empty { .. } => None,
         }
@@ -127,7 +141,16 @@ pub fn compute_strip_layout(
         };
     }
 
-    if snapshot.items.is_empty() {
+    // Only primary items appear in the taskbar strip; secondary accounts (e.g. extra
+    // OpenCode accounts) are shown exclusively inside the click flyout.
+    let primary_items: Vec<(usize, &ProviderItem)> = snapshot
+        .items
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| !item.secondary)
+        .collect();
+
+    if primary_items.is_empty() {
         let w = 96.0f32.min(max_width_dip);
         return StripLayout {
             width_dip: w,
@@ -145,17 +168,17 @@ pub fn compute_strip_layout(
     }
 
     let usable = max_width_dip - STRIP_PAD_X_DIP * 2.0;
-    let total = snapshot.items.len();
+    let total = primary_items.len();
 
     // Greedily pack pills in provider order while reserving room for `+N` if any remain.
     let mut chosen: Vec<(usize, f32, bool)> = Vec::new();
     let mut used_w = 0.0f32;
 
-    for (idx, item) in snapshot.items.iter().enumerate() {
+    for (pos, &(idx, item)) in primary_items.iter().enumerate() {
         let extended = is_extended_pill(item);
         let w = pill_width(item);
         let gap = if chosen.is_empty() { 0.0 } else { PILL_GAP_DIP };
-        let remaining_after = total - (idx + 1);
+        let remaining_after = total - (pos + 1);
         let reserve_overflow = if remaining_after > 0 {
             PILL_GAP_DIP + OVERFLOW_BADGE_WIDTH_DIP
         } else {
@@ -181,7 +204,7 @@ pub fn compute_strip_layout(
         // Collapse to a single ultra-compact summary pill.
         let mut peak: Option<f64> = None;
         let mut worst = BarSeverity::Muted;
-        for item in &snapshot.items {
+        for &(_, item) in &primary_items {
             for bar in &item.taskbar_bars {
                 if let Some(p) = bar.percent {
                     peak = Some(peak.map_or(p, |cur| cur.max(p)));
@@ -209,14 +232,22 @@ pub fn compute_strip_layout(
     let mut x = STRIP_PAD_X_DIP;
     let mut slots = Vec::with_capacity(chosen.len());
     for (idx, w, extended) in chosen {
+        let rect = DipRect {
+            x,
+            y: pill_y,
+            w,
+            h: PILL_HEIGHT_DIP,
+        };
+        let icon_rect = DipRect {
+            x: rect.x + 3.0,
+            y: rect.y + 2.0,
+            w: 24.0,
+            h: rect.h - 4.0,
+        };
         slots.push(PillSlot {
             item_index: idx,
-            rect: DipRect {
-                x,
-                y: pill_y,
-                w,
-                h: PILL_HEIGHT_DIP,
-            },
+            rect,
+            icon_rect,
             extended,
         });
         x += w + PILL_GAP_DIP;
@@ -290,6 +321,10 @@ pub struct FlyoutButton {
 pub struct FlyoutCardSlot {
     pub item_index: usize,
     pub rect: DipRect,
+    /// Clickable icon region at the top-left of the card.
+    pub icon_rect: DipRect,
+    /// Optional click action bound to the card's icon (e.g. copy OpenCode API key).
+    pub icon_action: Option<FlyoutAction>,
     /// Right-aligned quick-action chips in the card header (Open Cursor, Copy key, Hide).
     pub buttons: Vec<FlyoutButton>,
     /// Left edge (in flyout DIPs) of the leftmost chip on the right side of the card header.
@@ -302,6 +337,8 @@ pub struct FlyoutLayout {
     pub height_dip: f32,
     pub cards: Vec<FlyoutCardSlot>,
     pub header_buttons: Vec<FlyoutButton>,
+    /// Per-bar hover hit regions `(rect, item_index, bar_index)` for per-model tooltips.
+    pub bar_rects: Vec<(DipRect, usize, usize)>,
 }
 
 impl FlyoutLayout {
@@ -317,8 +354,32 @@ impl FlyoutLayout {
                     return Some(btn.action.clone());
                 }
             }
+            if let Some(action) = card
+                .icon_action
+                .as_ref()
+                .filter(|_| card.icon_rect.contains(px, py))
+            {
+                return Some(action.clone());
+            }
         }
         None
+    }
+
+    /// Return `(item_index, bar_index)` for the flyout bar column containing `(px, py)` (in flyout DIPs).
+    pub fn hit_test_bar(&self, px: f32, py: f32) -> Option<(usize, usize)> {
+        self.bar_rects
+            .iter()
+            .find(|(rect, _, _)| rect.contains(px, py))
+            .map(|&(_, item_idx, bar_idx)| (item_idx, bar_idx))
+    }
+
+    /// Return the flyout-relative DIP rectangle for a rendered bar column `(item_index, bar_index)`.
+    #[allow(dead_code)]
+    pub fn bar_rect(&self, item_index: usize, bar_index: usize) -> Option<DipRect> {
+        self.bar_rects
+            .iter()
+            .find(|&&(_, i, b)| i == item_index && b == bar_index)
+            .map(|&(rect, _, _)| rect)
     }
 }
 
@@ -406,6 +467,7 @@ pub fn compute_flyout_layout(snapshot: &TaskbarSnapshot) -> FlyoutLayout {
 
     let mut y = FLYOUT_PAD_DIP + FLYOUT_HEADER_HEIGHT_DIP + 8.0;
     let mut cards = Vec::with_capacity(snapshot.items.len());
+    let mut bar_rects = Vec::new();
 
     if snapshot.items.is_empty() {
         // Space for the empty-state message box.
@@ -421,6 +483,19 @@ pub fn compute_flyout_layout(snapshot: &TaskbarSnapshot) -> FlyoutLayout {
                 w: inner_w,
                 h: card_h,
             };
+
+            let icon_rect = DipRect {
+                x: rect.x + FLYOUT_CARD_PAD_DIP - 2.0,
+                y: rect.y + FLYOUT_CARD_PAD_DIP - 1.0,
+                w: 20.0,
+                h: 20.0,
+            };
+            let icon_action =
+                if item.provider == ProviderKind::OpenCode && !item.account_id.is_empty() {
+                    Some(FlyoutAction::CopyOpenCodeKey(item.account_id.clone()))
+                } else {
+                    None
+                };
 
             let chip_h = 20.0;
             let chip_y = rect.y + FLYOUT_CARD_PAD_DIP - 1.0;
@@ -470,9 +545,32 @@ pub fn compute_flyout_layout(snapshot: &TaskbarSnapshot) -> FlyoutLayout {
                 .first()
                 .map_or(rect.x + rect.w - FLYOUT_CARD_PAD_DIP, |b| b.rect.x);
 
+            // Mirror render_flyout's bar column grid for per-model hover tooltips.
+            let bar_count = item.flyout_bars.len().max(1);
+            let grid_x = rect.x + FLYOUT_CARD_PAD_DIP;
+            let grid_y = rect.y + FLYOUT_CARD_PAD_DIP + 24.0;
+            let grid_w = rect.w - FLYOUT_CARD_PAD_DIP * 2.0;
+            let col_gap = 8.0;
+            let col_w = (grid_w - col_gap * (bar_count as f32 - 1.0)) / bar_count as f32;
+            for bar_idx in 0..item.flyout_bars.len() {
+                let cx = grid_x + bar_idx as f32 * (col_w + col_gap);
+                bar_rects.push((
+                    DipRect {
+                        x: cx,
+                        y: grid_y,
+                        w: col_w,
+                        h: 24.0,
+                    },
+                    idx,
+                    bar_idx,
+                ));
+            }
+
             cards.push(FlyoutCardSlot {
                 item_index: idx,
                 rect,
+                icon_rect,
+                icon_action,
                 buttons,
                 right_content_x,
             });
@@ -486,6 +584,7 @@ pub fn compute_flyout_layout(snapshot: &TaskbarSnapshot) -> FlyoutLayout {
         height_dip: y + FLYOUT_PAD_DIP,
         cards,
         header_buttons,
+        bar_rects,
     }
 }
 
@@ -690,17 +789,108 @@ mod tests {
                 BarView::new("weekly", "Weekly", Some(100.0), iso(24 * 60), now, false),
             ],
             spend_rate_text: None,
+            spend_rate_severity: BarSeverity::Muted,
             reset_short: None,
             subtitle: None,
             auth_expired: false,
             stale: false,
             exhausted: true,
             can_open_cursor: false,
+            secondary: false,
+            display_email: None,
             tooltip: String::new(),
         };
         assert_eq!(
             exhausted_until_ms(&item, now),
             Some((now + 24 * 60 * 60_000) as u64)
+        );
+    }
+
+    #[test]
+    fn strip_hit_tests_pill_icon_regions() {
+        let snap = demo_snapshot(1_700_000_000_000);
+        let layout = compute_strip_layout(&snap, 500.0, false);
+        let StripMode::Pills { ref slots, .. } = layout.mode else {
+            panic!("expected Pills mode");
+        };
+        for slot in slots {
+            // Center of icon_rect hits that pill's icon.
+            let ix = slot.icon_rect.x + slot.icon_rect.w * 0.5;
+            let iy = slot.icon_rect.y + slot.icon_rect.h * 0.5;
+            assert_eq!(layout.hit_test_pill_icon(ix, iy), Some(slot.item_index));
+            // Right-hand bar area of the pill hits the pill, NOT the icon.
+            let bar_x = slot.rect.x + slot.rect.w - 10.0;
+            assert_eq!(layout.hit_test_pill(bar_x, iy), Some(slot.item_index));
+            assert_eq!(layout.hit_test_pill_icon(bar_x, iy), None);
+        }
+    }
+
+    #[test]
+    fn strip_filters_secondary_items_while_flyout_keeps_all() {
+        let now = 1_700_000_000_000i64;
+        let mut snap = demo_snapshot(now);
+        let mut extra = snap.items[3].clone();
+        extra.account_id = "second@opencode.ai".into();
+        extra.secondary = true;
+        extra.display_email = Some("second@opencode.ai".into());
+        snap.items.push(extra);
+
+        let strip = compute_strip_layout(&snap, 600.0, false);
+        match strip.mode {
+            StripMode::Pills {
+                slots,
+                overflow_badge,
+            } => {
+                // Only the 4 primary items appear on the taskbar strip; no +1 overflow.
+                assert_eq!(slots.len(), 4);
+                assert!(overflow_badge.is_none());
+                assert!(slots.iter().all(|s| !snap.items[s.item_index].secondary));
+            }
+            other => panic!("expected Pills, got {other:?}"),
+        }
+
+        // Flyout renders ALL 5 items including the secondary OpenCode account.
+        let fl = compute_flyout_layout(&snap);
+        assert_eq!(fl.cards.len(), 5);
+        assert_eq!(fl.cards[4].item_index, 4);
+    }
+
+    #[test]
+    fn flyout_hit_tests_opencode_icon_and_bars() {
+        let now = 1_700_000_000_000i64;
+        let snap = demo_snapshot(now);
+        let fl = compute_flyout_layout(&snap);
+
+        // Clicking OpenCode's card icon returns CopyOpenCodeKey just like its Copy key chip.
+        let oc_icon = fl.cards[3].icon_rect;
+        assert_eq!(
+            fl.hit_test(oc_icon.x + oc_icon.w * 0.5, oc_icon.y + oc_icon.h * 0.5),
+            Some(FlyoutAction::CopyOpenCodeKey("demo@opencode.ai".into()))
+        );
+        // Non-OpenCode card icons do not trigger an action.
+        let claude_icon = fl.cards[0].icon_rect;
+        assert_eq!(
+            fl.hit_test(
+                claude_icon.x + claude_icon.w * 0.5,
+                claude_icon.y + claude_icon.h * 0.5
+            ),
+            None
+        );
+
+        // Every flyout bar has a non-overlapping bar_rect that hit_test_bar resolves.
+        let expected_bars: usize = snap.items.iter().map(|i| i.flyout_bars.len()).sum();
+        assert_eq!(fl.bar_rects.len(), expected_bars);
+        for &(rect, item_idx, bar_idx) in &fl.bar_rects {
+            assert_eq!(
+                fl.hit_test_bar(rect.x + rect.w * 0.5, rect.y + rect.h * 0.5),
+                Some((item_idx, bar_idx))
+            );
+            assert_eq!(fl.bar_rect(item_idx, bar_idx), Some(rect));
+        }
+        // Header area is not a bar.
+        assert_eq!(
+            fl.hit_test_bar(FLYOUT_PAD_DIP + 10.0, FLYOUT_PAD_DIP + 5.0),
+            None
         );
     }
 }

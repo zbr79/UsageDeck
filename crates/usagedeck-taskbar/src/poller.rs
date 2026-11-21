@@ -3,10 +3,10 @@
 
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use usagedeck_core::claude_logs;
-use usagedeck_core::store::{CredentialVault, Store};
-use usagedeck_core::view::{demo_snapshot, poll_snapshot, TaskbarSnapshot};
+use usagedeck_core::store::{CredentialVault, Store, ThemeMode};
+use usagedeck_core::view::{demo_snapshot, poll_snapshot, ProviderKind, TaskbarSnapshot};
 use usagedeck_core::{default_data_dir, Core};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
@@ -15,9 +15,13 @@ use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 pub const WM_APP_SNAPSHOT: u32 = WM_APP + 1;
 
 const POLL_INTERVAL: Duration = Duration::from_secs(60);
+const CURSOR_BURST_INTERVAL: Duration = Duration::from_secs(10);
+const CURSOR_BURST_WINDOW: Duration = Duration::from_secs(120);
 
 pub enum PollerCmd {
     RefreshNow,
+    /// Poll every 10s for up to 2 minutes after opening Cursor to pick up renewed sign-in.
+    WatchCursorSignIn,
     Stop,
 }
 
@@ -36,6 +40,7 @@ impl SharedSnapshot {
                 updated_at_ms: 0,
                 hide_in_fullscreen: true,
                 is_demo: false,
+                theme_mode: ThemeMode::Auto,
             }
         };
         Arc::new(Self {
@@ -84,7 +89,7 @@ pub fn start_poller(
                 post_snapshot_ready(target_hwnd);
                 while let Ok(cmd) = rx.recv() {
                     match cmd {
-                        PollerCmd::RefreshNow => {
+                        PollerCmd::RefreshNow | PollerCmd::WatchCursorSignIn => {
                             shared.set(demo_snapshot(claude_logs::now_ms()));
                             post_snapshot_ready(target_hwnd);
                         }
@@ -106,11 +111,33 @@ pub fn start_poller(
             shared.set(snap);
             post_snapshot_ready(target_hwnd);
 
+            let mut cursor_burst_until: Option<Instant> = None;
+
             loop {
-                match rx.recv_timeout(POLL_INTERVAL) {
+                let wait = match cursor_burst_until {
+                    Some(deadline) if Instant::now() < deadline => CURSOR_BURST_INTERVAL,
+                    Some(_) => {
+                        cursor_burst_until = None;
+                        POLL_INTERVAL
+                    }
+                    None => POLL_INTERVAL,
+                };
+                match rx.recv_timeout(wait) {
                     Ok(PollerCmd::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    Ok(PollerCmd::WatchCursorSignIn) => {
+                        cursor_burst_until = Some(Instant::now() + CURSOR_BURST_WINDOW);
+                        let snap = rt.block_on(poll_snapshot(&core));
+                        if cursor_signed_in(&snap) {
+                            cursor_burst_until = None;
+                        }
+                        shared.set(snap);
+                        post_snapshot_ready(target_hwnd);
+                    }
                     Ok(PollerCmd::RefreshNow) | Err(mpsc::RecvTimeoutError::Timeout) => {
                         let snap = rt.block_on(poll_snapshot(&core));
+                        if cursor_burst_until.is_some() && cursor_signed_in(&snap) {
+                            cursor_burst_until = None;
+                        }
                         shared.set(snap);
                         post_snapshot_ready(target_hwnd);
                     }
@@ -119,6 +146,12 @@ pub fn start_poller(
         });
 
     tx
+}
+
+fn cursor_signed_in(snap: &TaskbarSnapshot) -> bool {
+    snap.items
+        .iter()
+        .any(|i| i.provider == ProviderKind::Cursor && !i.auth_expired)
 }
 
 fn post_snapshot_ready(raw_hwnd: isize) {
