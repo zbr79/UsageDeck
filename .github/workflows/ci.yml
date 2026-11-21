@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      - 'feat/**'
   pull_request:
 
 permissions:
@@ -13,143 +15,170 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  app:
-    name: App (frontend, Rust, audit)
-    # The app reads Windows-only credential stores (DPAPI, Credential Manager),
-    # so CI runs where the app runs. The runner already ships rustup and a
-    # stable toolchain with rustfmt and clippy.
+  rust-windows:
+    name: Rust build, lint & test (Windows)
+    # UsageDeck reads Windows-only credential stores (DPAPI, Credential Manager)
+    # and renders directly with Win32 + Direct2D/DirectWrite, so CI runs on Windows.
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 22
-          cache: npm
-      - name: Cache cargo registry, tools and build
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/bin
-            src-tauri/target
-            installer/target
-          key: cargo-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock', 'installer/Cargo.lock') }}
-          restore-keys: cargo-${{ runner.os }}-
-      - run: npm ci
-      - run: npm run build
-      - run: npm test
-      - run: npm run format:check
-      - name: cargo fmt
-        working-directory: src-tauri
-        run: cargo fmt --check
-      - name: cargo clippy
-        working-directory: src-tauri
-        run: cargo clippy --all-targets -- -D warnings
-      - name: cargo test
-        working-directory: src-tauri
-        run: cargo test
-      # The installer window (installer/). Debug builds embed an empty payload instead of the
-      # NSIS installer, which only the release workflow has.
-      - name: cargo fmt (installer)
-        working-directory: installer
-        run: cargo fmt --check
-      - name: cargo clippy (installer)
-        working-directory: installer
-        run: cargo clippy --all-targets -- -D warnings
-      - name: cargo test (installer)
-        working-directory: installer
-        run: cargo test
-      - name: Audit production dependencies
-        run: npm audit --omit=dev --audit-level=high
-      - name: Audit Rust dependencies
-        working-directory: src-tauri
-        run: |
-          cargo install cargo-audit --locked
-          cargo audit
-      - name: Audit Rust dependencies (installer)
-        working-directory: installer
-        run: cargo audit
 
-  installer-smoke:
-    name: Installer smoke test (real install on Windows)
-    # Builds the real NSIS installer and the installer window around it, then runs the result the
-    # three ways it is started in practice: silent install, an older updater's /P /UPDATE, and a
-    # plain double-click.
-    runs-on: windows-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 22
-          cache: npm
-      - name: Cache cargo registry, tools and build
+      - name: Cache cargo registry and build
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
-            ~/.cargo/bin
-            src-tauri/target
-            installer/target
-          key: cargo-release-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock', 'installer/Cargo.lock') }}
-          restore-keys: |
-            cargo-release-${{ runner.os }}-
-            cargo-${{ runner.os }}-
-      - run: npm ci
-      - name: Build the NSIS installer
-        run: npx tauri build --bundles nsis
-      - name: Build the installer window around it
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
         shell: bash
         run: |
-          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
-          shopt -s nullglob
-          setups=(src-tauri/target/release/bundle/nsis/*_"${version}"_*-setup.exe)
-          [ "${#setups[@]}" -eq 1 ] || { echo "found: ${setups[*]:-none}"; exit 1; }
-          USAGEDECK_NSIS_PATH="$(cygpath -w "$PWD/${setups[0]}")" \
-            cargo build --release --locked --manifest-path installer/Cargo.toml
-          cp installer/target/release/usagedeck-installer.exe UsageDeck-Setup.exe
-      - name: Silent install (/S) installs the app
+          set -o pipefail
+          if ! cargo clippy --workspace --all-targets --message-format=short -- -D warnings 2>&1 | tee clippy.log; then
+            grep -E '^(crates|src|error)' clippy.log | grep -v 'unreachable pattern' | head -n 40 | awk 'NR%4==1{if(buf)print "::error::"buf; buf=$0; next}{buf=buf" | "$0}END{if(buf)print "::error::"buf}'
+            exit 1
+          fi
+
+      - name: Unit & integration tests
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! cargo test --workspace -- --nocapture 2>&1 | tee test.log; then
+            grep -E '(FAILED|panicked at|error(\[E[0-9]+\])?:)' test.log | head -n 40 | awk 'NR%4==1{if(buf)print "::error::"buf; buf=$0; next}{buf=buf" | "$0}END{if(buf)print "::error::"buf}'
+            exit 1
+          fi
+
+      - name: Build release usagedeck.exe
+        run: cargo build --release --bin usagedeck
+
+      - name: Build release UsageDeck-Setup.exe (embedding usagedeck.exe)
+        shell: bash
+        run: |
+          test -f target/release/usagedeck.exe
+          USAGEDECK_EXE_PATH="$(cygpath -w "$PWD/target/release/usagedeck.exe")" \
+            cargo build --release --bin UsageDeck-Setup
+          test -f target/release/UsageDeck-Setup.exe
+
+      - name: Upload UsageDeck-Setup.exe artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: usagedeck-setup-win64
+          path: target/release/UsageDeck-Setup.exe
+          if-no-files-found: error
+
+  installer-smoke:
+    name: Installer smoke test (Windows)
+    needs: rust-windows
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download UsageDeck-Setup.exe artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: usagedeck-setup-win64
+          path: .
+
+      - name: Read workspace version from Cargo.toml
+        id: version
         shell: pwsh
         run: |
-          $version = (Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json).version
-          $p = Start-Process -FilePath .\UsageDeck-Setup.exe -ArgumentList '/S' -Wait -PassThru
-          if ($p.ExitCode -ne 0) { throw "exit code $($p.ExitCode)" }
+          $inWorkspacePkg = $false
+          $version = $null
+          foreach ($line in Get-Content 'Cargo.toml') {
+            if ($line -match '^\s*\[(.+?)\]\s*$') {
+              $inWorkspacePkg = ($Matches[1].Trim() -eq 'workspace.package')
+              continue
+            }
+            if ($inWorkspacePkg -and $line -match '^\s*version\s*=\s*"([^"]+)"') {
+              $version = $Matches[1]
+              break
+            }
+          }
+          if (-not $version) { throw 'Could not read [workspace.package] version from Cargo.toml' }
+          Write-Host "Workspace version: $version"
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Silent install (/S) installs usagedeck.exe and Uninstall registry entry
+        shell: pwsh
+        env:
+          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $p = Start-Process -FilePath '.\UsageDeck-Setup.exe' -ArgumentList '/S' -PassThru
+          $null = $p.Handle
+          if (-not $p.WaitForExit(60000)) {
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            throw '/S install timed out after 60s'
+          }
+          if ($p.ExitCode -ne 0) { throw "/S install failed with exit code $($p.ExitCode)" }
+
           $exe = Join-Path $env:LOCALAPPDATA 'UsageDeck\usagedeck.exe'
-          if (-not (Test-Path $exe)) { throw "$exe missing after install" }
+          if (-not (Test-Path $exe)) { throw "$exe missing after /S install" }
+
           $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\UsageDeck'
-          $installed = (Get-ItemProperty $key).DisplayVersion
-          if ($installed -ne $version) { throw "DisplayVersion $installed, expected $version" }
+          if (-not (Test-Path $key)) { throw "Registry key $key missing after /S install" }
+          $installed = (Get-ItemProperty -Path $key -Name DisplayVersion).DisplayVersion
+          if ($installed -ne $env:EXPECTED_VERSION) {
+            throw "DisplayVersion '$installed', expected '$env:EXPECTED_VERSION'"
+          }
+
           Get-Process usagedeck -ErrorAction SilentlyContinue | Stop-Process -Force
-          "installed $version at $exe"
-      - name: An older updater's /P /UPDATE installs silently (/S, no window)
+          Start-Sleep -Milliseconds 500
+          Write-Host "Silent install verified: $installed at $exe"
+
+      - name: Silent upgrade (/P /UPDATE) succeeds for v1.x updater compatibility
+        shell: pwsh
+        env:
+          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $p = Start-Process -FilePath '.\UsageDeck-Setup.exe' -ArgumentList '/P', '/UPDATE' -PassThru
+          $null = $p.Handle
+          if (-not $p.WaitForExit(60000)) {
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            throw '/P /UPDATE timed out after 60s'
+          }
+          if ($p.ExitCode -ne 0) { throw "/P /UPDATE failed with exit code $($p.ExitCode)" }
+
+          $exe = Join-Path $env:LOCALAPPDATA 'UsageDeck\usagedeck.exe'
+          if (-not (Test-Path $exe)) { throw "$exe missing after /P /UPDATE" }
+
+          $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\UsageDeck'
+          if (-not (Test-Path $key)) { throw "Registry key $key missing after /P /UPDATE" }
+          $installed = (Get-ItemProperty -Path $key -Name DisplayVersion).DisplayVersion
+          if ($installed -ne $env:EXPECTED_VERSION) {
+            throw "DisplayVersion '$installed' after /P /UPDATE, expected '$env:EXPECTED_VERSION'"
+          }
+
+          Get-Process usagedeck -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Milliseconds 500
+          Write-Host "/P /UPDATE verified: $installed"
+
+      - name: Silent uninstall (/UNINSTALL /S) removes binary and registry key
         shell: pwsh
         run: |
           $exe = Join-Path $env:LOCALAPPDATA 'UsageDeck\usagedeck.exe'
-          $p = Start-Process -FilePath .\UsageDeck-Setup.exe -ArgumentList '/P','/UPDATE' -PassThru
-          $null = $p.Handle # without -Wait, ExitCode stays empty unless the handle is opened early
-          # The embedded NSIS installer (installer/src/system.rs run_nsis) must get /S, not /P.
-          $nsis = $null
-          while (-not $p.HasExited -and -not $nsis) {
-            $nsis = Get-CimInstance Win32_Process -Filter "Name LIKE 'UsageDeck-%-nsis-%'" |
-              Select-Object -First 1 -ExpandProperty CommandLine
+          $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\UsageDeck'
+
+          $p = Start-Process -FilePath '.\UsageDeck-Setup.exe' -ArgumentList '/UNINSTALL', '/S' -PassThru
+          $null = $p.Handle
+          if (-not $p.WaitForExit(60000)) {
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            throw '/UNINSTALL /S timed out after 60s'
           }
-          $p.WaitForExit()
-          if ($p.ExitCode -ne 0) { throw "exit code $($p.ExitCode)" }
-          if ($nsis) {
-            "NSIS command line: $nsis"
-            if ($nsis -notmatch '\s/S(\s|$)' -or $nsis -match '\s/P(\s|$)') { throw "NSIS was not started silently" }
-          } else {
-            Write-Warning "the NSIS process exited before its command line was read"
+          if ($p.ExitCode -ne 0) { throw "/UNINSTALL /S failed with exit code $($p.ExitCode)" }
+
+          for ($i = 0; $i -lt 10 -and ((Test-Path $exe) -or (Test-Path $key)); $i++) {
+            Start-Sleep -Milliseconds 500
           }
-          if (-not (Test-Path $exe)) { throw "$exe missing after update" }
-          Get-Process usagedeck -ErrorAction SilentlyContinue | Stop-Process -Force
-          "update pass-through ok"
-      - name: Double-click start opens the window and keeps running
-        shell: pwsh
-        run: |
-          $p = Start-Process -FilePath .\UsageDeck-Setup.exe -PassThru
-          Start-Sleep -Seconds 10
-          if ($p.HasExited) { throw "installer window exited early with code $($p.ExitCode)" }
-          Stop-Process -Id $p.Id -Force
-          "installer window still running after 10 s"
+          if (Test-Path $exe) { throw "$exe still exists after /UNINSTALL /S" }
+          if (Test-Path $key) { throw "Registry key $key still exists after /UNINSTALL /S" }
+
+          Write-Host '/UNINSTALL /S verified: binary and Uninstall registry key removed'

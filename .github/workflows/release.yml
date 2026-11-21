@@ -1,16 +1,17 @@
 name: Release
 
-# Publishes release v<version> when src-tauri/tauri.conf.json reaches main with a version that
-# has no complete release yet. The installed app's updater (src-tauri/src/updater.rs) reads the
-# latest release and installs its UsageDeck-Setup.exe, so that asset name must not change.
-# UsageDeck-Setup.exe is the installer window (installer/) with the app's NSIS installer inside;
-# it runs that installer unchanged when started with the updater's /P /R /UPDATE.
+# Publishes release v<version> when root Cargo.toml reaches main with a workspace version
+# that has no complete release yet. Both users and the in-app updater download
+# https://github.com/zbr79/UsageDeck/releases/latest/download/UsageDeck-Setup.exe,
+# so that asset name must never change.
 #
-# The build steps match the CI installer smoke test, which installs the result on Windows.
+# UsageDeck-Setup.exe is the pure-Rust per-user installer (crates/usagedeck-installer)
+# with release usagedeck.exe embedded inside; it supports /S, /P /UPDATE, /S /UPDATE
+# (compatible with v1.x and v2.x updaters), and /UNINSTALL [/S].
 on:
   push:
     branches: [main]
-    paths: [src-tauri/tauri.conf.json]
+    paths: [Cargo.toml]
   workflow_dispatch:
 
 permissions:
@@ -22,82 +23,80 @@ concurrency:
 
 jobs:
   release:
-    name: Build and publish the installer
+    name: Build and publish UsageDeck release
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     defaults:
       run:
         shell: bash
     steps:
       - uses: actions/checkout@v5
 
-      - name: Read the version and look for its release
+      - name: Read workspace version and check existing release
         id: version
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          version=$(awk '{ sub(/\r$/, "") }
+            /^[[:space:]]*\[workspace\.package\][[:space:]]*$/ { in_sec=1; next }
+            /^[[:space:]]*\[/ { in_sec=0 }
+            in_sec && /^[[:space:]]*version[[:space:]]*=/ {
+              sub(/^[^"]*"/, "")
+              sub(/".*$/, "")
+              print
+              exit
+            }
+          ' Cargo.toml)
+          if [ -z "$version" ]; then
+            echo "Failed to read [workspace.package] version from Cargo.toml" >&2
+            exit 1
+          fi
           tag="v$version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          # A release that exists without UsageDeck-Setup.exe is repaired: its assets are
-          # uploaded again below.
+          # A release that exists without UsageDeck-Setup.exe is repaired by uploading assets below.
           if gh release view "$tag" --json assets --jq '.assets[].name' 2> /dev/null | grep -qx 'UsageDeck-Setup.exe'; then
-            echo "$tag is already released; nothing to do."
+            echo "$tag already has UsageDeck-Setup.exe; nothing to do."
             echo "publish=false" >> "$GITHUB_OUTPUT"
           else
-            echo "Releasing $tag."
+            echo "Publishing $tag."
             echo "publish=true" >> "$GITHUB_OUTPUT"
           fi
 
       - if: steps.version.outputs.publish == 'true'
-        uses: actions/setup-node@v5
-        with:
-          node-version: 22
-          cache: npm
-
-      - if: steps.version.outputs.publish == 'true'
-        name: Cache cargo registry, tools and build
+        name: Cache cargo registry and build
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
-            ~/.cargo/bin
-            src-tauri/target
-            installer/target
-          key: cargo-release-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock', 'installer/Cargo.lock') }}
+            ~/.cargo/git
+            target
+          key: cargo-release-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml') }}
           restore-keys: |
             cargo-release-${{ runner.os }}-
             cargo-${{ runner.os }}-
 
       - if: steps.version.outputs.publish == 'true'
-        run: npm ci
+        name: Build release usagedeck.exe
+        run: |
+          cargo build --release --bin usagedeck
+          test -f target/release/usagedeck.exe
 
       - if: steps.version.outputs.publish == 'true'
-        name: Build the NSIS installer
-        run: npx tauri build --bundles nsis
-
-      - if: steps.version.outputs.publish == 'true'
-        name: Build the installer window around it
+        name: Build release UsageDeck-Setup.exe and stage assets
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          # The cached target folder can hold installers of earlier versions, so match this one.
-          shopt -s nullglob
-          setups=(src-tauri/target/release/bundle/nsis/*_"${VERSION}"_*-setup.exe)
-          if [ "${#setups[@]}" -ne 1 ]; then
-            echo "Expected one NSIS installer for $VERSION, found: ${setups[*]:-none}"
-            exit 1
-          fi
-          # installer/build.rs embeds this file and fails unless its name carries $VERSION.
-          USAGEDECK_NSIS_PATH="$(cygpath -w "$PWD/${setups[0]}")" \
-            cargo build --release --locked --manifest-path installer/Cargo.toml
+          USAGEDECK_EXE_PATH="$(cygpath -w "$PWD/target/release/usagedeck.exe")" \
+            cargo build --release --bin UsageDeck-Setup
+          test -f target/release/UsageDeck-Setup.exe
           mkdir -p dist-release
-          cp "${setups[0]}" "dist-release/UsageDeck_${VERSION}_x64-setup.exe"
-          cp installer/target/release/usagedeck-installer.exe dist-release/UsageDeck-Setup.exe
+          cp target/release/UsageDeck-Setup.exe dist-release/UsageDeck-Setup.exe
+          cp target/release/usagedeck.exe "dist-release/usagedeck-v${VERSION}-x64.exe"
+          ls -lh dist-release/
 
       - if: steps.version.outputs.publish == 'true'
-        name: Publish the release with both installers
+        name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
@@ -106,10 +105,10 @@ jobs:
           if gh release view "$TAG" > /dev/null 2>&1; then
             gh release upload "$TAG" dist-release/* --clobber
           else
-            # Both files go up with the release, so it is never public without UsageDeck-Setup.exe.
             gh release create "$TAG" dist-release/* \
               --target "$GITHUB_SHA" \
               --title "UsageDeck v$VERSION" \
-              --notes "Download UsageDeck-Setup.exe and run it. Installed copies update themselves.
-          UsageDeck_${VERSION}_x64-setup.exe is the plain NSIS installer, for scripted installs."
+              --notes "Download UsageDeck-Setup.exe and run it. Installed copies update themselves automatically.
+
+          \`usagedeck-v${VERSION}-x64.exe\` is the standalone portable executable."
           fi

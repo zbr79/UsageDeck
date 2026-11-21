@@ -1,0 +1,706 @@
+//! Pure-Rust DIP layout and hit-testing math for the Variant A taskbar strip
+//! and the anchored Windows 11 flyout panel. Zero Win32 dependencies so every
+//! layout rule and crowding fallback is unit-tested directly.
+
+use usagedeck_core::view::{
+    parse_iso_ms, BarSeverity, ProviderItem, ProviderKind, TaskbarSnapshot,
+};
+
+/// Outer DIP height of the taskbar strip window (fits inside Win11 48 DIP and Win10 40 DIP bars).
+pub const STRIP_HEIGHT_DIP: f32 = 36.0;
+pub const PILL_HEIGHT_DIP: f32 = 32.0;
+pub const PILL_GAP_DIP: f32 = 5.0;
+pub const STRIP_PAD_X_DIP: f32 = 3.0;
+
+pub const STANDARD_PILL_WIDTH_DIP: f32 = 96.0;
+pub const CLAUDE_EXTENDED_PILL_WIDTH_DIP: f32 = 148.0;
+pub const OVERFLOW_BADGE_WIDTH_DIP: f32 = 28.0;
+pub const COMPACT_SUMMARY_WIDTH_DIP: f32 = 62.0;
+pub const MIN_VISIBLE_WIDTH_DIP: f32 = 64.0;
+
+pub const FLYOUT_WIDTH_DIP: f32 = 340.0;
+pub const FLYOUT_PAD_DIP: f32 = 12.0;
+pub const FLYOUT_HEADER_HEIGHT_DIP: f32 = 28.0;
+pub const FLYOUT_CARD_GAP_DIP: f32 = 8.0;
+pub const FLYOUT_CARD_PAD_DIP: f32 = 10.0;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct DipRect {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
+impl DipRect {
+    pub fn contains(&self, px: f32, py: f32) -> bool {
+        px >= self.x && px <= self.x + self.w && py >= self.y && py <= self.y + self.h
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PillSlot {
+    pub item_index: usize,
+    pub rect: DipRect,
+    /// True when the pill includes the right-hand rate / reset column (Claude).
+    pub extended: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum StripMode {
+    /// Not enough room on the taskbar — hide strip and rely on tray icon.
+    Hidden,
+    /// Single ultra-compact summary pill showing peak usage across providers.
+    CompactSummary {
+        rect: DipRect,
+        peak_percent: Option<f64>,
+        severity: BarSeverity,
+    },
+    /// Variant A: one or more provider pills side by side, plus optional `+N` overflow badge.
+    Pills {
+        slots: Vec<PillSlot>,
+        overflow_badge: Option<(DipRect, usize)>,
+    },
+    /// Empty / loading placeholder pill so the user immediately sees the strip is alive.
+    Empty { rect: DipRect, label: &'static str },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct StripLayout {
+    pub width_dip: f32,
+    pub height_dip: f32,
+    pub mode: StripMode,
+}
+
+impl StripLayout {
+    /// Return the `snapshot.items` index of the provider pill under `(px, py)` (in strip DIPs).
+    pub fn hit_test_pill(&self, px: f32, py: f32) -> Option<usize> {
+        match &self.mode {
+            StripMode::Pills { slots, .. } => slots
+                .iter()
+                .find(|slot| slot.rect.contains(px, py))
+                .map(|slot| slot.item_index),
+            StripMode::Hidden | StripMode::CompactSummary { .. } | StripMode::Empty { .. } => None,
+        }
+    }
+
+    /// Return the strip-relative DIP rectangle for a rendered provider pill by `item_index`.
+    pub fn pill_rect(&self, item_index: usize) -> Option<DipRect> {
+        match &self.mode {
+            StripMode::Pills { slots, .. } => slots
+                .iter()
+                .find(|slot| slot.item_index == item_index)
+                .map(|slot| slot.rect),
+            StripMode::Hidden | StripMode::CompactSummary { .. } | StripMode::Empty { .. } => None,
+        }
+    }
+}
+
+/// Compute whether a provider pill should use the extended Variant A layout
+/// (Claude with inline `$/h` rate or compact reset time).
+pub fn is_extended_pill(item: &ProviderItem) -> bool {
+    item.provider == ProviderKind::Claude
+        && (item.spend_rate_text.is_some() || item.reset_short.is_some())
+}
+
+pub fn pill_width(item: &ProviderItem) -> f32 {
+    if is_extended_pill(item) {
+        CLAUDE_EXTENDED_PILL_WIDTH_DIP
+    } else {
+        STANDARD_PILL_WIDTH_DIP
+    }
+}
+
+/// Compute the taskbar strip layout given the available horizontal gap left of the system tray.
+pub fn compute_strip_layout(
+    snapshot: &TaskbarSnapshot,
+    max_width_dip: f32,
+    loading: bool,
+) -> StripLayout {
+    let pill_y = (STRIP_HEIGHT_DIP - PILL_HEIGHT_DIP) * 0.5;
+
+    if max_width_dip < MIN_VISIBLE_WIDTH_DIP {
+        return StripLayout {
+            width_dip: 0.0,
+            height_dip: STRIP_HEIGHT_DIP,
+            mode: StripMode::Hidden,
+        };
+    }
+
+    if snapshot.items.is_empty() {
+        let w = 96.0f32.min(max_width_dip);
+        return StripLayout {
+            width_dip: w,
+            height_dip: STRIP_HEIGHT_DIP,
+            mode: StripMode::Empty {
+                rect: DipRect {
+                    x: STRIP_PAD_X_DIP,
+                    y: pill_y,
+                    w: (w - STRIP_PAD_X_DIP * 2.0).max(40.0),
+                    h: PILL_HEIGHT_DIP,
+                },
+                label: if loading { "Loading..." } else { "UsageDeck" },
+            },
+        };
+    }
+
+    let usable = max_width_dip - STRIP_PAD_X_DIP * 2.0;
+    let total = snapshot.items.len();
+
+    // Greedily pack pills in provider order while reserving room for `+N` if any remain.
+    let mut chosen: Vec<(usize, f32, bool)> = Vec::new();
+    let mut used_w = 0.0f32;
+
+    for (idx, item) in snapshot.items.iter().enumerate() {
+        let extended = is_extended_pill(item);
+        let w = pill_width(item);
+        let gap = if chosen.is_empty() { 0.0 } else { PILL_GAP_DIP };
+        let remaining_after = total - (idx + 1);
+        let reserve_overflow = if remaining_after > 0 {
+            PILL_GAP_DIP + OVERFLOW_BADGE_WIDTH_DIP
+        } else {
+            0.0
+        };
+
+        if used_w + gap + w + reserve_overflow <= usable {
+            used_w += gap + w;
+            chosen.push((idx, w, extended));
+        } else if extended
+            && chosen.is_empty()
+            && STANDARD_PILL_WIDTH_DIP + reserve_overflow <= usable
+        {
+            // Fall back to standard width for Claude if space is tight.
+            used_w += STANDARD_PILL_WIDTH_DIP;
+            chosen.push((idx, STANDARD_PILL_WIDTH_DIP, false));
+        } else {
+            break;
+        }
+    }
+
+    if chosen.is_empty() {
+        // Collapse to a single ultra-compact summary pill.
+        let mut peak: Option<f64> = None;
+        let mut worst = BarSeverity::Muted;
+        for item in &snapshot.items {
+            for bar in &item.taskbar_bars {
+                if let Some(p) = bar.percent {
+                    peak = Some(peak.map_or(p, |cur| cur.max(p)));
+                }
+                worst = worse_severity(worst, bar.severity);
+            }
+        }
+        let w = COMPACT_SUMMARY_WIDTH_DIP.min(usable);
+        return StripLayout {
+            width_dip: w + STRIP_PAD_X_DIP * 2.0,
+            height_dip: STRIP_HEIGHT_DIP,
+            mode: StripMode::CompactSummary {
+                rect: DipRect {
+                    x: STRIP_PAD_X_DIP,
+                    y: pill_y,
+                    w,
+                    h: PILL_HEIGHT_DIP,
+                },
+                peak_percent: peak,
+                severity: worst,
+            },
+        };
+    }
+
+    let mut x = STRIP_PAD_X_DIP;
+    let mut slots = Vec::with_capacity(chosen.len());
+    for (idx, w, extended) in chosen {
+        slots.push(PillSlot {
+            item_index: idx,
+            rect: DipRect {
+                x,
+                y: pill_y,
+                w,
+                h: PILL_HEIGHT_DIP,
+            },
+            extended,
+        });
+        x += w + PILL_GAP_DIP;
+    }
+
+    let hidden_count = total.saturating_sub(slots.len());
+    let overflow_badge = if hidden_count > 0 {
+        let rect = DipRect {
+            x,
+            y: pill_y,
+            w: OVERFLOW_BADGE_WIDTH_DIP,
+            h: PILL_HEIGHT_DIP,
+        };
+        x += OVERFLOW_BADGE_WIDTH_DIP + PILL_GAP_DIP;
+        Some((rect, hidden_count))
+    } else {
+        None
+    };
+
+    let width_dip = (x - PILL_GAP_DIP + STRIP_PAD_X_DIP).max(0.0);
+
+    StripLayout {
+        width_dip,
+        height_dip: STRIP_HEIGHT_DIP,
+        mode: StripMode::Pills {
+            slots,
+            overflow_badge,
+        },
+    }
+}
+
+fn worse_severity(a: BarSeverity, b: BarSeverity) -> BarSeverity {
+    let rank = |s: BarSeverity| match s {
+        BarSeverity::Muted => 0,
+        BarSeverity::Ok => 1,
+        BarSeverity::Warn => 2,
+        BarSeverity::Danger => 3,
+    };
+    if rank(b) > rank(a) {
+        b
+    } else {
+        a
+    }
+}
+
+// ---- Flyout layout -------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FlyoutAction {
+    Refresh,
+    OpenSettings,
+    OpenDataFolder,
+    OpenCursor,
+    CopyOpenCodeKey(String),
+    HideUntilReset {
+        provider: ProviderKind,
+        account_id: String,
+        until_ms: u64,
+    },
+    Quit,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FlyoutButton {
+    pub action: FlyoutAction,
+    pub rect: DipRect,
+    pub label: &'static str,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FlyoutCardSlot {
+    pub item_index: usize,
+    pub rect: DipRect,
+    /// Right-aligned quick-action chips in the card header (Open Cursor, Copy key, Hide).
+    pub buttons: Vec<FlyoutButton>,
+    /// Left edge (in flyout DIPs) of the leftmost chip on the right side of the card header.
+    pub right_content_x: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FlyoutLayout {
+    pub width_dip: f32,
+    pub height_dip: f32,
+    pub cards: Vec<FlyoutCardSlot>,
+    pub header_buttons: Vec<FlyoutButton>,
+}
+
+impl FlyoutLayout {
+    pub fn hit_test(&self, px: f32, py: f32) -> Option<FlyoutAction> {
+        for btn in &self.header_buttons {
+            if btn.rect.contains(px, py) {
+                return Some(btn.action.clone());
+            }
+        }
+        for card in &self.cards {
+            for btn in &card.buttons {
+                if btn.rect.contains(px, py) {
+                    return Some(btn.action.clone());
+                }
+            }
+        }
+        None
+    }
+}
+
+/// Latest future reset timestamp (epoch ms) among an exhausted card's full (`Danger`) bars,
+/// falling back to the earliest future reset among any visible bar if no `Danger` bar carries a
+/// reset timestamp (e.g. Codex `limit_reached`). Returns `None` when the card is not exhausted
+/// or has no future reset time.
+pub fn exhausted_until_ms(item: &ProviderItem, now_ms: i64) -> Option<u64> {
+    if !item.exhausted {
+        return None;
+    }
+    let danger_max = item
+        .flyout_bars
+        .iter()
+        .filter(|b| b.severity == BarSeverity::Danger)
+        .filter_map(|b| b.resets_at.as_deref().and_then(parse_iso_ms))
+        .filter(|&ms| ms > now_ms)
+        .max();
+    let until = danger_max.or_else(|| {
+        item.flyout_bars
+            .iter()
+            .filter_map(|b| b.resets_at.as_deref().and_then(parse_iso_ms))
+            .filter(|&ms| ms > now_ms)
+            .min()
+    })?;
+    u64::try_from(until).ok()
+}
+
+/// Compute the anchored flyout panel layout and interactive hit rects.
+pub fn compute_flyout_layout(snapshot: &TaskbarSnapshot) -> FlyoutLayout {
+    let w = FLYOUT_WIDTH_DIP;
+    let inner_w = w - FLYOUT_PAD_DIP * 2.0;
+
+    // Header action buttons right-aligned inside the top header row.
+    let btn_h = 22.0;
+    let btn_gap = 4.0;
+    let btn_y = FLYOUT_PAD_DIP + (FLYOUT_HEADER_HEIGHT_DIP - btn_h) * 0.5;
+    let quit_rect = DipRect {
+        x: w - FLYOUT_PAD_DIP - 36.0,
+        y: btn_y,
+        w: 36.0,
+        h: btn_h,
+    };
+    let folder_rect = DipRect {
+        x: quit_rect.x - btn_gap - 38.0,
+        y: btn_y,
+        w: 38.0,
+        h: btn_h,
+    };
+    let settings_rect = DipRect {
+        x: folder_rect.x - btn_gap - 54.0,
+        y: btn_y,
+        w: 54.0,
+        h: btn_h,
+    };
+    let refresh_rect = DipRect {
+        x: settings_rect.x - btn_gap - 48.0,
+        y: btn_y,
+        w: 48.0,
+        h: btn_h,
+    };
+
+    let header_buttons = vec![
+        FlyoutButton {
+            action: FlyoutAction::Refresh,
+            rect: refresh_rect,
+            label: "Refresh",
+        },
+        FlyoutButton {
+            action: FlyoutAction::OpenSettings,
+            rect: settings_rect,
+            label: "Settings",
+        },
+        FlyoutButton {
+            action: FlyoutAction::OpenDataFolder,
+            rect: folder_rect,
+            label: "Data",
+        },
+        FlyoutButton {
+            action: FlyoutAction::Quit,
+            rect: quit_rect,
+            label: "Quit",
+        },
+    ];
+
+    let mut y = FLYOUT_PAD_DIP + FLYOUT_HEADER_HEIGHT_DIP + 8.0;
+    let mut cards = Vec::with_capacity(snapshot.items.len());
+
+    if snapshot.items.is_empty() {
+        // Space for the empty-state message box.
+        y += 64.0;
+    } else {
+        for (idx, item) in snapshot.items.iter().enumerate() {
+            // Card height: top header row (20) + gap (6) + bar grid (1 row for 1..=3 bars = 26)
+            // + vertical padding (20).
+            let card_h = FLYOUT_CARD_PAD_DIP * 2.0 + 20.0 + 6.0 + 26.0;
+            let rect = DipRect {
+                x: FLYOUT_PAD_DIP,
+                y,
+                w: inner_w,
+                h: card_h,
+            };
+
+            let chip_h = 20.0;
+            let chip_y = rect.y + FLYOUT_CARD_PAD_DIP - 1.0;
+            let chip_gap = 5.0;
+            let mut cursor_x = rect.x + rect.w - FLYOUT_CARD_PAD_DIP;
+            let mut buttons = Vec::new();
+
+            let mut push_chip = |chip_w: f32, label: &'static str, action: FlyoutAction| {
+                let x = cursor_x - chip_w;
+                buttons.push(FlyoutButton {
+                    action,
+                    rect: DipRect {
+                        x,
+                        y: chip_y,
+                        w: chip_w,
+                        h: chip_h,
+                    },
+                    label,
+                });
+                cursor_x = x - chip_gap;
+            };
+
+            if item.can_open_cursor {
+                push_chip(78.0, "Open Cursor", FlyoutAction::OpenCursor);
+            }
+            if let Some(until_ms) = exhausted_until_ms(item, snapshot.updated_at_ms) {
+                push_chip(
+                    38.0,
+                    "Hide",
+                    FlyoutAction::HideUntilReset {
+                        provider: item.provider,
+                        account_id: item.account_id.clone(),
+                        until_ms,
+                    },
+                );
+            }
+            if item.provider == ProviderKind::OpenCode && !item.account_id.is_empty() {
+                push_chip(
+                    56.0,
+                    "Copy key",
+                    FlyoutAction::CopyOpenCodeKey(item.account_id.clone()),
+                );
+            }
+
+            buttons.reverse();
+            let right_content_x = buttons
+                .first()
+                .map_or(rect.x + rect.w - FLYOUT_CARD_PAD_DIP, |b| b.rect.x);
+
+            cards.push(FlyoutCardSlot {
+                item_index: idx,
+                rect,
+                buttons,
+                right_content_x,
+            });
+            y += card_h + FLYOUT_CARD_GAP_DIP;
+        }
+        y -= FLYOUT_CARD_GAP_DIP;
+    }
+
+    FlyoutLayout {
+        width_dip: w,
+        height_dip: y + FLYOUT_PAD_DIP,
+        cards,
+        header_buttons,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{DateTime, Utc};
+    use usagedeck_core::view::{demo_snapshot, BarView};
+
+    #[test]
+    fn packs_all_four_demo_providers_when_space_allows() {
+        let snap = demo_snapshot(1_700_000_000_000);
+        let layout = compute_strip_layout(&snap, 500.0, false);
+        match layout.mode {
+            StripMode::Pills {
+                slots,
+                overflow_badge,
+            } => {
+                assert_eq!(slots.len(), 4);
+                assert!(slots[0].extended);
+                assert!(!slots[1].extended);
+                assert!(overflow_badge.is_none());
+            }
+            other => panic!("expected Pills, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn drops_providers_with_overflow_badge_when_crowded() {
+        let snap = demo_snapshot(1_700_000_000_000);
+        // Enough room for Claude (148) + Cursor (96) + +2 badge (28) + gaps
+        let layout = compute_strip_layout(&snap, 300.0, false);
+        match layout.mode {
+            StripMode::Pills {
+                slots,
+                overflow_badge,
+            } => {
+                assert_eq!(slots.len(), 2);
+                assert_eq!(overflow_badge.map(|(_, n)| n), Some(2));
+                assert!(layout.width_dip <= 300.0);
+            }
+            other => panic!("expected Pills with overflow, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn collapses_to_compact_summary_when_very_tight() {
+        let snap = demo_snapshot(1_700_000_000_000);
+        let layout = compute_strip_layout(&snap, 80.0, false);
+        match layout.mode {
+            StripMode::CompactSummary {
+                peak_percent,
+                severity,
+                ..
+            } => {
+                assert_eq!(peak_percent, Some(100.0));
+                assert_eq!(severity, BarSeverity::Danger);
+            }
+            other => panic!("expected CompactSummary, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hides_completely_when_below_minimum_width() {
+        let snap = demo_snapshot(1_700_000_000_000);
+        let layout = compute_strip_layout(&snap, 40.0, false);
+        assert_eq!(layout.mode, StripMode::Hidden);
+        assert_eq!(layout.hit_test_pill(10.0, 10.0), None);
+    }
+
+    #[test]
+    fn strip_hit_tests_individual_pills_and_gaps() {
+        let snap = demo_snapshot(1_700_000_000_000);
+        let layout = compute_strip_layout(&snap, 500.0, false);
+        for idx in 0..4 {
+            let rect = layout.pill_rect(idx).expect("pill rect exists");
+            assert_eq!(
+                layout.hit_test_pill(rect.x + rect.w * 0.5, rect.y + rect.h * 0.5),
+                Some(idx)
+            );
+        }
+        // Gap between pill 0 and pill 1 should return None.
+        let p0 = layout.pill_rect(0).unwrap();
+        let p1 = layout.pill_rect(1).unwrap();
+        let gap_x = (p0.x + p0.w + p1.x) * 0.5;
+        assert_eq!(layout.hit_test_pill(gap_x, p0.y + 10.0), None);
+        // Outside strip height returns None.
+        assert_eq!(
+            layout.hit_test_pill(p0.x + 5.0, STRIP_HEIGHT_DIP + 4.0),
+            None
+        );
+    }
+
+    #[test]
+    fn flyout_hit_tests_header_buttons() {
+        let snap = demo_snapshot(1_700_000_000_000);
+        let fl = compute_flyout_layout(&snap);
+        assert_eq!(fl.cards.len(), 4);
+
+        let expected = [
+            FlyoutAction::Refresh,
+            FlyoutAction::OpenSettings,
+            FlyoutAction::OpenDataFolder,
+            FlyoutAction::Quit,
+        ];
+        assert_eq!(fl.header_buttons.len(), expected.len());
+        for (btn, want) in fl.header_buttons.iter().zip(expected.iter()) {
+            assert_eq!(
+                fl.hit_test(btn.rect.x + btn.rect.w * 0.5, btn.rect.y + btn.rect.h * 0.5),
+                Some(want.clone())
+            );
+        }
+        // Header buttons must not overlap one another.
+        for pair in fl.header_buttons.windows(2) {
+            assert!(pair[0].rect.x + pair[0].rect.w < pair[1].rect.x);
+        }
+    }
+
+    #[test]
+    fn flyout_hit_tests_opencode_copy_key_and_exhausted_hide_chips() {
+        let now = 1_700_000_000_000i64;
+        let snap = demo_snapshot(now);
+        let fl = compute_flyout_layout(&snap);
+
+        // Claude (0) and Cursor (1) are neither exhausted nor OpenCode -> no card buttons.
+        assert!(fl.cards[0].buttons.is_empty());
+        assert!(fl.cards[1].buttons.is_empty());
+
+        // Codex (2) is exhausted in demo_snapshot -> has HideUntilReset chip.
+        assert_eq!(fl.cards[2].buttons.len(), 1);
+        let hide_btn = &fl.cards[2].buttons[0];
+        assert_eq!(hide_btn.label, "Hide");
+        assert_eq!(
+            fl.hit_test(hide_btn.rect.x + 5.0, hide_btn.rect.y + 5.0),
+            Some(FlyoutAction::HideUntilReset {
+                provider: ProviderKind::Codex,
+                account_id: "demo@openai.com".into(),
+                until_ms: (now + 220 * 60_000) as u64,
+            })
+        );
+
+        // OpenCode (3) has CopyOpenCodeKey chip.
+        assert_eq!(fl.cards[3].buttons.len(), 1);
+        let copy_btn = &fl.cards[3].buttons[0];
+        assert_eq!(copy_btn.label, "Copy key");
+        assert_eq!(
+            fl.hit_test(copy_btn.rect.x + 5.0, copy_btn.rect.y + 5.0),
+            Some(FlyoutAction::CopyOpenCodeKey("demo@opencode.ai".into()))
+        );
+    }
+
+    #[test]
+    fn flyout_stacks_multiple_card_chips_without_overlap() {
+        let now = 1_700_000_000_000i64;
+        let mut snap = demo_snapshot(now);
+        // Make Cursor require sign-in and OpenCode exhausted so both chips appear on OpenCode.
+        snap.items[1].can_open_cursor = true;
+        snap.items[3].exhausted = true;
+        snap.items[3].flyout_bars[1].severity = BarSeverity::Danger;
+
+        let fl = compute_flyout_layout(&snap);
+
+        // Cursor card has OpenCursor button.
+        let cursor_btn = &fl.cards[1].buttons[0];
+        assert_eq!(
+            fl.hit_test(cursor_btn.rect.x + 4.0, cursor_btn.rect.y + 4.0),
+            Some(FlyoutAction::OpenCursor)
+        );
+
+        // Exhausted OpenCode card has both Copy key and Hide chips side by side with no overlap.
+        assert_eq!(fl.cards[3].buttons.len(), 2);
+        let b0 = &fl.cards[3].buttons[0];
+        let b1 = &fl.cards[3].buttons[1];
+        assert!(b0.rect.x + b0.rect.w < b1.rect.x);
+        assert_eq!(
+            fl.hit_test(b0.rect.x + 4.0, b0.rect.y + 4.0),
+            Some(FlyoutAction::CopyOpenCodeKey("demo@opencode.ai".into()))
+        );
+        assert_eq!(
+            fl.hit_test(b1.rect.x + 4.0, b1.rect.y + 4.0),
+            Some(FlyoutAction::HideUntilReset {
+                provider: ProviderKind::OpenCode,
+                account_id: "demo@opencode.ai".into(),
+                until_ms: (now + 3 * 24 * 60 * 60_000) as u64,
+            })
+        );
+    }
+
+    #[test]
+    fn exhausted_until_ms_picks_latest_danger_reset() {
+        let now = 1_700_000_000_000i64;
+        let iso = |mins: i64| {
+            DateTime::<Utc>::from_timestamp_millis(now + mins * 60_000).map(|dt| dt.to_rfc3339())
+        };
+        let item = ProviderItem {
+            provider: ProviderKind::Claude,
+            account_id: "a@b.com".into(),
+            title: "Claude".into(),
+            taskbar_bars: vec![],
+            flyout_bars: vec![
+                BarView::new("fiveHour", "5h", Some(100.0), iso(90), now, false),
+                BarView::new("weekly", "Weekly", Some(100.0), iso(24 * 60), now, false),
+            ],
+            spend_rate_text: None,
+            reset_short: None,
+            subtitle: None,
+            auth_expired: false,
+            stale: false,
+            exhausted: true,
+            can_open_cursor: false,
+            tooltip: String::new(),
+        };
+        assert_eq!(
+            exhausted_until_ms(&item, now),
+            Some((now + 24 * 60 * 60_000) as u64)
+        );
+    }
+}
