@@ -38,10 +38,26 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! cargo clippy --workspace --all-targets --message-format=short -- -D warnings 2>&1 | tee clippy.log; then
+            grep -E '^(crates|src|error)' clippy.log | head -n 50 | while IFS= read -r line; do
+              echo "::error::${line}"
+            done
+            exit 1
+          fi
 
       - name: Unit & integration tests
-        run: cargo test --workspace
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! cargo test --workspace -- --nocapture 2>&1 | tee test.log; then
+            grep -E '(FAILED|panicked at|error(\[E[0-9]+\])?:)' test.log | head -n 50 | while IFS= read -r line; do
+              echo "::error::${line}"
+            done
+            exit 1
+          fi
 
       - name: Build release usagedeck.exe
         run: cargo build --release --bin usagedeck
