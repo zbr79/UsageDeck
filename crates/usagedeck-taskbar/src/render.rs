@@ -7,8 +7,9 @@
 
 use crate::icons::IconAtlas;
 use crate::layout::{
-    DipRect, FlyoutAction, FlyoutLayout, PillSlot, StripLayout, StripMode, FLYOUT_CARD_PAD_DIP,
-    FLYOUT_HEADER_HEIGHT_DIP, FLYOUT_PAD_DIP,
+    DipRect, FlyoutAction, FlyoutLayout, PillSlot, PillStyle, StripLayout, StripMode,
+    FLYOUT_CARD_PAD_DIP, FLYOUT_HEADER_HEIGHT_DIP, FLYOUT_PAD_DIP, WIDE_ICON_COL_DIP,
+    WIDE_ICON_GAP_DIP, WIDE_PAD_X_DIP, WIDE_RATE_ICON_COL_DIP,
 };
 use crate::taskbar::TaskbarTheme;
 use usagedeck_core::view::{BarSeverity, BarView, ProviderItem, ProviderKind, TaskbarSnapshot};
@@ -46,6 +47,8 @@ pub struct Renderer {
     fmt_icon: IDWriteTextFormat,
     fmt_pct: IDWriteTextFormat,
     fmt_rate: IDWriteTextFormat,
+    fmt_rate_center: IDWriteTextFormat,
+    fmt_label_left: IDWriteTextFormat,
     fmt_sub: IDWriteTextFormat,
     fmt_title: IDWriteTextFormat,
     fmt_btn: IDWriteTextFormat,
@@ -87,10 +90,10 @@ fn rgba(r: u8, g: u8, b: u8, a: f32) -> D2D1_COLOR_F {
 fn palette(theme: TaskbarTheme) -> Palette {
     match theme {
         TaskbarTheme::Dark => Palette {
-            pill_bg: rgba(255, 255, 255, 0.065),
-            pill_bg_hover: rgba(255, 255, 255, 0.145),
-            pill_border: rgba(255, 255, 255, 0.11),
-            pill_border_hover: rgba(255, 255, 255, 0.28),
+            pill_bg: rgba(0, 0, 0, 0.0),
+            pill_bg_hover: rgba(255, 255, 255, 0.085),
+            pill_border: rgba(0, 0, 0, 0.0),
+            pill_border_hover: rgba(255, 255, 255, 0.14),
             pill_border_danger: rgba(0xff, 0x64, 0x67, 0.65),
             pill_border_warn: rgba(0xff, 0xb9, 0x00, 0.55),
             flyout_bg: rgba(30, 29, 31, 0.96),
@@ -99,20 +102,20 @@ fn palette(theme: TaskbarTheme) -> Palette {
             card_border: rgba(255, 255, 255, 0.09),
             btn_bg: rgba(255, 255, 255, 0.08),
             btn_bg_hover: rgba(255, 255, 255, 0.16),
-            track: rgba(255, 255, 255, 0.15),
-            sep: rgba(255, 255, 255, 0.14),
-            text: rgba(244, 244, 245, 0.97),
-            muted: rgba(212, 212, 216, 0.68),
+            track: rgba(255, 255, 255, 0.16),
+            sep: rgba(255, 255, 255, 0.13),
+            text: rgba(248, 248, 250, 0.96),
+            muted: rgba(218, 218, 224, 0.72),
             ok: rgba(0x00, 0xd4, 0x92, 1.0),
             warn: rgba(0xff, 0xb9, 0x00, 1.0),
             danger: rgba(0xff, 0x64, 0x67, 1.0),
             bar_muted: rgba(0x71, 0x71, 0x7b, 1.0),
         },
         TaskbarTheme::Light => Palette {
-            pill_bg: rgba(255, 255, 255, 0.68),
-            pill_bg_hover: rgba(255, 255, 255, 0.95),
-            pill_border: rgba(0, 0, 0, 0.10),
-            pill_border_hover: rgba(0, 0, 0, 0.24),
+            pill_bg: rgba(0, 0, 0, 0.0),
+            pill_bg_hover: rgba(255, 255, 255, 0.48),
+            pill_border: rgba(0, 0, 0, 0.0),
+            pill_border_hover: rgba(0, 0, 0, 0.11),
             pill_border_danger: rgba(0xc1, 0x00, 0x07, 0.65),
             pill_border_warn: rgba(0xbb, 0x4d, 0x00, 0.55),
             flyout_bg: rgba(247, 248, 250, 0.97),
@@ -121,15 +124,24 @@ fn palette(theme: TaskbarTheme) -> Palette {
             card_border: rgba(0, 0, 0, 0.08),
             btn_bg: rgba(0, 0, 0, 0.06),
             btn_bg_hover: rgba(0, 0, 0, 0.12),
-            track: rgba(113, 113, 123, 0.25),
-            sep: rgba(0, 0, 0, 0.14),
-            text: rgba(24, 24, 27, 0.96),
-            muted: rgba(63, 63, 70, 0.72),
+            track: rgba(24, 24, 28, 0.16),
+            sep: rgba(0, 0, 0, 0.12),
+            text: rgba(20, 20, 24, 0.95),
+            muted: rgba(58, 58, 66, 0.76),
             ok: rgba(0x00, 0x7a, 0x55, 1.0),
             warn: rgba(0xbb, 0x4d, 0x00, 1.0),
             danger: rgba(0xc1, 0x00, 0x07, 1.0),
             bar_muted: rgba(0x71, 0x71, 0x7b, 1.0),
         },
+    }
+}
+
+fn short_bar_label(label: &str) -> &str {
+    match label {
+        "Weekly" => "W",
+        "Rolling" => "R",
+        "Monthly" => "M",
+        other => other,
     }
 }
 
@@ -182,6 +194,15 @@ fn provider_badge_style(
                 rgba(110, 231, 183, 1.0)
             } else {
                 rgba(4, 120, 87, 1.0)
+            },
+        ),
+        ProviderKind::Antigravity => (
+            "A",
+            rgba(96, 165, 250, if dark { 0.24 } else { 0.20 }),
+            if dark {
+                rgba(147, 197, 253, 1.0)
+            } else {
+                rgba(29, 78, 216, 1.0)
             },
         ),
     }
@@ -276,17 +297,31 @@ impl Renderer {
             )?;
             let fmt_pct = make_text_format(
                 &dwrite,
-                w!("Consolas"),
-                DWRITE_FONT_WEIGHT_MEDIUM,
-                10.0,
+                w!("Segoe UI"),
+                DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                10.5,
                 DWRITE_TEXT_ALIGNMENT_TRAILING,
             )?;
             let fmt_rate = make_text_format(
                 &dwrite,
-                w!("Consolas"),
+                w!("Segoe UI"),
                 DWRITE_FONT_WEIGHT_SEMI_BOLD,
-                10.5,
+                9.5,
                 DWRITE_TEXT_ALIGNMENT_TRAILING,
+            )?;
+            let fmt_rate_center = make_text_format(
+                &dwrite,
+                w!("Segoe UI"),
+                DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                9.5,
+                DWRITE_TEXT_ALIGNMENT_CENTER,
+            )?;
+            let fmt_label_left = make_text_format(
+                &dwrite,
+                w!("Segoe UI"),
+                DWRITE_FONT_WEIGHT_NORMAL,
+                9.5,
+                DWRITE_TEXT_ALIGNMENT_LEADING,
             )?;
             let fmt_sub = make_text_format(
                 &dwrite,
@@ -319,6 +354,8 @@ impl Renderer {
                 fmt_icon,
                 fmt_pct,
                 fmt_rate,
+                fmt_rate_center,
+                fmt_label_left,
                 fmt_sub,
                 fmt_title,
                 fmt_btn,
@@ -684,27 +721,7 @@ impl Renderer {
             match &layout.mode {
                 StripMode::Hidden => {}
                 StripMode::Empty { rect, label } => {
-                    self.fill_rounded(
-                        rt,
-                        *rect,
-                        6.0,
-                        if hovered {
-                            pal.pill_bg_hover
-                        } else {
-                            pal.pill_bg
-                        },
-                    )?;
-                    self.stroke_rounded(
-                        rt,
-                        *rect,
-                        6.0,
-                        1.0,
-                        if hovered {
-                            pal.pill_border_hover
-                        } else {
-                            pal.pill_border
-                        },
-                    )?;
+                    self.draw_slot_plate(rt, *rect, &pal, hovered)?;
                     self.draw_text(rt, label, &self.fmt_btn, *rect, pal.muted)?;
                 }
                 StripMode::CompactSummary {
@@ -712,23 +729,14 @@ impl Renderer {
                     peak_percent,
                     severity,
                 } => {
-                    let border = match severity {
-                        BarSeverity::Danger => pal.pill_border_danger,
-                        BarSeverity::Warn => pal.pill_border_warn,
-                        _ if hovered => pal.pill_border_hover,
-                        _ => pal.pill_border,
-                    };
-                    self.fill_rounded(
-                        rt,
-                        *rect,
-                        6.0,
-                        if hovered {
-                            pal.pill_bg_hover
-                        } else {
-                            pal.pill_bg
-                        },
-                    )?;
-                    self.stroke_rounded(rt, *rect, 6.0, 1.0, border)?;
+                    self.draw_slot_plate(rt, *rect, &pal, hovered)?;
+                    if !hovered && matches!(severity, BarSeverity::Danger | BarSeverity::Warn) {
+                        let accent = match severity {
+                            BarSeverity::Danger => pal.danger,
+                            _ => pal.warn,
+                        };
+                        self.draw_status_accent_bar(rt, *rect, accent)?;
+                    }
                     let dot = DipRect {
                         x: rect.x + 8.0,
                         y: rect.y + (rect.h - 8.0) * 0.5,
@@ -771,29 +779,33 @@ impl Renderer {
                             )?;
                         }
                     }
+                    // Subtle 1px vertical hairline dividers centered between adjacent providers
+                    // when neither adjacent slot is hovered.
+                    for pair in slots.windows(2) {
+                        let left = &pair[0];
+                        let right = &pair[1];
+                        if hovered_pill != Some(left.item_index)
+                            && hovered_pill != Some(right.item_index)
+                        {
+                            let sep_x = (left.rect.x + left.rect.w + right.rect.x) * 0.5 - 0.5;
+                            let sep_h = 18.0;
+                            let sep_y = (layout.height_dip - sep_h) * 0.5;
+                            self.fill_rounded(
+                                rt,
+                                DipRect {
+                                    x: sep_x,
+                                    y: sep_y,
+                                    w: 1.0,
+                                    h: sep_h,
+                                },
+                                0.5,
+                                pal.sep,
+                            )?;
+                        }
+                    }
                     if let Some((rect, count)) = overflow_badge {
                         let badge_hovered = hovered && hovered_pill.is_none();
-                        self.fill_rounded(
-                            rt,
-                            *rect,
-                            6.0,
-                            if badge_hovered {
-                                pal.pill_bg_hover
-                            } else {
-                                pal.pill_bg
-                            },
-                        )?;
-                        self.stroke_rounded(
-                            rt,
-                            *rect,
-                            6.0,
-                            1.0,
-                            if badge_hovered {
-                                pal.pill_border_hover
-                            } else {
-                                pal.pill_border
-                            },
-                        )?;
+                        self.draw_slot_plate(rt, *rect, &pal, badge_hovered)?;
                         let label = format!("+{count}");
                         self.draw_text(rt, &label, &self.fmt_btn, *rect, pal.muted)?;
                     }
@@ -801,6 +813,52 @@ impl Renderer {
             }
             Ok(())
         })
+    }
+
+    fn draw_slot_plate(
+        &self,
+        rt: &ID2D1DCRenderTarget,
+        rect: DipRect,
+        pal: &Palette,
+        hovered: bool,
+    ) -> Result<()> {
+        let bg = if hovered {
+            pal.pill_bg_hover
+        } else {
+            pal.pill_bg
+        };
+        if bg.a > 0.0 {
+            self.fill_rounded(rt, rect, 6.0, bg)?;
+        }
+        let border = if hovered {
+            pal.pill_border_hover
+        } else {
+            pal.pill_border
+        };
+        if border.a > 0.0 {
+            self.stroke_rounded(rt, rect, 6.0, 1.0, border)?;
+        }
+        Ok(())
+    }
+
+    fn draw_status_accent_bar(
+        &self,
+        rt: &ID2D1DCRenderTarget,
+        rect: DipRect,
+        color: D2D1_COLOR_F,
+    ) -> Result<()> {
+        let accent_w = (rect.w * 0.42).clamp(24.0, 64.0);
+        self.fill_rounded(
+            rt,
+            DipRect {
+                x: rect.x + (rect.w - accent_w) * 0.5,
+                y: rect.y + rect.h - 2.0,
+                w: accent_w,
+                h: 2.0,
+            },
+            1.0,
+            color,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -814,24 +872,188 @@ impl Renderer {
         hovered: bool,
         icon_hovered: bool,
     ) -> Result<()> {
-        let r = slot.rect;
-        let bg = if hovered {
-            pal.pill_bg_hover
-        } else {
-            pal.pill_bg
-        };
-        let border = if item.exhausted {
-            pal.pill_border_danger
-        } else if item.auth_expired {
-            pal.pill_border_warn
-        } else if hovered {
-            pal.pill_border_hover
-        } else {
-            pal.pill_border
-        };
+        match slot.style {
+            PillStyle::WideMeters => {
+                self.draw_wide_meter_pill(rt, item, slot, theme, pal, hovered, icon_hovered)
+            }
+            PillStyle::CompactStacked => {
+                self.draw_compact_stacked_pill(rt, item, slot, theme, pal, hovered, icon_hovered)
+            }
+        }
+    }
 
-        self.fill_rounded(rt, r, 6.0, bg)?;
-        self.stroke_rounded(rt, r, 6.0, 1.0, border)?;
+    #[allow(clippy::too_many_arguments)]
+    fn draw_wide_meter_pill(
+        &self,
+        rt: &ID2D1DCRenderTarget,
+        item: &ProviderItem,
+        slot: &PillSlot,
+        theme: TaskbarTheme,
+        pal: &Palette,
+        hovered: bool,
+        icon_hovered: bool,
+    ) -> Result<()> {
+        let r = slot.rect;
+        // Option 1 borderless at rest; subtle Fluent rounded plate on hover only.
+        self.draw_slot_plate(rt, r, pal, hovered)?;
+
+        // Subtle 2 DIP bottom status accent bar when exhausted or auth-expired and not hovered.
+        if !hovered && (item.exhausted || item.auth_expired) {
+            let accent = if item.exhausted { pal.danger } else { pal.warn };
+            self.draw_status_accent_bar(rt, r, accent)?;
+        }
+
+        let icon_col_x = r.x + WIDE_PAD_X_DIP;
+        let show_copy_hover =
+            icon_hovered && item.provider == ProviderKind::OpenCode && !item.account_id.is_empty();
+
+        // Left column: icon (+ optional inline spend rate centered directly underneath).
+        if let Some(ref rate) = item.spend_rate_text {
+            let badge_rect = DipRect {
+                x: icon_col_x + (WIDE_RATE_ICON_COL_DIP - 14.0) * 0.5,
+                y: r.y + 3.0,
+                w: 14.0,
+                h: 14.0,
+            };
+            self.draw_copyable_provider_icon(
+                rt,
+                item.provider,
+                badge_rect,
+                theme,
+                pal,
+                show_copy_hover,
+            )?;
+            self.draw_text(
+                rt,
+                rate,
+                &self.fmt_rate_center,
+                DipRect {
+                    x: icon_col_x - 3.0,
+                    y: r.y + 18.5,
+                    w: WIDE_RATE_ICON_COL_DIP + 6.0,
+                    h: 12.0,
+                },
+                rate_color(item.spend_rate_severity, pal),
+            )?;
+        } else {
+            let badge_rect = DipRect {
+                x: icon_col_x + (WIDE_ICON_COL_DIP - 16.0) * 0.5,
+                y: r.y + (r.h - 16.0) * 0.5,
+                w: 16.0,
+                h: 16.0,
+            };
+            self.draw_copyable_provider_icon(
+                rt,
+                item.provider,
+                badge_rect,
+                theme,
+                pal,
+                show_copy_hover,
+            )?;
+        }
+
+        // Option 3 side-by-side meter columns: `label reset_time` + `%` on top, progress bar below.
+        if slot.meter_rects.is_empty() {
+            let fallback_x = icon_col_x
+                + if item.spend_rate_text.is_some() {
+                    WIDE_RATE_ICON_COL_DIP
+                } else {
+                    WIDE_ICON_COL_DIP
+                }
+                + WIDE_ICON_GAP_DIP;
+            let fallback_w = (r.x + r.w - WIDE_PAD_X_DIP - fallback_x).max(20.0);
+            let msg = item.subtitle.as_deref().unwrap_or("--");
+            self.draw_text(
+                rt,
+                msg,
+                &self.fmt_label_left,
+                DipRect {
+                    x: fallback_x,
+                    y: r.y,
+                    w: fallback_w,
+                    h: r.h,
+                },
+                if item.auth_expired {
+                    pal.warn
+                } else {
+                    pal.muted
+                },
+            )?;
+            return Ok(());
+        }
+
+        for (m, bar) in slot.meter_rects.iter().zip(item.taskbar_bars.iter()) {
+            let short_lbl = short_bar_label(&bar.label);
+            let left_text = match bar.reset_short.as_deref() {
+                Some(rs) if !rs.is_empty() => format!("{short_lbl} {rs}"),
+                _ => short_lbl.to_string(),
+            };
+            let pct_w = 27.0;
+            let left_w = (m.w - pct_w + 2.0).max(20.0);
+            self.draw_text(
+                rt,
+                &left_text,
+                &self.fmt_label_left,
+                DipRect {
+                    x: m.x,
+                    y: m.y + 4.0,
+                    w: left_w,
+                    h: 13.0,
+                },
+                pal.muted,
+            )?;
+
+            let pct_color = if bar.percent.is_some_and(|p| p.round() >= 100.0)
+                || bar.severity == BarSeverity::Danger
+            {
+                pal.danger
+            } else if bar.percent.is_none() {
+                pal.muted
+            } else {
+                pal.text
+            };
+            self.draw_text(
+                rt,
+                &bar.percent_label(),
+                &self.fmt_pct,
+                DipRect {
+                    x: m.x + m.w - pct_w,
+                    y: m.y + 4.0,
+                    w: pct_w,
+                    h: 13.0,
+                },
+                pct_color,
+            )?;
+
+            let track_rect = DipRect {
+                x: m.x,
+                y: m.y + 22.0,
+                w: m.w,
+                h: 4.5,
+            };
+            self.draw_bar_fill(rt, track_rect, 2.25, bar, pal)?;
+        }
+
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_compact_stacked_pill(
+        &self,
+        rt: &ID2D1DCRenderTarget,
+        item: &ProviderItem,
+        slot: &PillSlot,
+        theme: TaskbarTheme,
+        pal: &Palette,
+        hovered: bool,
+        icon_hovered: bool,
+    ) -> Result<()> {
+        let r = slot.rect;
+        self.draw_slot_plate(rt, r, pal, hovered)?;
+        if !hovered && (item.exhausted || item.auth_expired) {
+            let accent = if item.exhausted { pal.danger } else { pal.warn };
+            self.draw_status_accent_bar(rt, r, accent)?;
+        }
 
         // Real provider icon (16x16 DIPs) with optional OpenCode copy-key hover highlight.
         let badge_rect = DipRect {
@@ -853,59 +1075,62 @@ impl Renderer {
 
         // Twin slim stacked bars + right-aligned percentage.
         let bars_x = badge_rect.x + badge_rect.w + 6.0;
-        let bar_w = 34.0;
-        let pct_w = 24.0;
+        let bar_w = 42.0;
+        let pct_w = 26.0;
         let bar_h = 4.0;
 
         let draw_bar_row = |bar: &BarView, row_y: f32| -> Result<()> {
             let track_rect = DipRect {
                 x: bars_x,
-                y: row_y + 3.5,
+                y: row_y + 4.0,
                 w: bar_w,
                 h: bar_h,
             };
             self.draw_bar_fill(rt, track_rect, 2.0, bar, pal)?;
-            let pct_color = match bar.severity {
-                BarSeverity::Danger => pal.danger,
-                BarSeverity::Warn => pal.warn,
-                BarSeverity::Muted => pal.muted,
-                BarSeverity::Ok => pal.text,
+            let pct_color = if bar.percent.is_some_and(|p| p.round() >= 100.0)
+                || bar.severity == BarSeverity::Danger
+            {
+                pal.danger
+            } else if bar.percent.is_none() {
+                pal.muted
+            } else {
+                pal.text
             };
             self.draw_text(
                 rt,
                 &bar.percent_label(),
                 &self.fmt_pct,
                 DipRect {
-                    x: bars_x + bar_w + 2.0,
-                    y: row_y - 1.0,
+                    x: bars_x + bar_w + 3.0,
+                    y: row_y - 0.5,
                     w: pct_w,
-                    h: 12.0,
+                    h: 12.5,
                 },
                 pct_color,
             )
         };
 
         if item.taskbar_bars.len() == 1 {
-            draw_bar_row(&item.taskbar_bars[0], r.y + (r.h - 11.0) * 0.5)?;
+            draw_bar_row(&item.taskbar_bars[0], r.y + (r.h - 12.0) * 0.5)?;
         } else {
             if let Some(b0) = item.taskbar_bars.first() {
                 draw_bar_row(b0, r.y + 4.5)?;
             }
             if let Some(b1) = item.taskbar_bars.get(1) {
-                draw_bar_row(b1, r.y + 16.5)?;
+                draw_bar_row(b1, r.y + 17.5)?;
             }
         }
 
         // Extended column for Claude: hairline divider + live `$/h` rate + compact reset time.
         if slot.extended {
-            let sep_x = bars_x + bar_w + pct_w + 7.0;
+            let sep_x = bars_x + bar_w + 3.0 + pct_w + 5.0;
             self.fill_rounded(
                 rt,
                 DipRect {
                     x: sep_x,
-                    y: r.y + 6.0,
+                    y: r.y + 7.0,
                     w: 1.0,
-                    h: (r.h - 12.0).max(2.0),
+                    h: (r.h - 14.0).max(2.0),
                 },
                 0.5,
                 pal.sep,
@@ -920,7 +1145,7 @@ impl Renderer {
                     &self.fmt_rate,
                     DipRect {
                         x: col_x,
-                        y: r.y + 3.5,
+                        y: r.y + 4.0,
                         w: col_w,
                         h: 12.5,
                     },
@@ -929,7 +1154,7 @@ impl Renderer {
             }
             if let Some(ref reset) = item.reset_short {
                 let top = if item.spend_rate_text.is_some() {
-                    r.y + 16.5
+                    r.y + 17.5
                 } else {
                     r.y + (r.h - 12.0) * 0.5
                 };
@@ -1085,11 +1310,11 @@ impl Renderer {
                             if is_hovered {
                                 pal.pill_border_hover
                             } else {
-                                pal.pill_border
+                                pal.card_border
                             },
                             pal.text,
                         ),
-                        _ => (pal.pill_border, pal.text),
+                        _ => (pal.card_border, pal.text),
                     };
                     self.fill_rounded(rt, btn.rect, 4.0, bg)?;
                     self.stroke_rounded(rt, btn.rect, 4.0, 1.0, chip_border)?;
@@ -1099,6 +1324,7 @@ impl Renderer {
                 // Provider title + inline spend rate or subtitle, bounded cleanly left of chips/reset.
                 let title_x = badge.x + badge.w + 6.0;
                 let title_w = match item.provider {
+                    ProviderKind::Antigravity => 76.0,
                     ProviderKind::OpenCode | ProviderKind::Grok => 62.0,
                     _ => 50.0,
                 };

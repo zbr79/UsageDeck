@@ -222,13 +222,25 @@ fn scoped_limits_of(rest: &Map<String, Value>) -> Vec<ClaudeScopedWindow> {
 
 // ---- local sign-ins -------------------------------------------------------------------------
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct ClaudeToken {
     pub token: String,
     pub subscription_type: Option<String>,
     pub rate_limit_tier: Option<String>,
     pub expires_at: Option<i64>,
     pub expired: bool,
+}
+
+impl std::fmt::Debug for ClaudeToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClaudeToken")
+            .field("token", &"<redacted>")
+            .field("subscription_type", &self.subscription_type)
+            .field("rate_limit_tier", &self.rate_limit_tier)
+            .field("expires_at", &self.expires_at)
+            .field("expired", &self.expired)
+            .finish()
+    }
 }
 
 fn is_expired(expires_at: Option<i64>) -> bool {
@@ -746,18 +758,20 @@ pub fn last_resets_report() -> Option<(i64, String)> {
 
 pub const PROFILE_URL: &str = "https://api.anthropic.com/api/oauth/profile";
 
-/// Profiles by token; a plan or account change comes with a new token or within the hour.
+/// Profiles by hashed token; a plan or account change comes with a new token or within the hour.
 static PROFILES: LazyLock<std::sync::Mutex<HashMap<String, (Instant, ClaudeAccount)>>> =
     LazyLock::new(Default::default);
 const PROFILE_TTL: Duration = Duration::from_secs(60 * 60);
 
-/// GET the account a token belongs to (cached per token for an hour).
+/// GET the account a token belongs to (cached per hashed token for an hour).
 async fn fetch_profile(http: &reqwest::Client, token: &str) -> Option<ClaudeAccount> {
-    let cached = PROFILES.lock().ok().and_then(|m| {
-        m.get(token)
+    let cache_key = super::log_id(token);
+    let cached = {
+        let m = PROFILES.lock().unwrap_or_else(|e| e.into_inner());
+        m.get(&cache_key)
             .filter(|(at, _)| at.elapsed() < PROFILE_TTL)
             .map(|(_, a)| a.clone())
-    });
+    };
     if cached.is_some() {
         return cached;
     }
@@ -786,9 +800,10 @@ async fn fetch_profile(http: &reqwest::Client, token: &str) -> Option<ClaudeAcco
         log::warn!("claude profile reply names no account");
     }
     let account = account?;
-    if let Ok(mut m) = PROFILES.lock() {
+    {
+        let mut m = PROFILES.lock().unwrap_or_else(|e| e.into_inner());
         m.retain(|_, (at, _)| at.elapsed() < PROFILE_TTL);
-        m.insert(token.to_string(), (Instant::now(), account.clone()));
+        m.insert(cache_key, (Instant::now(), account.clone()));
     }
     Some(account)
 }
@@ -945,6 +960,13 @@ mod tests {
             expires_at: None,
             expired: false,
         }
+    }
+
+    #[test]
+    fn claude_token_debug_redacts_secret() {
+        let formatted = format!("{:?}", token("sk-ant-oat01-super-secret-value"));
+        assert!(!formatted.contains("sk-ant-oat01-super-secret-value"));
+        assert!(formatted.contains("<redacted>"));
     }
 
     fn cli_account(uuid: &str) -> ClaudeAccount {

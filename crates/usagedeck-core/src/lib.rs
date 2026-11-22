@@ -44,12 +44,16 @@ pub struct Core {
 
 impl Core {
     pub fn new(store: Store) -> Self {
+        providers::cursor::sweep_stale_temp_dirs();
         let cache = UsageCache::new(store.file(USAGE_CACHE_FILE));
         let seen = SeenAccounts::new(store.file(SEEN_ACCOUNTS_FILE));
         let http = reqwest::Client::builder()
+            .https_only(true)
+            .redirect(reqwest::redirect::Policy::none())
+            .min_tls_version(reqwest::tls::Version::TLS_1_2)
             .timeout(Duration::from_secs(20))
             .build()
-            .unwrap_or_default();
+            .expect("failed to build hardened HTTPS client");
         let spend = Arc::new(claude_logs::SpendEngine::new(
             store.dir().to_path_buf(),
             claude_logs::default_root(),

@@ -1,13 +1,15 @@
 //! Windows 10/11 taskbar geometry, theme, DPI, and placement helpers.
 //!
 //! Locates `Shell_TrayWnd` and `TrayNotifyWnd` without injecting into `explorer.exe`,
-//! detects taskbar light/dark theme from the registry, checks auto-hide visibility,
-//! and computes exact physical-pixel coordinates for the taskbar strip and flyout.
+//! detects taskbar light/dark theme via live pixel luminance sampling (with registry
+//! fallback), checks auto-hide visibility, and computes exact physical-pixel coordinates
+//! for the taskbar strip and flyout.
 
-use windows::core::w;
+use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    GetDC, GetMonitorInfoW, GetPixel, MonitorFromWindow, ReleaseDC, MONITORINFO,
+    MONITOR_DEFAULTTONEAREST,
 };
 use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
@@ -15,6 +17,9 @@ use windows::Win32::UI::Shell::{SHAppBarMessage, ABM_GETSTATE, ABS_AUTOHIDE, APP
 use windows::Win32::UI::WindowsAndMessaging::{
     FindWindowExW, FindWindowW, GetWindowRect, IsWindowVisible,
 };
+
+const CLR_INVALID_RAW: u32 = 0xFFFF_FFFF;
+const LUMINANCE_LIGHT_THRESHOLD: f32 = 135.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TaskbarTheme {
@@ -67,8 +72,7 @@ impl TaskbarMetrics {
     }
 }
 
-/// Read Windows' taskbar theme (`SystemUsesLightTheme == 1` -> Light, else Dark).
-pub fn read_taskbar_theme() -> TaskbarTheme {
+fn read_personalize_dword(value_name: PCWSTR) -> Option<u32> {
     let mut val: u32 = 0;
     let mut size: u32 = std::mem::size_of::<u32>() as u32;
     // SAFETY: plain registry read into stack-owned `u32`.
@@ -76,18 +80,91 @@ pub fn read_taskbar_theme() -> TaskbarTheme {
         RegGetValueW(
             HKEY_CURRENT_USER,
             w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"),
-            w!("SystemUsesLightTheme"),
+            value_name,
             RRF_RT_REG_DWORD,
             None,
             Some(&mut val as *mut u32 as *mut std::ffi::c_void),
             Some(&mut size),
         )
     };
-    if status.0 == 0 && val == 1 {
+    if status.0 == 0 {
+        Some(val)
+    } else {
+        None
+    }
+}
+
+/// Read Windows' taskbar theme from registry (`ColorPrevalence == 1` -> Dark;
+/// otherwise `SystemUsesLightTheme == 1` -> Light, else Dark).
+pub fn read_taskbar_theme() -> TaskbarTheme {
+    if read_personalize_dword(w!("ColorPrevalence")) == Some(1) {
+        return TaskbarTheme::Dark;
+    }
+    if read_personalize_dword(w!("SystemUsesLightTheme")) == Some(1) {
         TaskbarTheme::Light
     } else {
         TaskbarTheme::Dark
     }
+}
+
+/// Classify raw GDI `COLORREF` (`0x00BBGGRR`) samples into Dark/Light by average perceived
+/// luminance (`0.299*R + 0.587*G + 0.114*B`). Returns `None` if all samples are `CLR_INVALID`.
+fn classify_pixel_samples(samples: &[u32]) -> Option<TaskbarTheme> {
+    let mut lum_sum = 0.0f32;
+    let mut valid = 0u32;
+    for &c in samples {
+        if c == CLR_INVALID_RAW {
+            continue;
+        }
+        let r = (c & 0xFF) as f32;
+        let g = ((c >> 8) & 0xFF) as f32;
+        let b = ((c >> 16) & 0xFF) as f32;
+        lum_sum += 0.299 * r + 0.587 * g + 0.114 * b;
+        valid += 1;
+    }
+    if valid == 0 {
+        return None;
+    }
+    let avg_lum = lum_sum / valid as f32;
+    if avg_lum < LUMINANCE_LIGHT_THRESHOLD {
+        Some(TaskbarTheme::Dark)
+    } else {
+        Some(TaskbarTheme::Light)
+    }
+}
+
+/// Sample actual screen pixels along the unobstructed top strip of `Shell_TrayWnd`
+/// (`y = tray_rect.top + 3`, above our vertically centered 38-DIP strip) so dark accent-colored
+/// Windows 11 taskbars are accurately detected as Dark even when `SystemUsesLightTheme == 1`.
+pub fn sample_taskbar_theme(tray_rect: RECT, notify_rect: RECT) -> TaskbarTheme {
+    if tray_rect.right <= tray_rect.left || tray_rect.bottom <= tray_rect.top {
+        return read_taskbar_theme();
+    }
+    let min_x = tray_rect.left;
+    let max_x = tray_rect.right - 1;
+    let y = (tray_rect.top + 3).min(tray_rect.bottom - 1);
+    let xs = [
+        (notify_rect.left - 2).clamp(min_x, max_x),
+        (notify_rect.left - 6).clamp(min_x, max_x),
+        (tray_rect.left + 8).clamp(min_x, max_x),
+    ];
+
+    // SAFETY: read-only screen DC pixel sampling balanced with `ReleaseDC`.
+    let samples = unsafe {
+        let screen_dc = GetDC(None);
+        if screen_dc.is_invalid() {
+            return read_taskbar_theme();
+        }
+        let pixels = [
+            GetPixel(screen_dc, xs[0], y).0,
+            GetPixel(screen_dc, xs[1], y).0,
+            GetPixel(screen_dc, xs[2], y).0,
+        ];
+        let _ = ReleaseDC(None, screen_dc);
+        pixels
+    };
+
+    classify_pixel_samples(&samples).unwrap_or_else(read_taskbar_theme)
 }
 
 /// Check if Windows 11 taskbar alignment is set to Center (`TaskbarAl == 1`, default on Win11).
@@ -177,23 +254,29 @@ pub fn query_taskbar() -> Option<TaskbarMetrics> {
 
         // Measure free width to the left of `TrayNotifyWnd`.
         // On Windows 11, the XAML island spans the taskbar, so we reserve a safe zone for the
-        // centered (or left-aligned) app icons while leaving enough room on 150%-200% DPI screens.
+        // centered (or left-aligned) app icons while leaving enough room for wide side-by-side meters.
         let tray_w = (tray_rect.right - tray_rect.left).max(0);
         let right_edge = notify_rect.left - (8.0 * scale).round() as i32;
         let left_bound = if is_taskbar_centered() {
-            tray_rect.left + ((tray_w as f32) * 0.56) as i32
+            tray_rect.left + ((tray_w as f32) * 0.42) as i32
         } else {
-            tray_rect.left + ((tray_w as f32) * 0.38) as i32
+            tray_rect.left + ((tray_w as f32) * 0.30) as i32
         };
 
         let raw_available_px = (right_edge - left_bound).max(0);
-        let mut available_width_dip = (raw_available_px as f32 / scale).min(560.0);
+        let mut available_width_dip = (raw_available_px as f32 / scale).min(860.0);
         // Never collapse to Hidden if there is clearly space left of `TrayNotifyWnd` for at
         // least the compact summary pill (e.g. narrow laptops at 175%-200% DPI).
         let total_left_of_notify_dip = (right_edge - tray_rect.left).max(0) as f32 / scale;
         if available_width_dip < 72.0 && total_left_of_notify_dip >= 140.0 {
             available_width_dip = 72.0;
         }
+
+        let theme = if hidden {
+            read_taskbar_theme()
+        } else {
+            sample_taskbar_theme(tray_rect, notify_rect)
+        };
 
         Some(TaskbarMetrics {
             tray_hwnd,
@@ -202,9 +285,50 @@ pub fn query_taskbar() -> Option<TaskbarMetrics> {
             monitor_rect,
             dpi,
             scale,
-            theme: read_taskbar_theme(),
+            theme,
             hidden,
             available_width_dip,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn colorref(r: u8, g: u8, b: u8) -> u32 {
+        u32::from(r) | (u32::from(g) << 8) | (u32::from(b) << 16)
+    }
+
+    #[test]
+    fn classifies_dark_burgundy_mica_as_dark() {
+        let samples = [
+            colorref(62, 18, 28),
+            colorref(58, 16, 26),
+            colorref(64, 20, 30),
+        ];
+        assert_eq!(classify_pixel_samples(&samples), Some(TaskbarTheme::Dark));
+    }
+
+    #[test]
+    fn classifies_light_taskbar_as_light() {
+        let samples = [
+            colorref(238, 242, 247),
+            colorref(236, 240, 245),
+            colorref(240, 244, 249),
+        ];
+        assert_eq!(classify_pixel_samples(&samples), Some(TaskbarTheme::Light));
+    }
+
+    #[test]
+    fn ignores_invalid_samples_and_returns_none_when_all_invalid() {
+        assert_eq!(
+            classify_pixel_samples(&[CLR_INVALID_RAW, CLR_INVALID_RAW, CLR_INVALID_RAW]),
+            None
+        );
+        assert_eq!(
+            classify_pixel_samples(&[CLR_INVALID_RAW, colorref(25, 25, 28), CLR_INVALID_RAW]),
+            Some(TaskbarTheme::Dark)
+        );
     }
 }

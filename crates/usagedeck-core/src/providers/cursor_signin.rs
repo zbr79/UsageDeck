@@ -29,9 +29,24 @@ fn is_cursor_exe(path: &str) -> bool {
     name.eq_ignore_ascii_case("cursor.exe")
 }
 
-/// Cursor.exe of an uninstall entry that is Cursor's (named "Cursor" or "Cursor (User)", from
-/// Anysphere when a publisher is given). `InstallLocation` wins; `DisplayIcon` (`"C:\…\Cursor.exe",0`)
-/// is the fallback. Whether the file exists is the caller's check.
+/// Reject UNC paths (`\\server\share`, `//server/share`, `\\?\UNC\...`) and parent traversals.
+pub fn is_safe_local_path_str(path: &str) -> bool {
+    let trimmed = path.trim();
+    if trimmed.is_empty() || trimmed.starts_with(r"\\") || trimmed.starts_with("//") {
+        return false;
+    }
+    !trimmed.split(['\\', '/']).any(|seg| seg == "..")
+}
+
+/// Reject UNC paths and parent traversals on a `Path`.
+pub fn is_safe_local_path(path: &Path) -> bool {
+    is_safe_local_path_str(&path.to_string_lossy())
+}
+
+/// Cursor.exe of an uninstall entry that is Cursor's (named "Cursor" or "Cursor (User)", with
+/// `Publisher` matching "Anysphere" and a non-UNC local path). `InstallLocation` wins;
+/// `DisplayIcon` (`"C:\…\Cursor.exe",0`) is the fallback. Whether the file exists is the caller's
+/// check.
 pub fn exe_from_uninstall(entry: &UninstallEntry) -> Option<PathBuf> {
     let name = entry.display_name.as_deref()?.trim();
     let named = name.eq_ignore_ascii_case("cursor")
@@ -41,7 +56,7 @@ pub fn exe_from_uninstall(entry: &UninstallEntry) -> Option<PathBuf> {
     let from_anysphere = entry
         .publisher
         .as_deref()
-        .is_none_or(|p| p.to_ascii_lowercase().contains("anysphere"));
+        .is_some_and(|p| p.to_ascii_lowercase().contains("anysphere"));
     if !named || !from_anysphere {
         return None;
     }
@@ -49,7 +64,7 @@ pub fn exe_from_uninstall(entry: &UninstallEntry) -> Option<PathBuf> {
         .install_location
         .as_deref()
         .map(|l| l.trim().trim_matches('"'))
-        .filter(|l| !l.is_empty())
+        .filter(|l| is_safe_local_path_str(l))
         .map(|l| PathBuf::from(l).join("Cursor.exe"));
     let icon = entry.display_icon.as_deref().map(|icon| {
         let icon = icon.trim();
@@ -59,11 +74,13 @@ pub fn exe_from_uninstall(entry: &UninstallEntry) -> Option<PathBuf> {
         };
         path.trim().trim_matches('"')
     });
-    installed.or(icon.filter(|p| is_cursor_exe(p)).map(PathBuf::from))
+    installed.or(icon
+        .filter(|p| is_safe_local_path_str(p) && is_cursor_exe(p))
+        .map(PathBuf::from))
 }
 
 /// Where to look for Cursor.exe, in order: the per-user install (Cursor's default), the
-/// per-machine install, then whatever the uninstall entries name.
+/// per-machine install, then whatever verified uninstall entries name.
 pub fn exe_candidates(
     local_app_data: Option<&Path>,
     program_files: Option<&Path>,
@@ -77,6 +94,7 @@ pub fn exe_candidates(
     .into_iter()
     .flatten()
     .map(|dir| dir.join("Cursor.exe"))
+    .filter(|p| is_safe_local_path(p))
     .chain(entries.iter().filter_map(exe_from_uninstall))
     .collect()
 }
@@ -123,7 +141,7 @@ mod tests {
         );
         let icon_only = entry(
             "Cursor",
-            None,
+            Some("Anysphere"),
             Some("  "),
             Some(r#""D:\Apps\Cursor\Cursor.exe",0"#),
         );
@@ -144,19 +162,54 @@ mod tests {
     }
 
     #[test]
-    fn other_programs_and_icons_are_ignored() {
-        let lookalike = entry("Cursor Pro Tools", None, Some(r"C:\x"), None);
+    fn other_programs_missing_publisher_and_unc_paths_are_ignored() {
+        let lookalike = entry("Cursor Pro Tools", Some("Anysphere"), Some(r"C:\x"), None);
         assert_eq!(exe_from_uninstall(&lookalike), None);
         let other_publisher = entry("Cursor", Some("Someone Else"), Some(r"C:\x"), None);
         assert_eq!(exe_from_uninstall(&other_publisher), None);
-        let icon_is_an_ico = entry("Cursor", None, None, Some(r"C:\x\cursor.ico,0"));
+        let missing_publisher = entry("Cursor", None, Some(r"C:\x"), None);
+        assert_eq!(exe_from_uninstall(&missing_publisher), None);
+        let unc_location = entry(
+            "Cursor",
+            Some("Anysphere"),
+            Some(r"\\evil\share\cursor"),
+            None,
+        );
+        assert_eq!(exe_from_uninstall(&unc_location), None);
+        let unc_icon = entry(
+            "Cursor",
+            Some("Anysphere"),
+            None,
+            Some(r"\\evil\share\Cursor.exe,0"),
+        );
+        assert_eq!(exe_from_uninstall(&unc_icon), None);
+        let forward_unc = entry(
+            "Cursor",
+            Some("Anysphere"),
+            Some("//evil/share/cursor"),
+            None,
+        );
+        assert_eq!(exe_from_uninstall(&forward_unc), None);
+        let traversal = entry(
+            "Cursor",
+            Some("Anysphere"),
+            Some(r"C:\Users\me\..\..\evil"),
+            None,
+        );
+        assert_eq!(exe_from_uninstall(&traversal), None);
+        let icon_is_an_ico = entry(
+            "Cursor",
+            Some("Anysphere"),
+            None,
+            Some(r"C:\x\cursor.ico,0"),
+        );
         assert_eq!(exe_from_uninstall(&icon_is_an_ico), None);
         assert_eq!(exe_from_uninstall(&UninstallEntry::default()), None);
     }
 
     #[test]
     fn default_installs_come_before_registry_entries() {
-        let reg = entry("Cursor", None, Some(r"E:\Cursor"), None);
+        let reg = entry("Cursor", Some("Anysphere"), Some(r"E:\Cursor"), None);
         let found = exe_candidates(
             Some(Path::new(r"C:\Users\me\AppData\Local")),
             Some(Path::new(r"C:\Program Files")),
@@ -175,6 +228,8 @@ mod tests {
                 Path::new(r"E:\Cursor").join("Cursor.exe"),
             ]
         );
+        // UNC env roots are rejected as well.
+        assert!(exe_candidates(Some(Path::new(r"\\evil\share")), None, &[]).is_empty());
         assert!(exe_candidates(None, None, &[]).is_empty());
     }
 }

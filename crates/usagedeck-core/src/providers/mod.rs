@@ -8,6 +8,7 @@
 //! written to the cache. A failed or invalid reply never overwrites the last good value; the
 //! caller gets that cached value back, marked `stale`.
 
+pub mod antigravity;
 pub mod claude;
 pub mod claude_resets;
 pub mod codex;
@@ -179,7 +180,7 @@ pub async fn fetch_json<T: DeserializeOwned>(
     req: reqwest::RequestBuilder,
 ) -> Result<T, ProviderError> {
     let resp = req.send().await.map_err(|e| {
-        log::warn!("provider request failed: {e}");
+        log::warn!("provider request failed: {}", e.without_url());
         ProviderError::Network
     })?;
     note_retry_after(&resp);
@@ -430,7 +431,7 @@ where
     }
 
     fn fresh(&self, key: &str, activity: Activity) -> Option<ProviderResult<T>> {
-        let memo = self.memo.lock().unwrap();
+        let memo = self.memo.lock().unwrap_or_else(|e| e.into_inner());
         let hit = memo.get(key)?;
         let base = if hit.ok { self.ttl } else { self.failure_ttl };
         let ttl = effective_ttl(base, activity.idle, activity.locked);
@@ -477,7 +478,7 @@ where
             return hit;
         }
         let gate = {
-            let mut gates = self.gates.lock().unwrap();
+            let mut gates = self.gates.lock().unwrap_or_else(|e| e.into_inner());
             gates.entry(key.to_string()).or_default().clone()
         };
         let _in_flight = gate.lock().await;
@@ -491,7 +492,7 @@ where
         let backing_off = self
             .backoff
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .get(key)
             .is_some_and(|b| Instant::now() < b.until);
         let (ok, result) = if backing_off {
@@ -508,7 +509,10 @@ where
                 .await;
             match outcome {
                 Ok(data) => {
-                    self.backoff.lock().unwrap().remove(key);
+                    self.backoff
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(key);
                     cache.write(self.section, key, &data).await;
                     let result = ProviderResult {
                         usage: Some(data),
@@ -521,7 +525,7 @@ where
                 }
                 Err(FetchError { error, fallback }) => {
                     if error == ProviderError::RateLimited {
-                        let mut backoff = self.backoff.lock().unwrap();
+                        let mut backoff = self.backoff.lock().unwrap_or_else(|e| e.into_inner());
                         let failures = backoff.get(key).map_or(0, |b| b.failures) + 1;
                         let delay = backoff_delay(hint, failures);
                         backoff.insert(
@@ -547,7 +551,7 @@ where
                 }
             }
         };
-        self.memo.lock().unwrap().insert(
+        self.memo.lock().unwrap_or_else(|e| e.into_inner()).insert(
             key.to_string(),
             Memo {
                 at: Instant::now(),
@@ -562,13 +566,18 @@ where
     /// End a key's 429 backoff early (tests).
     #[cfg(test)]
     fn expire_backoff(&self, key: &str) {
-        if let Some(b) = self.backoff.lock().unwrap().get_mut(key) {
+        if let Some(b) = self
+            .backoff
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_mut(key)
+        {
             b.until = Instant::now();
         }
     }
 
     pub fn invalidate(&self, key: Option<&str>) {
-        let mut memo = self.memo.lock().unwrap();
+        let mut memo = self.memo.lock().unwrap_or_else(|e| e.into_inner());
         match key {
             Some(k) => {
                 memo.remove(k);

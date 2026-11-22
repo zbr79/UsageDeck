@@ -834,6 +834,7 @@ impl SettingsState {
                 ProviderKind::Cursor => &mut snap.cursor,
                 ProviderKind::Grok => &mut snap.grok,
                 ProviderKind::OpenCode => &mut snap.opencode,
+                ProviderKind::Antigravity => &mut snap.antigravity,
             };
             for row in list.iter_mut() {
                 if row.id.eq_ignore_ascii_case(account_id) {
@@ -856,6 +857,7 @@ impl SettingsState {
                 ProviderKind::Cursor => &mut snap.cursor,
                 ProviderKind::Grok => &mut snap.grok,
                 ProviderKind::OpenCode => &mut snap.opencode,
+                ProviderKind::Antigravity => &mut snap.antigravity,
             };
             for row in list.iter_mut() {
                 if row.id.eq_ignore_ascii_case(account_id) {
@@ -1089,6 +1091,7 @@ fn execute_action(hwnd: HWND, action: Action) {
                         WidgetProvider::Codex => s.codex_enabled = next_val,
                         WidgetProvider::Grok => s.grok_enabled = next_val,
                         WidgetProvider::Opencode => s.opencode_enabled = next_val,
+                        WidgetProvider::Antigravity => s.antigravity_enabled = next_val,
                     }
                     s
                 })

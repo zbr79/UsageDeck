@@ -134,6 +134,41 @@ jobs:
           Start-Sleep -Milliseconds 500
           Write-Host "Silent install verified: $installed at $exe"
 
+      - name: Verify embedded PE icons in UsageDeck-Setup.exe and usagedeck.exe
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Drawing
+          Add-Type -Namespace Native -Name Shell32 -MemberDefinition @'
+          [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+          public static extern uint ExtractIconEx(
+            string lpszFile,
+            int nIconIndex,
+            IntPtr[] phiconLarge,
+            IntPtr[] phiconSmall,
+            uint nIcons);
+          '@
+
+          $setupExe = (Resolve-Path '.\UsageDeck-Setup.exe').Path
+          $exe = Join-Path $env:LOCALAPPDATA 'UsageDeck\usagedeck.exe'
+          if (-not (Test-Path $exe)) { throw "$exe missing before PE icon check" }
+
+          foreach ($target in @($setupExe, $exe)) {
+            $icon = [System.Drawing.Icon]::ExtractAssociatedIcon($target)
+            if (-not $icon -or $icon.Width -lt 16) {
+              throw "ExtractAssociatedIcon failed or returned invalid width for $target"
+            }
+            $width = $icon.Width
+            $height = $icon.Height
+            $icon.Dispose()
+
+            $count = [Native.Shell32]::ExtractIconEx($target, -1, $null, $null, 0)
+            if ($count -lt 1) {
+              throw "ExtractIconEx($target, -1, ...) returned $count; expected >= 1 embedded RT_GROUP_ICON resource"
+            }
+
+            Write-Host "Embedded PE icon verified for ${target}: ${width}x${height}, ExtractIconEx count=$count"
+          }
+
       - name: Silent upgrade (/P /UPDATE) succeeds for v1.x updater compatibility
         shell: pwsh
         env:

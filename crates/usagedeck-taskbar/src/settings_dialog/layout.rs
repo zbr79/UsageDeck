@@ -320,6 +320,7 @@ pub fn provider_enabled(settings: &Settings, wp: WidgetProvider) -> bool {
         WidgetProvider::Codex => settings.codex_enabled,
         WidgetProvider::Grok => settings.grok_enabled,
         WidgetProvider::Opencode => settings.opencode_enabled,
+        WidgetProvider::Antigravity => settings.antigravity_enabled,
     }
 }
 
@@ -338,7 +339,7 @@ pub fn provider_bars(
             ("api", "API".to_string()),
         ],
         WidgetProvider::Grok => vec![("weekly", "Weekly".to_string())],
-        WidgetProvider::Codex => vec![
+        WidgetProvider::Codex | WidgetProvider::Antigravity => vec![
             ("fiveHour", "5-hour (5h)".to_string()),
             ("weekly", "Weekly".to_string()),
         ],
@@ -377,6 +378,7 @@ fn snoozed_entries(settings: &Settings, now_ms: u64) -> Vec<SnoozedEntry> {
             "grok" => WidgetProvider::Grok,
             "codex" => WidgetProvider::Codex,
             "claude" => WidgetProvider::Claude,
+            "antigravity" => WidgetProvider::Antigravity,
             _ => continue,
         };
         let name = settings
@@ -1228,6 +1230,7 @@ fn rows_for_provider(snapshot: &SettingsSnapshot, kind: ProviderKind) -> &[Setti
         ProviderKind::Cursor => &snapshot.cursor,
         ProviderKind::Grok => &snapshot.grok,
         ProviderKind::OpenCode => &snapshot.opencode,
+        ProviderKind::Antigravity => &snapshot.antigravity,
     }
 }
 
@@ -1449,6 +1452,10 @@ fn table_bar_columns(
             ("api".into(), "API".into()),
         ],
         ProviderKind::Grok => vec![("weekly".into(), "Weekly".into())],
+        ProviderKind::Antigravity => vec![
+            ("fiveHour".into(), "5-hour".into()),
+            ("weekly".into(), "Weekly".into()),
+        ],
         ProviderKind::Codex => {
             let has_weekly = rows
                 .iter()
@@ -1495,7 +1502,7 @@ fn extra_column_header(kind: ProviderKind) -> Option<&'static str> {
     match kind {
         ProviderKind::Claude | ProviderKind::Codex => Some("Resets"),
         ProviderKind::Cursor => Some("API spend"),
-        ProviderKind::Grok | ProviderKind::OpenCode => None,
+        ProviderKind::Grok | ProviderKind::OpenCode | ProviderKind::Antigravity => None,
     }
 }
 

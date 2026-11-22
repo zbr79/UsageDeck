@@ -27,6 +27,7 @@ const CURSOR_ICON_BYTES: &[u8] = include_bytes!("../assets/cursor.ico");
 const GROK_ICON_BYTES: &[u8] = include_bytes!("../assets/grokbot.ico");
 const OPENAI_ICON_BYTES: &[u8] = include_bytes!("../assets/openai.png");
 const OPENCODE_ICON_BYTES: &[u8] = include_bytes!("../assets/opencode.ico");
+const ANTIGRAVITY_ICON_BYTES: &[u8] = include_bytes!("../assets/antigravity.png");
 const APP_ICON_BYTES: &[u8] = include_bytes!("../assets/icon.ico");
 
 const ICON_PX: u32 = 64;
@@ -48,6 +49,7 @@ pub struct IconAtlas {
     codex_light: Option<DecodedIcon>,
     grok: Option<DecodedIcon>,
     opencode: Option<DecodedIcon>,
+    antigravity: Option<DecodedIcon>,
     app: Option<DecodedIcon>,
 }
 
@@ -76,6 +78,7 @@ impl IconAtlas {
                 codex_light: None,
                 grok: None,
                 opencode: None,
+                antigravity: None,
                 app: None,
             };
         };
@@ -96,6 +99,7 @@ impl IconAtlas {
         let codex_light = codex_dark.as_ref().map(invert_premultiplied_icon);
         let grok = load("grokbot.ico", GROK_ICON_BYTES);
         let opencode = load("opencode.ico", OPENCODE_ICON_BYTES);
+        let antigravity = load("antigravity.png", ANTIGRAVITY_ICON_BYTES);
         let app = load("icon.ico", APP_ICON_BYTES);
 
         Self {
@@ -105,6 +109,7 @@ impl IconAtlas {
             codex_light,
             grok,
             opencode,
+            antigravity,
             app,
         }
     }
@@ -130,6 +135,7 @@ impl IconAtlas {
             }
             ProviderKind::Grok => self.grok.as_ref(),
             ProviderKind::OpenCode => self.opencode.as_ref(),
+            ProviderKind::Antigravity => self.antigravity.as_ref(),
         };
         match icon {
             Some(decoded) => draw_decoded(rt, decoded, rect),

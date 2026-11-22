@@ -7,6 +7,7 @@
 
 use crate::claude_logs::{self, ModelShare, ModelUsd};
 use crate::history;
+use crate::providers::antigravity::AntigravityUsage;
 use crate::providers::claude::{ClaudeScopedWindow, ClaudeUsage};
 use crate::providers::claude_resets::{ClaudeResetGroup, ClaudeResetKind, ClaudeResets};
 use crate::providers::codex::CodexUsage;
@@ -30,6 +31,7 @@ pub enum ProviderKind {
     Codex,
     Grok,
     OpenCode,
+    Antigravity,
 }
 
 impl ProviderKind {
@@ -38,8 +40,9 @@ impl ProviderKind {
             Self::Claude => "Claude",
             Self::Cursor => "Cursor",
             Self::Codex => "Codex",
-            Self::Grok => "Grok Bot",
+            Self::Grok => "Grok",
             Self::OpenCode => "OpenCode",
+            Self::Antigravity => "Antigravity",
         }
     }
 
@@ -50,6 +53,7 @@ impl ProviderKind {
             Self::Codex => "codex",
             Self::Grok => "grok",
             Self::OpenCode => "opencode",
+            Self::Antigravity => "antigravity",
         }
     }
 
@@ -60,6 +64,7 @@ impl ProviderKind {
             WidgetProvider::Codex => Self::Codex,
             WidgetProvider::Grok => Self::Grok,
             WidgetProvider::Opencode => Self::OpenCode,
+            WidgetProvider::Antigravity => Self::Antigravity,
         }
     }
 
@@ -70,6 +75,7 @@ impl ProviderKind {
             Self::Codex => WidgetProvider::Codex,
             Self::Grok => WidgetProvider::Grok,
             Self::OpenCode => WidgetProvider::Opencode,
+            Self::Antigravity => WidgetProvider::Antigravity,
         }
     }
 }
@@ -237,6 +243,7 @@ pub struct SettingsSnapshot {
     pub cursor: Vec<SettingsAccountRow>,
     pub grok: Vec<SettingsAccountRow>,
     pub opencode: Vec<SettingsAccountRow>,
+    pub antigravity: Vec<SettingsAccountRow>,
     pub pace: SettingsPaceData,
     /// `(label, value, is_bad)` rows for Settings -> Cursor -> Diagnostics.
     pub cursor_diag_rows: Vec<(String, String, bool)>,
@@ -591,6 +598,7 @@ fn is_provider_enabled(settings: &Settings, wp: WidgetProvider) -> bool {
         WidgetProvider::Codex => settings.codex_enabled,
         WidgetProvider::Grok => settings.grok_enabled,
         WidgetProvider::Opencode => settings.opencode_enabled,
+        WidgetProvider::Antigravity => settings.antigravity_enabled,
     }
 }
 
@@ -627,7 +635,7 @@ pub async fn poll_snapshot(core: &Core) -> TaskbarSnapshot {
     let settings = core.store.get_settings();
     let now_ms = claude_logs::now_ms();
 
-    let (claude_rows, cursor_resp, codex_rows, grok_rows, opencode_rows) = tokio::join!(
+    let (claude_rows, cursor_resp, codex_rows, grok_rows, opencode_rows, antigravity_rows) = tokio::join!(
         async {
             if settings.claude_enabled {
                 crate::providers::claude::accounts(core).await
@@ -659,6 +667,13 @@ pub async fn poll_snapshot(core: &Core) -> TaskbarSnapshot {
         async {
             if settings.opencode_enabled {
                 crate::providers::opencode::accounts(core).await
+            } else {
+                Vec::new()
+            }
+        },
+        async {
+            if settings.antigravity_enabled {
+                crate::providers::antigravity::accounts(core).await
             } else {
                 Vec::new()
             }
@@ -721,6 +736,13 @@ pub async fn poll_snapshot(core: &Core) -> TaskbarSnapshot {
             }
             WidgetProvider::Opencode => {
                 items.extend(build_opencode_items(&opencode_rows, &settings, now_ms));
+            }
+            WidgetProvider::Antigravity => {
+                items.extend(build_antigravity_items(
+                    &antigravity_rows,
+                    &settings,
+                    now_ms,
+                ));
             }
         }
     }
@@ -1200,6 +1222,103 @@ fn build_grok_items(rows: &[Value], settings: &Settings, now_ms: i64) -> Vec<Pro
     }
 
     finalize_tracked_items(ProviderKind::Grok, settings, pending)
+}
+
+fn build_antigravity_items(rows: &[Value], settings: &Settings, now_ms: i64) -> Vec<ProviderItem> {
+    let hidden = hidden_bars_for(settings, ProviderKind::Antigravity);
+    let mut pending = Vec::new();
+
+    for row in rows {
+        if !row.get("active").and_then(Value::as_bool).unwrap_or(false) {
+            continue;
+        }
+        let id = row
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("antigravity");
+        if is_disabled(settings, ProviderKind::Antigravity, id) {
+            continue;
+        }
+        let auth_expired = is_auth_expired(row);
+        let stale = row.get("stale").and_then(Value::as_bool).unwrap_or(false);
+        let usage: Option<AntigravityUsage> = row
+            .get("usage")
+            .and_then(|v| serde_json::from_value(v.clone()).ok());
+        let Some(u) = usage else { continue };
+
+        let mut raw_bars = Vec::new();
+        if u.five_hour_percent.is_some() || u.five_hour_resets_at.is_some() {
+            raw_bars.push(BarView::new(
+                "fiveHour",
+                "5h",
+                u.five_hour_percent,
+                u.five_hour_resets_at.clone(),
+                now_ms,
+                auth_expired,
+            ));
+        }
+        if u.weekly_percent.is_some() || u.weekly_resets_at.is_some() {
+            raw_bars.push(BarView::new(
+                "weekly",
+                "Weekly",
+                u.weekly_percent,
+                u.weekly_resets_at.clone(),
+                now_ms,
+                auth_expired,
+            ));
+        }
+        if raw_bars.is_empty() {
+            continue;
+        }
+
+        let flyout_bars = {
+            let f = filter_hidden_bars(raw_bars.clone(), &hidden);
+            if f.is_empty() {
+                raw_bars
+            } else {
+                f
+            }
+        };
+        let taskbar_bars = pick_taskbar_bars(&flyout_bars);
+        let exhausted = flyout_bars
+            .iter()
+            .any(|b| b.severity == BarSeverity::Danger);
+        if is_snoozed(settings, ProviderKind::Antigravity, id, exhausted, now_ms) {
+            continue;
+        }
+
+        let reset_short = flyout_bars
+            .first()
+            .and_then(|b| b.reset_short.clone())
+            .or_else(|| flyout_bars.get(1).and_then(|b| b.reset_short.clone()));
+        let subtitle = if auth_expired {
+            Some("re-auth".to_string())
+        } else {
+            None
+        };
+        let display_email = row
+            .get("label")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or(u.email);
+
+        pending.push(PendingItem {
+            account_id: id.to_string(),
+            display_email,
+            flyout_bars,
+            taskbar_bars,
+            spend_rate_text: None,
+            spend_rate_severity: BarSeverity::Muted,
+            reset_short,
+            subtitle,
+            auth_expired,
+            stale,
+            exhausted,
+            can_open_cursor: false,
+        });
+    }
+
+    finalize_tracked_items(ProviderKind::Antigravity, settings, pending)
 }
 
 struct OpenCodeCandidate {
@@ -1953,6 +2072,108 @@ fn build_settings_grok_rows(
         .collect()
 }
 
+fn build_settings_antigravity_rows(
+    rows: &[Value],
+    settings: &Settings,
+    now_ms: i64,
+) -> Vec<SettingsAccountRow> {
+    let hidden_bars = hidden_bars_for(settings, ProviderKind::Antigravity);
+    rows.iter()
+        .map(|row| {
+            let id = row
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("antigravity")
+                .to_string();
+            let active = row.get("active").and_then(Value::as_bool).unwrap_or(false);
+            let auth_expired = is_auth_expired(row);
+            let stale = row.get("stale").and_then(Value::as_bool).unwrap_or(false);
+            let cached_at = row.get("cachedAt").and_then(Value::as_i64);
+            let hidden = is_disabled(settings, ProviderKind::Antigravity, &id);
+            let scoped_key = format!("antigravity:{}", id.trim());
+            let nickname = lookup_display_name(settings, &scoped_key);
+            let warning = auth_expired.then(|| "re-auth".to_string());
+            let usage: Option<AntigravityUsage> = row
+                .get("usage")
+                .and_then(|v| serde_json::from_value(v.clone()).ok());
+            let label = row
+                .get("label")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| usage.as_ref().and_then(|u| u.email.clone()))
+                .unwrap_or_else(|| id.clone());
+
+            let Some(u) = usage else {
+                return SettingsAccountRow {
+                    provider: ProviderKind::Antigravity,
+                    id,
+                    label,
+                    nickname,
+                    active,
+                    hidden,
+                    lapsed: false,
+                    auth_expired,
+                    stale,
+                    plan: None,
+                    warning,
+                    bars: Vec::new(),
+                    extra_text: None,
+                    note: Some("Not signed in or unavailable".to_string()),
+                    cached_at,
+                };
+            };
+
+            let mut raw_bars = Vec::new();
+            if u.five_hour_percent.is_some() || u.five_hour_resets_at.is_some() {
+                raw_bars.push(BarView::new(
+                    "fiveHour",
+                    "5h",
+                    u.five_hour_percent,
+                    u.five_hour_resets_at.clone(),
+                    now_ms,
+                    auth_expired,
+                ));
+            }
+            if u.weekly_percent.is_some() || u.weekly_resets_at.is_some() {
+                raw_bars.push(BarView::new(
+                    "weekly",
+                    "Weekly",
+                    u.weekly_percent,
+                    u.weekly_resets_at.clone(),
+                    now_ms,
+                    auth_expired,
+                ));
+            }
+            let bars = {
+                let f = filter_hidden_bars(raw_bars.clone(), &hidden_bars);
+                if f.is_empty() {
+                    raw_bars
+                } else {
+                    f
+                }
+            };
+
+            SettingsAccountRow {
+                provider: ProviderKind::Antigravity,
+                id,
+                label,
+                nickname,
+                active,
+                hidden,
+                lapsed: false,
+                auth_expired,
+                stale,
+                plan: None,
+                warning,
+                bars,
+                extra_text: None,
+                note: None,
+                cached_at,
+            }
+        })
+        .collect()
+}
+
 fn build_settings_opencode_rows(
     rows: &[Value],
     settings: &Settings,
@@ -2306,12 +2527,13 @@ pub async fn poll_settings_snapshot(core: &Core) -> SettingsSnapshot {
     let settings = core.store.get_settings();
     let now_ms = claude_logs::now_ms();
 
-    let (claude_rows, cursor_resp, codex_rows, grok_rows, opencode_rows) = tokio::join!(
+    let (claude_rows, cursor_resp, codex_rows, grok_rows, opencode_rows, antigravity_rows) = tokio::join!(
         crate::providers::claude::accounts(core),
         crate::providers::cursor::response(core),
         crate::providers::codex::accounts(core),
         crate::providers::grok::accounts(core),
         crate::providers::opencode::accounts(core),
+        crate::providers::antigravity::accounts(core),
     );
 
     let spend = core.spend.spend(now_ms);
@@ -2386,6 +2608,7 @@ pub async fn poll_settings_snapshot(core: &Core) -> SettingsSnapshot {
     let cursor = build_settings_cursor_rows(&cursor_resp, &settings, now_ms);
     let grok = build_settings_grok_rows(&grok_rows, &settings, now_ms);
     let opencode = build_settings_opencode_rows(&opencode_rows, &settings, now_ms);
+    let antigravity = build_settings_antigravity_rows(&antigravity_rows, &settings, now_ms);
 
     SettingsSnapshot {
         settings,
@@ -2394,6 +2617,7 @@ pub async fn poll_settings_snapshot(core: &Core) -> SettingsSnapshot {
         cursor,
         grok,
         opencode,
+        antigravity,
         pace,
         cursor_diag_rows: diag_rows,
         diagnostics_text,
@@ -2973,8 +3197,8 @@ mod tests {
 
         settings.show_provider_names = true;
         let items_provider_names = build_grok_items(&rows, &settings, NOW);
-        assert_eq!(items_provider_names[0].title, "Grok Bot");
-        assert_eq!(items_provider_names[1].title, "Grok Bot");
+        assert_eq!(items_provider_names[0].title, "Grok");
+        assert_eq!(items_provider_names[1].title, "Grok");
     }
 
     #[test]
