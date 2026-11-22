@@ -1228,7 +1228,10 @@ fn build_antigravity_items(rows: &[Value], settings: &Settings, now_ms: i64) -> 
     let hidden = hidden_bars_for(settings, ProviderKind::Antigravity);
     let mut pending = Vec::new();
 
-    for row in active_rows(rows) {
+    for row in rows {
+        if !row.get("active").and_then(Value::as_bool).unwrap_or(false) {
+            continue;
+        }
         let id = row
             .get("id")
             .and_then(Value::as_str)
