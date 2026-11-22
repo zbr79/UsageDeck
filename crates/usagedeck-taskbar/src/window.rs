@@ -1,9 +1,10 @@
 //! Native Win32 windowing layer:
 //! - TaskbarStripWindow (`WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST`)
-//! - TooltipWindow (Direct2D hover tooltip anchored above each taskbar pill)
+//! - TooltipWindow (Direct2D hover tooltip anchored above taskbar pills, flyout bars, & copy toast)
 //! - FlyoutWindow (anchored above the right-side taskbar strip, dismisses on blur or Esc)
 //! - System Tray icon (`Shell_NotifyIconW`) with native context menu & `TaskbarCreated` recovery
-//! - Wiring for native Settings dialog, clipboard key copy, hide-until-reset, and auto-updater.
+//! - Wiring for native Settings window, icon-click OpenCode key copy, Cursor launch + burst-poll,
+//!   hide-until-reset, and auto-updater.
 //!
 //! Re-entrancy invariant: Win32 calls that synchronously dispatch window messages or run nested
 //! modal loops (`ShowWindow`, `SetWindowPos`, `SetForegroundWindow`, `TrackPopupMenu`,
@@ -18,19 +19,20 @@ use crate::layout::{
 use crate::poller::{PollerCmd, SharedSnapshot, WM_APP_SNAPSHOT};
 use crate::render::Renderer;
 use crate::settings_dialog;
-use crate::taskbar::{query_taskbar, TaskbarMetrics};
+use crate::taskbar::{query_taskbar, TaskbarMetrics, TaskbarTheme};
 use crate::tooltip::{pill_screen_rect_px, TooltipWindow};
 use crate::updater::UpdaterHandle;
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::Arc;
-use usagedeck_core::store::{CredentialVault, Store};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use usagedeck_core::store::{CredentialVault, Store, ThemeMode};
 use usagedeck_core::view::ProviderKind;
 use usagedeck_core::win::fullscreen;
 use usagedeck_core::{default_data_dir, default_log_dir};
 use windows::core::{w, Result, PCWSTR};
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_ESCAPE,
@@ -41,21 +43,23 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconFromResourceEx, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
     DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW,
-    GetWindow, LoadCursorW, LoadIconW, PostQuitMessage, RegisterClassExW, RegisterWindowMessageW,
-    SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, TrackPopupMenu, TranslateMessage,
-    GW_HWNDPREV, HICON, HWND_TOPMOST, IDC_HAND, IDI_APPLICATION, LR_DEFAULTCOLOR, MF_SEPARATOR,
-    MF_STRING, MSG, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, SW_SHOW,
-    SW_SHOWNOACTIVATE, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON, WA_INACTIVE,
-    WM_ACTIVATE, WM_APP, WM_DESTROY, WM_KEYDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_RBUTTONUP,
-    WM_SETTINGCHANGE, WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_POPUP,
+    GetWindow, LoadCursorW, LoadIconW, PostMessageW, PostQuitMessage, RegisterClassExW,
+    RegisterWindowMessageW, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow,
+    TrackPopupMenu, TranslateMessage, GW_HWNDPREV, HICON, HWND_TOPMOST, IDC_HAND, IDI_APPLICATION,
+    LR_DEFAULTCOLOR, MF_SEPARATOR, MF_STRING, MSG, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SWP_SHOWWINDOW, SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
+    TPM_RETURNCMD, TPM_RIGHTBUTTON, WA_INACTIVE, WM_ACTIVATE, WM_APP, WM_DESTROY, WM_KEYDOWN,
+    WM_LBUTTONUP, WM_MOUSEMOVE, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMER, WNDCLASSEXW,
+    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 const WM_MOUSELEAVE: u32 = 0x02A3;
 
 const WM_TRAY_ICON: u32 = WM_APP + 2;
+const WM_APP_TOAST: u32 = WM_APP + 3;
 const TIMER_SYNC_ID: usize = 1;
 const TIMER_SYNC_MS: u32 = 300;
+const TOAST_DURATION: Duration = Duration::from_millis(2200);
 
 const MENU_TOGGLE_FLYOUT: usize = 1001;
 const MENU_REFRESH: usize = 1002;
@@ -72,6 +76,15 @@ const APP_ICON_BYTES: &[u8] = include_bytes!("../assets/icon.ico");
 /// needs to borrow `STATE` on unrelated Win32 messages.
 static TASKBAR_CREATED_MSG: AtomicU32 = AtomicU32::new(0);
 
+/// Pending brief toast notification posted from background worker threads (e.g. "Key copied").
+static PENDING_TOAST: Mutex<Option<(String, Option<RECT>)>> = Mutex::new(None);
+
+struct ToastNotice {
+    text: String,
+    anchor: Option<RECT>,
+    expires_at: Instant,
+}
+
 struct AppState {
     renderer: Renderer,
     tooltip: Option<TooltipWindow>,
@@ -85,14 +98,18 @@ struct AppState {
     strip_layout: Option<StripLayout>,
     flyout_layout: Option<FlyoutLayout>,
     strip_pos: (i32, i32, i32, i32),
+    flyout_pos: (i32, i32, i32, i32),
     strip_hovered: bool,
     strip_hovered_pill: Option<usize>,
+    strip_hovered_icon_pill: Option<usize>,
     strip_tracking_leave: bool,
     flyout_visible: bool,
     flyout_hovered_action: Option<FlyoutAction>,
+    flyout_hovered_bar: Option<(usize, usize)>,
     flyout_tracking_leave: bool,
     fullscreen_debounce: fullscreen::Debounce,
     strip_visible: bool,
+    toast: Option<ToastNotice>,
     last_status_log: Option<String>,
 }
 
@@ -107,6 +124,14 @@ fn try_with_state<R>(f: impl FnOnce(&mut AppState) -> R) -> Option<R> {
         };
         borrow.as_mut().map(f)
     })
+}
+
+fn effective_theme(mode: ThemeMode, taskbar_theme: TaskbarTheme) -> TaskbarTheme {
+    match mode {
+        ThemeMode::Auto => taskbar_theme,
+        ThemeMode::Light => TaskbarTheme::Light,
+        ThemeMode::Dark => TaskbarTheme::Dark,
+    }
 }
 
 /// Load the embedded UsageDeck `.ico` into an `HICON`, falling back to `IDI_APPLICATION`.
@@ -204,6 +229,17 @@ fn open_folder(dir: Option<std::path::PathBuf>) {
     let Some(dir) = dir else { return };
     let _ = std::fs::create_dir_all(&dir);
     let _ = std::process::Command::new("explorer.exe").arg(&dir).spawn();
+}
+
+fn post_toast(strip_hwnd_raw: isize, text: impl Into<String>, anchor: Option<RECT>) {
+    if let Ok(mut slot) = PENDING_TOAST.lock() {
+        *slot = Some((text.into(), anchor));
+    }
+    let hwnd = HWND(strip_hwnd_raw as *mut std::ffi::c_void);
+    // SAFETY: `PostMessageW` is thread-safe for custom `WM_APP` messages.
+    unsafe {
+        let _ = PostMessageW(Some(hwnd), WM_APP_TOAST, WPARAM(0), LPARAM(0));
+    }
 }
 
 fn log_status_if_changed(state: &mut AppState, summary: String) {
@@ -313,6 +349,25 @@ fn request_refresh_ui() {
     });
 }
 
+fn open_cursor_and_watch_ui() {
+    let strip_hwnd_raw = try_with_state(|s| s.strip_hwnd.0 as isize).unwrap_or(0);
+    match usagedeck_core::providers::cursor::open_cursor() {
+        Ok(()) => {
+            try_with_state(|s| {
+                if let Some(ref tx) = s.poller_tx {
+                    let _ = tx.send(PollerCmd::WatchCursorSignIn);
+                }
+            });
+        }
+        Err(e) => {
+            log::warn!("open_cursor failed: {e}");
+            if strip_hwnd_raw != 0 {
+                post_toast(strip_hwnd_raw, format!("Could not open Cursor: {e}"), None);
+            }
+        }
+    }
+}
+
 fn clear_snoozed_cards_ui() {
     let poller_tx = try_with_state(|state| state.poller_tx.clone()).flatten();
     std::thread::spawn(move || {
@@ -360,29 +415,41 @@ fn hide_card_until_reset_ui(provider: ProviderKind, account_id: String, until_ms
     });
 }
 
-fn copy_opencode_key(email: String) {
+fn copy_opencode_key(email: String, anchor: Option<RECT>) {
+    let strip_hwnd_raw = try_with_state(|s| s.strip_hwnd.0 as isize).unwrap_or(0);
     std::thread::spawn(move || {
         let Some(dir) = default_data_dir() else {
+            if strip_hwnd_raw != 0 {
+                post_toast(strip_hwnd_raw, "Copy failed", anchor);
+            }
             return;
         };
         let Ok(rt) = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
         else {
+            if strip_hwnd_raw != 0 {
+                post_toast(strip_hwnd_raw, "Copy failed", anchor);
+            }
             return;
         };
         let store = Store::new(dir, Box::new(CredentialVault));
         let accounts = rt.block_on(store.get_accounts());
         let lower = email.to_lowercase();
-        if let Some(acc) = accounts
+        let copied = accounts
             .into_iter()
             .find(|a| a.email.to_lowercase() == lower)
-        {
-            if !acc.key.is_empty() {
-                if let Err(e) = clipboard::copy_text(&acc.key) {
+            .filter(|a| !a.key.is_empty())
+            .is_some_and(|acc| match clipboard::copy_text(&acc.key) {
+                Ok(()) => true,
+                Err(e) => {
                     log::warn!("clipboard copy failed: {e}");
+                    false
                 }
-            }
+            });
+        if strip_hwnd_raw != 0 {
+            let msg = if copied { "Key copied" } else { "Copy failed" };
+            post_toast(strip_hwnd_raw, msg, anchor);
         }
     });
 }
@@ -414,20 +481,71 @@ fn hide_tooltip(state: &mut AppState) {
     }
 }
 
-fn update_strip_tooltip(state: &mut AppState) {
-    if state.flyout_visible || !state.strip_hovered || !state.strip_visible {
-        hide_tooltip(state);
-        return;
-    }
-    let (Some(metrics), Some(layout), Some(pill_idx)) = (
-        state.metrics,
-        state.strip_layout.as_ref(),
-        state.strip_hovered_pill,
-    ) else {
+fn update_active_tooltip(state: &mut AppState) {
+    let Some(mut metrics) = state.metrics else {
         hide_tooltip(state);
         return;
     };
     let (snapshot, _) = state.shared.get();
+    metrics.theme = effective_theme(snapshot.theme_mode, metrics.theme);
+
+    // 1. Brief toast notice (e.g. "Key copied" / "Copy failed") takes precedence for ~2.2s.
+    if let Some(ref toast) = state.toast {
+        if Instant::now() < toast.expires_at {
+            let (sx, sy, sw, sh) = state.strip_pos;
+            let anchor = toast.anchor.unwrap_or(RECT {
+                left: sx,
+                top: sy,
+                right: sx + sw.max(1),
+                bottom: sy + sh.max(1),
+            });
+            if let Some(ref mut tip) = state.tooltip {
+                tip.show(&toast.text, anchor, &metrics);
+            }
+            return;
+        }
+        state.toast = None;
+    }
+
+    // 2. Flyout per-bar hover tooltip (per-model breakdown lines from v1.5.15).
+    if state.flyout_visible {
+        if let (Some(layout), Some((item_idx, bar_idx))) =
+            (state.flyout_layout.as_ref(), state.flyout_hovered_bar)
+        {
+            if let (Some(item), Some(bar_rect)) = (
+                snapshot.items.get(item_idx),
+                layout.bar_rect(item_idx, bar_idx),
+            ) {
+                if let Some(bar) = item.flyout_bars.get(bar_idx) {
+                    let mut lines = vec![format!("{} {}", bar.label, bar.percent_label())];
+                    if let Some(ref reset) = bar.reset_short {
+                        lines[0].push_str(&format!("  ·  resets {reset}"));
+                    }
+                    lines.extend(bar.tooltip_lines.iter().cloned());
+                    let text = lines.join("\n");
+                    let (fx, fy, _, _) = state.flyout_pos;
+                    let anchor = pill_screen_rect_px(fx, fy, bar_rect, metrics.scale);
+                    if let Some(ref mut tip) = state.tooltip {
+                        tip.show(&text, anchor, &metrics);
+                    }
+                    return;
+                }
+            }
+        }
+        hide_tooltip(state);
+        return;
+    }
+
+    // 3. Taskbar strip pill / icon hover tooltip.
+    if !state.strip_hovered || !state.strip_visible {
+        hide_tooltip(state);
+        return;
+    }
+    let (Some(layout), Some(pill_idx)) = (state.strip_layout.as_ref(), state.strip_hovered_pill)
+    else {
+        hide_tooltip(state);
+        return;
+    };
     let (Some(item), Some(pill_rect)) = (snapshot.items.get(pill_idx), layout.pill_rect(pill_idx))
     else {
         hide_tooltip(state);
@@ -435,8 +553,20 @@ fn update_strip_tooltip(state: &mut AppState) {
     };
     let (sx, sy, _, _) = state.strip_pos;
     let anchor = pill_screen_rect_px(sx, sy, pill_rect, metrics.scale);
+    let text = if state.strip_hovered_icon_pill == Some(pill_idx)
+        && item.provider == ProviderKind::OpenCode
+    {
+        format!("Click icon to copy API key\n{}", item.account_id)
+    } else if state.strip_hovered_icon_pill == Some(pill_idx)
+        && item.provider == ProviderKind::Cursor
+        && item.can_open_cursor
+    {
+        "Click icon to open Cursor and renew sign-in".to_string()
+    } else {
+        item.tooltip.clone()
+    };
     if let Some(ref mut tip) = state.tooltip {
-        tip.show(&item.tooltip, anchor, &metrics);
+        tip.show(&text, anchor, &metrics);
     }
 }
 
@@ -469,6 +599,7 @@ fn sync_and_paint_strip_ui() {
         state.metrics = Some(metrics);
 
         let (snapshot, loading) = state.shared.get();
+        let theme = effective_theme(snapshot.theme_mode, metrics.theme);
 
         // Hide during full-screen apps (debounced over 2 ticks, reusing usagedeck_core::win::fullscreen).
         if snapshot.hide_in_fullscreen {
@@ -549,11 +680,12 @@ fn sync_and_paint_strip_ui() {
             x,
             y,
             metrics.dpi,
-            metrics.theme,
+            theme,
             &snapshot,
             &layout,
             state.strip_hovered,
             state.strip_hovered_pill,
+            state.strip_hovered_icon_pill,
         ) {
             log::warn!("render_strip failed: {e}");
         }
@@ -562,7 +694,7 @@ fn sync_and_paint_strip_ui() {
         let need_show = !state.strip_visible;
         state.strip_visible = true;
 
-        update_strip_tooltip(state);
+        update_active_tooltip(state);
 
         if state.flyout_visible {
             paint_flyout(state);
@@ -643,6 +775,7 @@ fn show_flyout_ui() {
         hide_tooltip(state);
         state.flyout_visible = true;
         state.flyout_hovered_action = None;
+        state.flyout_hovered_bar = None;
         paint_flyout(state);
         state.flyout_hwnd
     }) else {
@@ -661,6 +794,8 @@ fn hide_flyout_ui() {
         if state.flyout_visible {
             state.flyout_visible = false;
             state.flyout_hovered_action = None;
+            state.flyout_hovered_bar = None;
+            hide_tooltip(state);
             Some(state.flyout_hwnd)
         } else {
             None
@@ -680,6 +815,7 @@ fn paint_flyout(state: &mut AppState) {
         return;
     };
     let (snapshot, _) = state.shared.get();
+    let theme = effective_theme(snapshot.theme_mode, metrics.theme);
     let layout: FlyoutLayout = compute_flyout_layout(&snapshot);
     let fw = (layout.width_dip * metrics.scale).ceil() as i32;
     let fh = (layout.height_dip * metrics.scale).ceil() as i32;
@@ -691,13 +827,14 @@ fn paint_flyout(state: &mut AppState) {
     };
     let anchor_w = if sw > 0 { sw } else { fw };
     let (fx, fy) = metrics.flyout_origin_px(anchor_x, anchor_w, fw, fh);
+    state.flyout_pos = (fx, fy, fw, fh);
 
     if let Err(e) = state.renderer.render_flyout(
         state.flyout_hwnd,
         fx,
         fy,
         metrics.dpi,
-        metrics.theme,
+        theme,
         &snapshot,
         &layout,
         state.flyout_hovered_action.as_ref(),
@@ -726,6 +863,12 @@ fn track_mouse_leave(hwnd: HWND) {
     }
 }
 
+enum StripClickAction {
+    ToggleFlyout,
+    CopyOpenCodeKey { email: String, anchor: Option<RECT> },
+    OpenCursor,
+}
+
 unsafe extern "system" fn strip_wnd_proc(
     hwnd: HWND,
     msg: u32,
@@ -750,6 +893,20 @@ unsafe extern "system" fn strip_wnd_proc(
             sync_and_paint_strip_ui();
             LRESULT(0)
         }
+        WM_APP_TOAST => {
+            let pending = PENDING_TOAST.lock().ok().and_then(|mut slot| slot.take());
+            if let Some((text, anchor)) = pending {
+                try_with_state(|s| {
+                    s.toast = Some(ToastNotice {
+                        text,
+                        anchor,
+                        expires_at: Instant::now() + TOAST_DURATION,
+                    });
+                    update_active_tooltip(s);
+                });
+            }
+            LRESULT(0)
+        }
         WM_MOUSEMOVE => {
             let needs_repaint = try_with_state(|s| {
                 if !s.strip_tracking_leave {
@@ -762,9 +919,17 @@ unsafe extern "system" fn strip_wnd_proc(
                     .strip_layout
                     .as_ref()
                     .and_then(|l| l.hit_test_pill(dx, dy));
-                if !s.strip_hovered || hit_pill != s.strip_hovered_pill {
+                let hit_icon = s
+                    .strip_layout
+                    .as_ref()
+                    .and_then(|l| l.hit_test_pill_icon(dx, dy));
+                if !s.strip_hovered
+                    || hit_pill != s.strip_hovered_pill
+                    || hit_icon != s.strip_hovered_icon_pill
+                {
                     s.strip_hovered = true;
                     s.strip_hovered_pill = hit_pill;
+                    s.strip_hovered_icon_pill = hit_icon;
                     true
                 } else {
                     false
@@ -779,10 +944,14 @@ unsafe extern "system" fn strip_wnd_proc(
         WM_MOUSELEAVE => {
             let needs_repaint = try_with_state(|s| {
                 s.strip_tracking_leave = false;
-                if s.strip_hovered || s.strip_hovered_pill.is_some() {
+                if s.strip_hovered
+                    || s.strip_hovered_pill.is_some()
+                    || s.strip_hovered_icon_pill.is_some()
+                {
                     s.strip_hovered = false;
                     s.strip_hovered_pill = None;
-                    hide_tooltip(s);
+                    s.strip_hovered_icon_pill = None;
+                    update_active_tooltip(s);
                     true
                 } else {
                     false
@@ -795,7 +964,44 @@ unsafe extern "system" fn strip_wnd_proc(
             LRESULT(0)
         }
         WM_LBUTTONUP => {
-            toggle_flyout_ui();
+            let action = try_with_state(|s| {
+                let scale = s.metrics.map_or(1.0, |m| m.scale);
+                let (dx, dy) = cursor_dip(lparam, scale);
+                if let Some(item_idx) = s
+                    .strip_layout
+                    .as_ref()
+                    .and_then(|l| l.hit_test_pill_icon(dx, dy))
+                {
+                    let (snapshot, _) = s.shared.get();
+                    if let Some(item) = snapshot.items.get(item_idx) {
+                        if item.provider == ProviderKind::OpenCode {
+                            let (sx, sy, _, _) = s.strip_pos;
+                            let anchor = s
+                                .strip_layout
+                                .as_ref()
+                                .and_then(|l| l.pill_rect(item_idx))
+                                .map(|r| pill_screen_rect_px(sx, sy, r, scale));
+                            return StripClickAction::CopyOpenCodeKey {
+                                email: item.account_id.clone(),
+                                anchor,
+                            };
+                        }
+                        if item.provider == ProviderKind::Cursor && item.can_open_cursor {
+                            return StripClickAction::OpenCursor;
+                        }
+                    }
+                }
+                StripClickAction::ToggleFlyout
+            })
+            .unwrap_or(StripClickAction::ToggleFlyout);
+
+            match action {
+                StripClickAction::ToggleFlyout => toggle_flyout_ui(),
+                StripClickAction::CopyOpenCodeKey { email, anchor } => {
+                    copy_opencode_key(email, anchor);
+                }
+                StripClickAction::OpenCursor => open_cursor_and_watch_ui(),
+            }
             LRESULT(0)
         }
         WM_RBUTTONUP => {
@@ -848,9 +1054,19 @@ unsafe extern "system" fn flyout_wnd_proc(
                 let scale = s.metrics.map_or(1.0, |m| m.scale);
                 let (dx, dy) = cursor_dip(lparam, scale);
                 let hit = s.flyout_layout.as_ref().and_then(|l| l.hit_test(dx, dy));
-                if hit != s.flyout_hovered_action {
+                let hit_bar = s
+                    .flyout_layout
+                    .as_ref()
+                    .and_then(|l| l.hit_test_bar(dx, dy));
+                let action_changed = hit != s.flyout_hovered_action;
+                let bar_changed = hit_bar != s.flyout_hovered_bar;
+                if action_changed {
                     s.flyout_hovered_action = hit;
                     paint_flyout(s);
+                }
+                if bar_changed || action_changed {
+                    s.flyout_hovered_bar = hit_bar;
+                    update_active_tooltip(s);
                 }
             });
             LRESULT(0)
@@ -862,6 +1078,10 @@ unsafe extern "system" fn flyout_wnd_proc(
                     s.flyout_hovered_action = None;
                     paint_flyout(s);
                 }
+                if s.flyout_hovered_bar.is_some() {
+                    s.flyout_hovered_bar = None;
+                    update_active_tooltip(s);
+                }
             });
             LRESULT(0)
         }
@@ -869,35 +1089,42 @@ unsafe extern "system" fn flyout_wnd_proc(
             let hit = try_with_state(|s| {
                 let scale = s.metrics.map_or(1.0, |m| m.scale);
                 let (dx, dy) = cursor_dip(lparam, scale);
-                s.flyout_layout.as_ref().and_then(|l| l.hit_test(dx, dy))
-            })
-            .flatten();
+                let action = s.flyout_layout.as_ref().and_then(|l| l.hit_test(dx, dy));
+                let (fx, fy, fw, _) = s.flyout_pos;
+                let anchor = Some(RECT {
+                    left: fx,
+                    top: fy,
+                    right: fx + fw.max(1),
+                    bottom: fy + 1,
+                });
+                (action, anchor)
+            });
 
-            match hit {
-                Some(FlyoutAction::Refresh) => request_refresh_ui(),
-                Some(FlyoutAction::OpenSettings) => open_settings_ui(),
-                Some(FlyoutAction::OpenDataFolder) => {
-                    hide_flyout_ui();
-                    open_folder(default_data_dir());
-                }
-                Some(FlyoutAction::OpenCursor) => {
-                    hide_flyout_ui();
-                    if let Err(e) = usagedeck_core::providers::cursor::open_cursor() {
-                        log::warn!("open_cursor failed: {e}");
+            if let Some((action, anchor)) = hit {
+                match action {
+                    Some(FlyoutAction::Refresh) => request_refresh_ui(),
+                    Some(FlyoutAction::OpenSettings) => open_settings_ui(),
+                    Some(FlyoutAction::OpenDataFolder) => {
+                        hide_flyout_ui();
+                        open_folder(default_data_dir());
                     }
+                    Some(FlyoutAction::OpenCursor) => {
+                        hide_flyout_ui();
+                        open_cursor_and_watch_ui();
+                    }
+                    Some(FlyoutAction::CopyOpenCodeKey(email)) => {
+                        copy_opencode_key(email, anchor);
+                    }
+                    Some(FlyoutAction::HideUntilReset {
+                        provider,
+                        account_id,
+                        until_ms,
+                    }) => {
+                        hide_card_until_reset_ui(provider, account_id, until_ms);
+                    }
+                    Some(FlyoutAction::Quit) => quit_app_ui(),
+                    None => {}
                 }
-                Some(FlyoutAction::CopyOpenCodeKey(email)) => {
-                    copy_opencode_key(email);
-                }
-                Some(FlyoutAction::HideUntilReset {
-                    provider,
-                    account_id,
-                    until_ms,
-                }) => {
-                    hide_card_until_reset_ui(provider, account_id, until_ms);
-                }
-                Some(FlyoutAction::Quit) => quit_app_ui(),
-                None => {}
             }
             LRESULT(0)
         }
@@ -994,14 +1221,18 @@ pub fn run_ui(
                 strip_layout: None,
                 flyout_layout: None,
                 strip_pos: (0, 0, 0, 0),
+                flyout_pos: (0, 0, 0, 0),
                 strip_hovered: false,
                 strip_hovered_pill: None,
+                strip_hovered_icon_pill: None,
                 strip_tracking_leave: false,
                 flyout_visible: false,
                 flyout_hovered_action: None,
+                flyout_hovered_bar: None,
                 flyout_tracking_leave: false,
                 fullscreen_debounce: fullscreen::Debounce::default(),
                 strip_visible: false,
+                toast: None,
                 last_status_log: None,
             });
         });

@@ -1,145 +1,142 @@
-//! Pure-Rust native Win32 Settings window for UsageDeck (zero WebView2 / zero Tauri).
+//! Pure-Rust native Direct2D/DirectWrite Settings window for UsageDeck
+//! (zero WebView2 / zero Tauri / zero Node).
 //!
-//! Provides:
-//! - Provider enable/disable toggles (Claude, Cursor, Codex, Grok Bot, OpenCode)
-//! - General options ("Start with Windows" + "Hide in fullscreen apps")
-//! - OpenCode API key management backed by `Store` + Windows Credential Manager
-//!   (list with key hints, Add/Replace with `oc_sk_`/`sk-` validation, Copy Key, Remove)
-//! - Version readout, "Check for updates", "Open Data Folder", and "Open Log Folder"
-//! - Open-state tracking (`is_settings_open`) so the auto-updater defers restarts while open.
+//! Faithfully recreates the v1.5.15 WinUI-inspired Settings experience:
+//! - Resizable, maximizable top-level OS window (`960×680` DIP default, `640×480` DIP min)
+//!   with native DWM dark/light caption bar (`DWMWA_USE_IMMERSIVE_DARK_MODE`) and
+//!   persisted window placement (`settings-window.json`).
+//! - Fixed `232` DIP left navigation sidebar (`General`, `Widget`, `Accounts` group in
+//!   `provider_order`, plus bottom-pinned `Update available` button when ready).
+//! - Scrollable right-hand content pane covering all 7 pages:
+//!   `General`, `Widget`, `Claude`, `Codex`, `Cursor`, `Grok Bot`, and `OpenCode`.
+//! - Instant `<16ms` open using saved `settings.json`, followed by non-blocking background
+//!   `poll_settings_snapshot(&core)` loading for live account tables, Claude Spend & Pace
+//!   charts, and Cursor diagnostics.
+//! - Clean native Win32 modal sub-dialogs for Rename, Add/Replace OpenCode API key,
+//!   Claude hourly spend target, and Remove confirmation — always launched strictly
+//!   outside any `SETTINGS_STATE` `RefCell` borrow.
+
+mod layout;
+mod modals;
+mod render;
+mod theme;
 
 use crate::autostart;
 use crate::clipboard;
+use layout::{
+    build_layout, provider_bars, Action, LayoutInput, PageId, SettingsLayout, DEFAULT_WIN_H_DIP,
+    DEFAULT_WIN_W_DIP, MIN_WIN_H_DIP, MIN_WIN_W_DIP,
+};
+use render::SettingsRenderer;
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::{Arc, Mutex, Once};
+use theme::{apply_titlebar_theme, resolve_is_dark, SettingsPalette, SpendRange};
 use usagedeck_core::store::{
-    key_hint, Account, CredentialVault, Settings, Store, OPENCODE_KEY_PREFIXES,
+    read_json, write_json_atomic, Account, CredentialVault, Settings, Store, WidgetProvider,
+    OPENCODE_KEY_PREFIXES,
 };
 use usagedeck_core::updater::release::{is_newer, parse_release, Version};
+use usagedeck_core::view::{poll_settings_snapshot, ProviderKind, SettingsSnapshot};
 use usagedeck_core::{default_data_dir, default_log_dir, Core};
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    CreateFontIndirectW, DeleteObject, GetMonitorInfoW, GetSysColorBrush, MonitorFromWindow,
-    SetBkMode, CLEARTYPE_QUALITY, COLOR_BTNFACE, DEFAULT_CHARSET, HDC, HFONT, HGDIOBJ, LOGFONTW,
-    MONITORINFO, MONITOR_DEFAULTTONEAREST, TRANSPARENT,
+    GetMonitorInfoW, InvalidateRect, MonitorFromRect, MonitorFromWindow, MONITORINFO,
+    MONITOR_DEFAULTTONEAREST,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
-use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus, VK_ESCAPE};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetKeyState, ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
+    VK_CONTROL, VK_DOWN, VK_END, VK_ESCAPE, VK_HOME, VK_NEXT, VK_PRIOR, VK_UP,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
-    AdjustWindowRectEx, CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowTextLengthW,
-    GetWindowTextW, LoadCursorW, LoadIconW, PostMessageW, RegisterClassExW, SendMessageW,
-    SetForegroundWindow, SetWindowTextW, ShowWindow, HMENU, IDC_ARROW, IDI_APPLICATION, SW_RESTORE,
-    SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CLOSE, WM_COMMAND, WM_KEYDOWN, WM_NCDESTROY,
-    WNDCLASSEXW, WS_BORDER, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_EX_CLIENTEDGE,
-    WS_EX_DLGMODALFRAME, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
-    WS_VSCROLL,
+    AdjustWindowRectEx, AppendMenuW, CreateIconFromResourceEx, CreatePopupMenu, CreateWindowExW,
+    DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow, GetClientRect, GetCursorPos,
+    GetWindowPlacement, IsZoomed, KillTimer, LoadCursorW, LoadIconW, PostMessageW,
+    RegisterClassExW, SendMessageW, SetCursor, SetForegroundWindow, SetTimer, SetWindowPos,
+    SetWindowTextW, ShowWindow, TrackPopupMenu, HICON, IDC_ARROW, IDC_HAND, IDI_APPLICATION,
+    LR_DEFAULTCOLOR, MF_SEPARATOR, MF_STRING, MINMAXINFO, SWP_NOACTIVATE, SWP_NOZORDER, SW_RESTORE,
+    SW_SHOW, SW_SHOWMAXIMIZED, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON, TPM_TOPALIGN,
+    WINDOWPLACEMENT, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CLOSE, WM_DPICHANGED, WM_ERASEBKGND,
+    WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
+    WM_NCDESTROY, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR, WM_SETTINGCHANGE, WM_SIZE, WM_TIMER,
+    WNDCLASSEXW, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW,
 };
 
-// Standard Win32 child control style/message constants (frozen Win32 ABI).
-const BS_PUSHBUTTON: u32 = 0x0000_0000;
-const BS_DEFPUSHBUTTON: u32 = 0x0000_0001;
-const BS_AUTOCHECKBOX: u32 = 0x0000_0003;
-const BS_GROUPBOX: u32 = 0x0000_0007;
-const BM_GETCHECK: u32 = 0x00F0;
-const BM_SETCHECK: u32 = 0x00F1;
-const BST_UNCHECKED: usize = 0;
-const BST_CHECKED: usize = 1;
-const BN_CLICKED: u16 = 0;
-
-const ES_PASSWORD: u32 = 0x0020;
-const ES_AUTOHSCROLL: u32 = 0x0080;
-
-const LBS_NOTIFY: u32 = 0x0001;
-const LBS_NOINTEGRALHEIGHT: u32 = 0x0100;
-const LB_ADDSTRING: u32 = 0x0180;
-const LB_RESETCONTENT: u32 = 0x0184;
-const LB_SETCURSEL: u32 = 0x0186;
-const LB_GETCURSEL: u32 = 0x0188;
-const LBN_SELCHANGE: u16 = 1;
-
-const SS_LEFT: u32 = 0x0000_0000;
-const SS_ENDELLIPSIS: u32 = 0x0000_4000;
-
-const WM_SETFONT: u32 = 0x0030;
-const WM_CTLCOLORSTATIC: u32 = 0x0138;
+const WM_MOUSELEAVE: u32 = 0x02A3;
 const WM_APP_UPDATE_STATUS: u32 = WM_APP + 20;
+const WM_APP_SETTINGS_DATA: u32 = WM_APP + 21;
+const WM_APP_UPDATE_READY: u32 = WM_APP + 22;
 
-// Child control IDs.
-const ID_CHK_CLAUDE: u16 = 2001;
-const ID_CHK_CURSOR: u16 = 2002;
-const ID_CHK_CODEX: u16 = 2003;
-const ID_CHK_GROK: u16 = 2004;
-const ID_CHK_OPENCODE: u16 = 2005;
-const ID_CHK_START_LOGIN: u16 = 2010;
-const ID_CHK_HIDE_FS: u16 = 2011;
+const TIMER_TOAST_ID: usize = 301;
+const TIMER_TOAST_MS: u32 = 2500;
+const TIMER_POLL_ID: usize = 302;
+const TIMER_POLL_MS: u32 = 60_000;
 
-const ID_LIST_ACCOUNTS: u16 = 2020;
-const ID_BTN_COPY_KEY: u16 = 2021;
-const ID_BTN_REMOVE_ACCOUNT: u16 = 2022;
-const ID_EDIT_EMAIL: u16 = 2023;
-const ID_EDIT_KEY: u16 = 2024;
-const ID_BTN_ADD_ACCOUNT: u16 = 2025;
-const ID_LBL_ACCOUNT_STATUS: u16 = 2026;
+const MENU_TOGGLE_HIDE: usize = 4001;
+const MENU_RENAME: usize = 4002;
+const MENU_COPY_KEY: usize = 4003;
+const MENU_REPLACE_KEY: usize = 4004;
+const MENU_REFRESH: usize = 4005;
+const MENU_REMOVE: usize = 4006;
 
-const ID_LBL_UPDATE_STATUS: u16 = 2030;
-const ID_BTN_CHECK_UPDATES: u16 = 2031;
-const ID_BTN_OPEN_DATA: u16 = 2032;
-const ID_BTN_OPEN_LOGS: u16 = 2033;
-const ID_BTN_CLOSE: u16 = 2040;
-
-const MAX_EMAIL_LENGTH: usize = 320;
 const MAX_KEY_LENGTH: usize = 512;
 const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/zbr79/UsageDeck/releases/latest";
 const USER_AGENT: &str = "UsageDeck-updater";
+const SETTINGS_WINDOW_FILE: &str = "settings-window.json";
 
-const CLIENT_W_DIP: f32 = 460.0;
-const CLIENT_H_DIP: f32 = 570.0;
+const APP_ICON_BYTES: &[u8] = include_bytes!("../assets/icon.ico");
 
 static CLASS_REGISTERED: Once = Once::new();
 static SETTINGS_OPEN: AtomicBool = AtomicBool::new(false);
 static SETTINGS_HWND: AtomicIsize = AtomicIsize::new(0);
-static PENDING_UPDATE_TEXT: Mutex<Option<(String, bool)>> = Mutex::new(None);
+static POLL_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 
-struct Controls {
-    chk_claude: HWND,
-    chk_cursor: HWND,
-    chk_codex: HWND,
-    chk_grok: HWND,
-    chk_opencode: HWND,
-    chk_start_login: HWND,
-    chk_hide_fs: HWND,
-    list_accounts: HWND,
-    btn_copy_key: HWND,
-    btn_remove_account: HWND,
-    edit_email: HWND,
-    edit_key: HWND,
-    lbl_account_status: HWND,
-    lbl_update_status: HWND,
-    btn_check_updates: HWND,
-}
+static PENDING_UPDATE_TEXT: Mutex<Option<(String, bool)>> = Mutex::new(None);
+static PENDING_UPDATE_READY: Mutex<Option<Option<String>>> = Mutex::new(None);
+static LATEST_UPDATE_READY: Mutex<Option<String>> = Mutex::new(None);
+static LATEST_UPDATE_STATUS: Mutex<Option<String>> = Mutex::new(None);
+static PENDING_SETTINGS_DATA: Mutex<Option<SettingsSnapshot>> = Mutex::new(None);
 
 struct SettingsState {
-    controls: Controls,
-    fonts: Vec<HFONT>,
+    hwnd: HWND,
+    app_icon: HICON,
+    dpi: u32,
+    client_w_dip: f32,
+    client_h_dip: f32,
+    renderer: SettingsRenderer,
     store: Option<Store>,
     rt: Option<tokio::runtime::Runtime>,
-    accounts: Vec<Account>,
+    settings: Settings,
+    snapshot: Option<SettingsSnapshot>,
+    loading: bool,
+    page: PageId,
+    expanded_snoozed: Option<WidgetProvider>,
+    spend_range: SpendRange,
+    scroll_y: f32,
+    hovered_action: Option<Action>,
+    scrollbar_hovered: bool,
+    scrollbar_dragging: bool,
+    scrollbar_drag_offset: f32,
+    tracking_leave: bool,
+    update_status_text: String,
+    update_checking: bool,
+    update_ready_version: Option<String>,
+    toast: Option<String>,
+    layout: SettingsLayout,
     on_changed: Arc<dyn Fn() + Send + Sync>,
     on_check_updates: Option<Arc<dyn Fn(HWND) + Send + Sync>>,
 }
 
 impl Drop for SettingsState {
     fn drop(&mut self) {
-        // SAFETY: destroys GDI fonts created for this dialog window.
-        unsafe {
-            for font in &self.fonts {
-                if !font.is_invalid() {
-                    let _ = DeleteObject(HGDIOBJ(font.0));
-                }
+        if !self.app_icon.is_invalid() {
+            // SAFETY: destroys custom HICON loaded for this window.
+            unsafe {
+                let _ = DestroyIcon(self.app_icon);
             }
         }
     }
@@ -147,6 +144,15 @@ impl Drop for SettingsState {
 
 thread_local! {
     static SETTINGS_STATE: RefCell<Option<SettingsState>> = const { RefCell::new(None) };
+}
+
+fn try_with_state<R>(f: impl FnOnce(&mut SettingsState) -> R) -> Option<R> {
+    SETTINGS_STATE.with(|cell| {
+        let Ok(mut borrow) = cell.try_borrow_mut() else {
+            return None;
+        };
+        borrow.as_mut().map(f)
+    })
 }
 
 /// Returns `true` while the UsageDeck Settings window is open.
@@ -168,28 +174,53 @@ pub fn is_valid_opencode_key(key: &str) -> bool {
 
 /// Update the version/update status label on an open Settings window from any thread.
 pub fn set_update_status_text(text: &str) {
-    post_update_status(text.to_string(), true);
+    if let Ok(mut slot) = LATEST_UPDATE_STATUS.lock() {
+        *slot = Some(text.to_string());
+    }
+    post_update_status(text.to_string(), false);
 }
 
-fn post_update_status(text: String, enable_button: bool) {
-    if let Ok(mut slot) = PENDING_UPDATE_TEXT.lock() {
-        *slot = Some((text, enable_button));
+/// Signal whether an update is downloaded and ready to install from any thread.
+///
+/// Lights up the emerald dot on the `General` nav item, shows the bottom-pinned
+/// `Update available` sidebar button, and switches the General page button to primary.
+pub fn set_update_ready(version: Option<&str>) {
+    let owned = version.map(str::to_string);
+    if let Ok(mut latest) = LATEST_UPDATE_READY.lock() {
+        *latest = owned.clone();
+    }
+    if let Ok(mut slot) = PENDING_UPDATE_READY.lock() {
+        *slot = Some(owned);
     }
     let raw = SETTINGS_HWND.load(Ordering::Acquire);
     if raw != 0 {
         let hwnd = HWND(raw as *mut std::ffi::c_void);
-        // SAFETY: `PostMessageW` is thread-safe for posting custom `WM_APP` notifications.
+        // SAFETY: `PostMessageW` is thread-safe for custom `WM_APP` notifications.
+        unsafe {
+            let _ = PostMessageW(Some(hwnd), WM_APP_UPDATE_READY, WPARAM(0), LPARAM(0));
+        }
+    }
+}
+
+fn post_update_status(text: String, still_checking: bool) {
+    if let Ok(mut slot) = PENDING_UPDATE_TEXT.lock() {
+        *slot = Some((text, still_checking));
+    }
+    let raw = SETTINGS_HWND.load(Ordering::Acquire);
+    if raw != 0 {
+        let hwnd = HWND(raw as *mut std::ffi::c_void);
+        // SAFETY: `PostMessageW` is thread-safe for custom `WM_APP` notifications.
         unsafe {
             let _ = PostMessageW(Some(hwnd), WM_APP_UPDATE_STATUS, WPARAM(0), LPARAM(0));
         }
     }
 }
 
-/// Open the native Win32 UsageDeck Settings window (or bring the existing one to the front).
+/// Open the native Direct2D UsageDeck Settings window (or bring the existing one to front).
 ///
-/// `on_changed` is invoked whenever provider toggles, behavior settings, or OpenCode
-/// accounts are saved. When `on_check_updates` is `None`, the dialog performs a built-in
-/// GitHub latest-release check in a background thread.
+/// `on_changed` is invoked whenever settings, provider toggles/order, bar visibility,
+/// or OpenCode accounts are saved. When `on_check_updates` is `None`, the dialog performs
+/// a built-in GitHub latest-release check in a background thread.
 pub fn open_settings_dialog_with_updater(
     owner: HWND,
     on_changed: Box<dyn Fn() + Send + Sync>,
@@ -207,16 +238,32 @@ pub fn open_settings_dialog_with_updater(
         return;
     }
 
+    let Ok(renderer) = SettingsRenderer::new() else {
+        log::warn!("settings_dialog: failed to initialize Direct2D/DirectWrite renderer");
+        return;
+    };
+
     let on_changed: Arc<dyn Fn() + Send + Sync> = Arc::from(on_changed);
     let on_check_updates: Option<Arc<dyn Fn(HWND) + Send + Sync>> = on_check_updates.map(Arc::from);
 
-    // SAFETY: Win32 class registration and native control creation on the UI thread.
-    unsafe {
+    let store = default_data_dir().map(|dir| Store::new(dir, Box::new(CredentialVault)));
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .ok();
+    let settings = store.as_ref().map(Store::get_settings).unwrap_or_default();
+    let is_dark = resolve_is_dark(settings.panel_theme);
+
+    let initial_page = PageId::General;
+    let initial_title = wide(&initial_page.window_title());
+
+    // SAFETY: Win32 window class registration & creation on the UI thread.
+    let (hwnd, app_icon, dpi, client_w_dip, client_h_dip, start_maximized) = unsafe {
         let Ok(hinstance) = GetModuleHandleW(None) else {
             log::warn!("settings_dialog: GetModuleHandleW failed");
             return;
         };
-        let class_name = w!("UsageDeckSettingsWindow");
+        let class_name = w!("UsageDeckSettingsWindowD2D");
         CLASS_REGISTERED.call_once(|| {
             let wc = WNDCLASSEXW {
                 cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
@@ -224,14 +271,13 @@ pub fn open_settings_dialog_with_updater(
                 hInstance: hinstance.into(),
                 hIcon: LoadIconW(None, IDI_APPLICATION).unwrap_or_default(),
                 hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
-                hbrBackground: GetSysColorBrush(COLOR_BTNFACE),
                 lpszClassName: class_name,
                 ..Default::default()
             };
             RegisterClassExW(&wc);
         });
 
-        let dpi = if !owner.is_invalid() {
+        let owner_dpi = if !owner.is_invalid() {
             let d = GetDpiForWindow(owner);
             if d == 0 {
                 96
@@ -241,41 +287,17 @@ pub fn open_settings_dialog_with_updater(
         } else {
             96
         };
-        let scale = dpi as f32 / 96.0;
-        let px = |dip: f32| -> i32 { (dip * scale).round() as i32 };
+        let scale = owner_dpi as f32 / 96.0;
+        let style = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN;
+        let ex_style = WINDOW_EX_STYLE(0);
 
-        let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
-        let ex_style = WS_EX_DLGMODALFRAME;
-        let mut rect = RECT {
-            left: 0,
-            top: 0,
-            right: px(CLIENT_W_DIP),
-            bottom: px(CLIENT_H_DIP),
-        };
-        let _ = AdjustWindowRectEx(&mut rect, style, false, ex_style);
-        let win_w = rect.right - rect.left;
-        let win_h = rect.bottom - rect.top;
-
-        // Center on the monitor hosting `owner` (or primary monitor).
-        let mon = MonitorFromWindow(owner, MONITOR_DEFAULTTONEAREST);
-        let mut mon_info = MONITORINFO {
-            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
-            ..Default::default()
-        };
-        let (x, y) = if GetMonitorInfoW(mon, &mut mon_info).as_bool() {
-            let wa = mon_info.rcWork;
-            (
-                wa.left + ((wa.right - wa.left - win_w) / 2).max(0),
-                wa.top + ((wa.bottom - wa.top - win_h) / 2).max(0),
-            )
-        } else {
-            (120, 120)
-        };
+        let (x, y, win_w, win_h, maximized) =
+            compute_initial_placement(owner, style, ex_style, scale);
 
         let Ok(hwnd) = CreateWindowExW(
             ex_style,
             class_name,
-            w!("UsageDeck Settings"),
+            PCWSTR(initial_title.as_ptr()),
             style,
             x,
             y,
@@ -290,569 +312,370 @@ pub fn open_settings_dialog_with_updater(
             return;
         };
 
-        let normal_font = make_ui_font(-px(13.5), 400);
-        let bold_font = make_ui_font(-px(13.5), 600);
-        let small_font = make_ui_font(-px(12.0), 400);
+        let app_icon = load_app_icon();
+        if !app_icon.is_invalid() {
+            const WM_SETICON: u32 = 0x0080;
+            const ICON_SMALL: usize = 0;
+            const ICON_BIG: usize = 1;
+            let _ = SendMessageW(
+                hwnd,
+                WM_SETICON,
+                Some(WPARAM(ICON_SMALL)),
+                Some(LPARAM(app_icon.0 as isize)),
+            );
+            let _ = SendMessageW(
+                hwnd,
+                WM_SETICON,
+                Some(WPARAM(ICON_BIG)),
+                Some(LPARAM(app_icon.0 as isize)),
+            );
+        }
 
-        let create_ctrl = |ex: WINDOW_EX_STYLE,
-                           cls: PCWSTR,
-                           text: &str,
-                           st: WINDOW_STYLE,
-                           cx: f32,
-                           cy: f32,
-                           cw: f32,
-                           ch: f32,
-                           id: u16,
-                           font: HFONT|
-         -> HWND {
-            let wide = wide(text);
-            let hmenu = if id == 0 {
-                None
+        apply_titlebar_theme(hwnd, is_dark);
+
+        let actual_dpi = {
+            let d = GetDpiForWindow(hwnd);
+            if d == 0 {
+                owner_dpi
             } else {
-                Some(HMENU(usize::from(id) as *mut std::ffi::c_void))
-            };
-            let ctrl = CreateWindowExW(
-                ex,
-                cls,
-                PCWSTR(wide.as_ptr()),
-                st,
-                px(cx),
-                px(cy),
-                px(cw),
-                px(ch),
-                Some(hwnd),
-                hmenu,
-                Some(hinstance.into()),
-                None,
-            )
-            .unwrap_or_default();
-            if !ctrl.is_invalid() && !font.is_invalid() {
-                SendMessageW(
-                    ctrl,
-                    WM_SETFONT,
-                    Some(WPARAM(font.0 as usize)),
-                    Some(LPARAM(1)),
-                );
+                d
             }
-            ctrl
         };
+        let actual_scale = actual_dpi as f32 / 96.0;
+        let mut rc = RECT::default();
+        let _ = GetClientRect(hwnd, &mut rc);
+        let cw = ((rc.right - rc.left).max(1) as f32) / actual_scale;
+        let ch = ((rc.bottom - rc.top).max(1) as f32) / actual_scale;
 
-        let no_ex = WINDOW_EX_STYLE(0);
-        let group_st = WS_CHILD | WS_VISIBLE | WINDOW_STYLE(BS_GROUPBOX);
-        let chk_st = WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_AUTOCHECKBOX);
-        let btn_st = WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON);
-        let def_btn_st = WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_DEFPUSHBUTTON);
-        let lbl_st = WS_CHILD | WS_VISIBLE | WINDOW_STYLE(SS_LEFT | SS_ENDELLIPSIS);
+        let _ = SetTimer(Some(hwnd), TIMER_POLL_ID, TIMER_POLL_MS, None);
+        (hwnd, app_icon, actual_dpi, cw, ch, maximized)
+    };
 
-        // ---- Section 1: Providers ----
-        let _ = create_ctrl(
-            no_ex,
-            w!("BUTTON"),
-            "Providers",
-            group_st,
-            16.0,
-            12.0,
-            428.0,
-            82.0,
-            0,
-            bold_font,
-        );
-        let chk_claude = create_ctrl(
-            no_ex,
-            w!("BUTTON"),
-            "Claude",
-            chk_st,
-            28.0,
-            36.0,
-            120.0,
-            22.0,
-            ID_CHK_CLAUDE,
-            normal_font,
-        );
-        let chk_cursor = create_ctrl(
-            no_ex,
-            w!("BUTTON"),
-            "Cursor",
-            chk_st,
-            160.0,
-            36.0,
-            120.0,
-            22.0,
-            ID_CHK_CURSOR,
-            normal_font,
-        );
-        let chk_codex = create_ctrl(
-            no_ex,
-            w!("BUTTON"),
-            "Codex",
-            chk_st,
-            292.0,
-            36.0,
-            120.0,
-            22.0,
-            ID_CHK_CODEX,
-            normal_font,
-        );
-        let chk_grok = create_ctrl(
-            no_ex,
-            w!("BUTTON"),
-            "Grok Bot",
-            chk_st,
-            28.0,
-            64.0,
-            120.0,
-            22.0,
-            ID_CHK_GROK,
-            normal_font,
-        );
-        let chk_opencode = create_ctrl(
-            no_ex,
-            w!("BUTTON"),
-            "OpenCode",
-            chk_st,
-            160.0,
-            64.0,
-            120.0,
-            22.0,
-            ID_CHK_OPENCODE,
-            normal_font,
-        );
+    let update_ready_version = LATEST_UPDATE_READY.lock().ok().and_then(|g| g.clone());
+    let update_status_text = LATEST_UPDATE_STATUS
+        .lock()
+        .ok()
+        .and_then(|g| g.clone())
+        .unwrap_or_default();
 
-        // ---- Section 2: General ----
-        let _ = create_ctrl(
-            no_ex,
-            w!("BUTTON"),
-            "General",
-            group_st,
-            16.0,
-            104.0,
-            428.0,
-            76.0,
-            0,
-            bold_font,
-        );
-        let chk_start_login = create_ctrl(
-            no_ex,
-            w!("BUTTON"),
-            "Start with Windows",
-            chk_st,
-            28.0,
-            126.0,
-            380.0,
-            22.0,
-            ID_CHK_START_LOGIN,
-            normal_font,
-        );
-        let chk_hide_fs = create_ctrl(
-            no_ex,
-            w!("BUTTON"),
-            "Hide in fullscreen apps",
-            chk_st,
-            28.0,
-            152.0,
-            380.0,
-            22.0,
-            ID_CHK_HIDE_FS,
-            normal_font,
-        );
+    let app_version = env!("CARGO_PKG_VERSION");
+    let initial_layout = build_layout(&LayoutInput {
+        client_w: client_w_dip,
+        client_h: client_h_dip,
+        page: initial_page,
+        settings: &settings,
+        snapshot: None,
+        loading: true,
+        app_version,
+        update_status_text: &update_status_text,
+        update_checking: false,
+        update_ready_version: update_ready_version.as_deref(),
+        expanded_snoozed: None,
+        spend_range: SpendRange::Hours24,
+        scroll_y: 0.0,
+        now_ms: now_ms_u64(),
+        toast: None,
+    });
 
-        // ---- Section 3: OpenCode API Keys ----
-        let _ = create_ctrl(
-            no_ex,
-            w!("BUTTON"),
-            "OpenCode API Keys",
-            group_st,
-            16.0,
-            190.0,
-            428.0,
-            242.0,
-            0,
-            bold_font,
-        );
-        let list_accounts = create_ctrl(
-            WS_EX_CLIENTEDGE,
-            w!("LISTBOX"),
-            "",
-            WS_CHILD
-                | WS_VISIBLE
-                | WS_TABSTOP
-                | WS_BORDER
-                | WS_VSCROLL
-                | WINDOW_STYLE(LBS_NOTIFY | LBS_NOINTEGRALHEIGHT),
-            28.0,
-            214.0,
-            404.0,
-            84.0,
-            ID_LIST_ACCOUNTS,
-            normal_font,
-        );
-        let btn_copy_key = create_ctrl(
-            no_ex,
-            w!("BUTTON"),
-            "Copy Key",
-            btn_st,
-            28.0,
-            304.0,
-            96.0,
-            26.0,
-            ID_BTN_COPY_KEY,
-            normal_font,
-        );
-        let btn_remove_account = create_ctrl(
-            no_ex,
-            w!("BUTTON"),
-            "Remove Account",
-            btn_st,
-            132.0,
-            304.0,
-            124.0,
-            26.0,
-            ID_BTN_REMOVE_ACCOUNT,
-            normal_font,
-        );
+    let state = SettingsState {
+        hwnd,
+        app_icon,
+        dpi,
+        client_w_dip,
+        client_h_dip,
+        renderer,
+        store,
+        rt,
+        settings,
+        snapshot: None,
+        loading: true,
+        page: initial_page,
+        expanded_snoozed: None,
+        spend_range: SpendRange::Hours24,
+        scroll_y: 0.0,
+        hovered_action: None,
+        scrollbar_hovered: false,
+        scrollbar_dragging: false,
+        scrollbar_drag_offset: 0.0,
+        tracking_leave: false,
+        update_status_text,
+        update_checking: false,
+        update_ready_version,
+        toast: None,
+        layout: initial_layout,
+        on_changed,
+        on_check_updates,
+    };
 
-        let _ = create_ctrl(
-            no_ex,
-            w!("STATIC"),
-            "Email:",
-            lbl_st,
-            28.0,
-            343.0,
-            52.0,
-            20.0,
-            0,
-            normal_font,
-        );
-        let edit_email = create_ctrl(
-            WS_EX_CLIENTEDGE,
-            w!("EDIT"),
-            "",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(ES_AUTOHSCROLL),
-            84.0,
-            340.0,
-            348.0,
-            24.0,
-            ID_EDIT_EMAIL,
-            normal_font,
-        );
-        let _ = create_ctrl(
-            no_ex,
-            w!("STATIC"),
-            "API Key:",
-            lbl_st,
-            28.0,
-            373.0,
-            52.0,
-            20.0,
-            0,
-            normal_font,
-        );
-        let edit_key = create_ctrl(
-            WS_EX_CLIENTEDGE,
-            w!("EDIT"),
-            "",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(ES_AUTOHSCROLL | ES_PASSWORD),
-            84.0,
-            370.0,
-            246.0,
-            24.0,
-            ID_EDIT_KEY,
-            normal_font,
-        );
-        let _ = create_ctrl(
-            no_ex,
-            w!("BUTTON"),
-            "Add / Save",
-            def_btn_st,
-            338.0,
-            369.0,
-            94.0,
-            26.0,
-            ID_BTN_ADD_ACCOUNT,
-            normal_font,
-        );
-        let lbl_account_status = create_ctrl(
-            no_ex,
-            w!("STATIC"),
-            "Keys are stored in Windows Credential Manager (oc_sk_… or sk-…).",
-            lbl_st,
-            28.0,
-            404.0,
-            404.0,
-            20.0,
-            ID_LBL_ACCOUNT_STATUS,
-            small_font,
-        );
+    SETTINGS_OPEN.store(true, Ordering::Release);
+    SETTINGS_HWND.store(hwnd.0 as isize, Ordering::Release);
+    SETTINGS_STATE.with(|cell| {
+        *cell.borrow_mut() = Some(state);
+    });
 
-        // ---- Section 4: About & Maintenance ----
-        let _ = create_ctrl(
-            no_ex,
-            w!("BUTTON"),
-            "About & Diagnostics",
-            group_st,
-            16.0,
-            442.0,
-            428.0,
-            82.0,
-            0,
-            bold_font,
-        );
-        let version_label = format!("UsageDeck v{}", env!("CARGO_PKG_VERSION"));
-        let lbl_update_status = create_ctrl(
-            no_ex,
-            w!("STATIC"),
-            &version_label,
-            lbl_st,
-            28.0,
-            464.0,
-            404.0,
-            20.0,
-            ID_LBL_UPDATE_STATUS,
-            normal_font,
-        );
-        let btn_check_updates = create_ctrl(
-            no_ex,
-            w!("BUTTON"),
-            "Check for updates",
-            btn_st,
-            28.0,
-            488.0,
-            134.0,
-            26.0,
-            ID_BTN_CHECK_UPDATES,
-            normal_font,
-        );
-        let _ = create_ctrl(
-            no_ex,
-            w!("BUTTON"),
-            "Open Data Folder",
-            btn_st,
-            170.0,
-            488.0,
-            128.0,
-            26.0,
-            ID_BTN_OPEN_DATA,
-            normal_font,
-        );
-        let _ = create_ctrl(
-            no_ex,
-            w!("BUTTON"),
-            "Open Log Folder",
-            btn_st,
-            306.0,
-            488.0,
-            126.0,
-            26.0,
-            ID_BTN_OPEN_LOGS,
-            normal_font,
-        );
-
-        // ---- Bottom Close button ----
-        let _ = create_ctrl(
-            no_ex,
-            w!("BUTTON"),
-            "Close",
-            btn_st,
-            356.0,
-            534.0,
-            88.0,
-            26.0,
-            ID_BTN_CLOSE,
-            normal_font,
-        );
-
-        let store = default_data_dir().map(|dir| Store::new(dir, Box::new(CredentialVault)));
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .ok();
-
-        let mut state = SettingsState {
-            controls: Controls {
-                chk_claude,
-                chk_cursor,
-                chk_codex,
-                chk_grok,
-                chk_opencode,
-                chk_start_login,
-                chk_hide_fs,
-                list_accounts,
-                btn_copy_key,
-                btn_remove_account,
-                edit_email,
-                edit_key,
-                lbl_account_status,
-                lbl_update_status,
-                btn_check_updates,
+    // Show window strictly OUTSIDE any RefCell borrow!
+    // SAFETY: shows and focuses our own Settings window.
+    unsafe {
+        let _ = ShowWindow(
+            hwnd,
+            if start_maximized {
+                SW_SHOWMAXIMIZED
+            } else {
+                SW_SHOW
             },
-            fonts: vec![normal_font, bold_font, small_font],
-            store,
-            rt,
-            accounts: Vec::new(),
-            on_changed,
-            on_check_updates,
-        };
-
-        load_settings_into_controls(&state);
-        reload_accounts(&mut state, None);
-
-        SETTINGS_OPEN.store(true, Ordering::Release);
-        SETTINGS_HWND.store(hwnd.0 as isize, Ordering::Release);
-        SETTINGS_STATE.with(|cell| {
-            *cell.borrow_mut() = Some(state);
-        });
-
-        let _ = ShowWindow(hwnd, SW_SHOW);
+        );
         let _ = SetForegroundWindow(hwnd);
+        let _ = InvalidateRect(Some(hwnd), None, false);
     }
+
+    // Kick off non-blocking background snapshot poll immediately.
+    spawn_settings_poll();
 }
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-unsafe fn make_ui_font(height: i32, weight: i32) -> HFONT {
-    let mut lf = LOGFONTW {
-        lfHeight: height,
-        lfWeight: weight,
-        lfCharSet: DEFAULT_CHARSET,
-        lfQuality: CLEARTYPE_QUALITY,
-        ..Default::default()
-    };
-    for (dst, src) in lf.lfFaceName.iter_mut().zip("Segoe UI".encode_utf16()) {
-        *dst = src;
-    }
-    CreateFontIndirectW(&lf)
+fn now_ms_u64() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
-fn set_control_text(hwnd: HWND, text: &str) {
-    let w = wide(text);
-    // SAFETY: `w` is NUL-terminated and outlives the `SetWindowTextW` call.
-    unsafe {
-        let _ = SetWindowTextW(hwnd, PCWSTR(w.as_ptr()));
-    }
-}
-
-fn get_control_text(hwnd: HWND) -> String {
-    // SAFETY: reads UTF-16 text from our own Edit control into a correctly sized buffer.
-    unsafe {
-        let len = GetWindowTextLengthW(hwnd);
-        if len <= 0 {
-            return String::new();
-        }
-        let mut buf = vec![0u16; len as usize + 1];
-        let copied = GetWindowTextW(hwnd, &mut buf);
-        if copied <= 0 {
-            return String::new();
-        }
-        String::from_utf16_lossy(&buf[..copied as usize])
-    }
-}
-
-fn set_checked(hwnd: HWND, checked: bool) {
-    let state = if checked { BST_CHECKED } else { BST_UNCHECKED };
-    // SAFETY: standard checkbox `BM_SETCHECK` on our own control.
-    unsafe {
-        SendMessageW(hwnd, BM_SETCHECK, Some(WPARAM(state)), None);
-    }
-}
-
-fn is_checked(hwnd: HWND) -> bool {
-    // SAFETY: standard checkbox `BM_GETCHECK` on our own control.
-    unsafe { SendMessageW(hwnd, BM_GETCHECK, None, None).0 as usize == BST_CHECKED }
-}
-
-fn load_settings_into_controls(state: &SettingsState) {
-    let settings = state
-        .store
-        .as_ref()
-        .map(Store::get_settings)
-        .unwrap_or_default();
-    set_checked(state.controls.chk_claude, settings.claude_enabled);
-    set_checked(state.controls.chk_cursor, settings.cursor_enabled);
-    set_checked(state.controls.chk_codex, settings.codex_enabled);
-    set_checked(state.controls.chk_grok, settings.grok_enabled);
-    set_checked(state.controls.chk_opencode, settings.opencode_enabled);
-    set_checked(state.controls.chk_start_login, settings.start_at_login);
-    set_checked(state.controls.chk_hide_fs, settings.hide_in_fullscreen);
-}
-
-fn reload_accounts(state: &mut SettingsState, select_email: Option<&str>) {
-    state.accounts = match (&state.store, &state.rt) {
-        (Some(store), Some(rt)) => rt.block_on(store.get_accounts()),
-        _ => Vec::new(),
-    };
-
-    // SAFETY: updates our own ListBox control items.
-    unsafe {
-        SendMessageW(state.controls.list_accounts, LB_RESETCONTENT, None, None);
-        let mut selected_idx: Option<usize> = None;
-        for (idx, acc) in state.accounts.iter().enumerate() {
-            let hint = if acc.key.is_empty() {
-                "missing key".to_string()
-            } else {
-                key_hint(&acc.key)
-            };
-            let row = wide(&format!("{}   ({hint})", acc.email));
-            SendMessageW(
-                state.controls.list_accounts,
-                LB_ADDSTRING,
-                None,
-                Some(LPARAM(row.as_ptr() as isize)),
-            );
-            if let Some(target) = select_email {
-                if acc.email.eq_ignore_ascii_case(target) {
-                    selected_idx = Some(idx);
+fn load_app_icon() -> HICON {
+    if APP_ICON_BYTES.len() >= 6 {
+        let count = u16::from_le_bytes([APP_ICON_BYTES[4], APP_ICON_BYTES[5]]) as usize;
+        if count > 0 && APP_ICON_BYTES.len() >= 6 + count * 16 {
+            let mut best: Option<(usize, usize, i32)> = None;
+            for i in 0..count {
+                let off = 6 + i * 16;
+                let w = if APP_ICON_BYTES[off] == 0 {
+                    256
+                } else {
+                    i32::from(APP_ICON_BYTES[off])
+                };
+                let size = u32::from_le_bytes([
+                    APP_ICON_BYTES[off + 8],
+                    APP_ICON_BYTES[off + 9],
+                    APP_ICON_BYTES[off + 10],
+                    APP_ICON_BYTES[off + 11],
+                ]) as usize;
+                let data_off = u32::from_le_bytes([
+                    APP_ICON_BYTES[off + 12],
+                    APP_ICON_BYTES[off + 13],
+                    APP_ICON_BYTES[off + 14],
+                    APP_ICON_BYTES[off + 15],
+                ]) as usize;
+                if data_off
+                    .checked_add(size)
+                    .is_none_or(|end| end > APP_ICON_BYTES.len())
+                {
+                    continue;
+                }
+                let score = (w - 32).abs();
+                if best.is_none_or(|(_, _, bs)| score < bs) {
+                    best = Some((data_off, size, score));
+                }
+            }
+            if let Some((data_off, size, _)) = best {
+                let slice = &APP_ICON_BYTES[data_off..data_off + size];
+                // SAFETY: bounded ICO slice from embedded asset.
+                if let Ok(icon) = unsafe {
+                    CreateIconFromResourceEx(slice, true, 0x0003_0000, 32, 32, LR_DEFAULTCOLOR)
+                } {
+                    return icon;
                 }
             }
         }
-        if let Some(idx) = selected_idx {
-            SendMessageW(
-                state.controls.list_accounts,
-                LB_SETCURSEL,
-                Some(WPARAM(idx)),
-                None,
+    }
+    HICON::default()
+}
+
+// ---- Window Geometry Persistence (`settings-window.json`) -----------------------------------
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SavedPlacement {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    maximized: bool,
+}
+
+fn load_saved_placement() -> Option<SavedPlacement> {
+    let dir = default_data_dir()?;
+    let val = read_json(&dir.join(SETTINGS_WINDOW_FILE))?;
+    let x = val.get("x")?.as_i64()? as i32;
+    let y = val.get("y")?.as_i64()? as i32;
+    let width = val.get("width")?.as_i64()? as i32;
+    let height = val.get("height")?.as_i64()? as i32;
+    if width <= 0 || height <= 0 {
+        return None;
+    }
+    let maximized = val
+        .get("maximized")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    Some(SavedPlacement {
+        x,
+        y,
+        width,
+        height,
+        maximized,
+    })
+}
+
+fn save_window_placement(hwnd: HWND) {
+    let Some(dir) = default_data_dir() else {
+        return;
+    };
+    let mut wp = WINDOWPLACEMENT {
+        length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: queries standard Win32 placement struct for our own window.
+    if unsafe { GetWindowPlacement(hwnd, &mut wp) }.is_err() {
+        return;
+    }
+    let rc = wp.rcNormalPosition;
+    let width = rc.right - rc.left;
+    let height = rc.bottom - rc.top;
+    if width <= 0 || height <= 0 || rc.left <= -30_000 || rc.top <= -30_000 {
+        return;
+    }
+    // SAFETY: queries standard Win32 maximized state for our own window.
+    let maximized = unsafe { IsZoomed(hwnd) }.as_bool();
+    let payload = serde_json::json!({
+        "x": rc.left,
+        "y": rc.top,
+        "width": width,
+        "height": height,
+        "maximized": maximized,
+    });
+    let _ = write_json_atomic(&dir.join(SETTINGS_WINDOW_FILE), &payload);
+}
+
+fn clamp_rect_to_work_area(
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    min_w: i32,
+    min_h: i32,
+    wa: RECT,
+) -> (i32, i32, i32, i32) {
+    let wa_w = (wa.right - wa.left).max(min_w);
+    let wa_h = (wa.bottom - wa.top).max(min_h);
+    let cw = w.clamp(min_w.min(wa_w), wa_w);
+    let ch = h.clamp(min_h.min(wa_h), wa_h);
+    let cx = x.clamp(wa.left, wa.right - cw);
+    let cy = y.clamp(wa.top, wa.bottom - ch);
+    (cx, cy, cw, ch)
+}
+
+unsafe fn compute_initial_placement(
+    owner: HWND,
+    style: WINDOW_STYLE,
+    ex_style: WINDOW_EX_STYLE,
+    scale: f32,
+) -> (i32, i32, i32, i32, bool) {
+    let mut def_rc = RECT {
+        left: 0,
+        top: 0,
+        right: (DEFAULT_WIN_W_DIP * scale).round() as i32,
+        bottom: (DEFAULT_WIN_H_DIP * scale).round() as i32,
+    };
+    let _ = AdjustWindowRectEx(&mut def_rc, style, false, ex_style);
+    let def_w = def_rc.right - def_rc.left;
+    let def_h = def_rc.bottom - def_rc.top;
+
+    let mut min_rc = RECT {
+        left: 0,
+        top: 0,
+        right: (MIN_WIN_W_DIP * scale).round() as i32,
+        bottom: (MIN_WIN_H_DIP * scale).round() as i32,
+    };
+    let _ = AdjustWindowRectEx(&mut min_rc, style, false, ex_style);
+    let min_w = min_rc.right - min_rc.left;
+    let min_h = min_rc.bottom - min_rc.top;
+
+    if let Some(saved) = load_saved_placement() {
+        let probe = RECT {
+            left: saved.x,
+            top: saved.y,
+            right: saved.x + saved.width,
+            bottom: saved.y + saved.height,
+        };
+        let mon = MonitorFromRect(&probe, MONITOR_DEFAULTTONEAREST);
+        let mut mi = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if GetMonitorInfoW(mon, &mut mi).as_bool() {
+            let (cx, cy, cw, ch) = clamp_rect_to_work_area(
+                saved.x,
+                saved.y,
+                saved.width,
+                saved.height,
+                min_w,
+                min_h,
+                mi.rcWork,
             );
+            return (cx, cy, cw, ch, saved.maximized);
         }
     }
-    sync_account_buttons(state);
-}
 
-fn selected_account_index(state: &SettingsState) -> Option<usize> {
-    // SAFETY: queries current selection index from our own ListBox.
-    let sel = unsafe { SendMessageW(state.controls.list_accounts, LB_GETCURSEL, None, None).0 };
-    if sel < 0 {
-        None
-    } else {
-        let idx = sel as usize;
-        (idx < state.accounts.len()).then_some(idx)
-    }
-}
-
-fn sync_account_buttons(state: &SettingsState) {
-    let has_sel = selected_account_index(state).is_some();
-    // SAFETY: enables/disables our own child buttons.
-    unsafe {
-        let _ = EnableWindow(state.controls.btn_copy_key, has_sel);
-        let _ = EnableWindow(state.controls.btn_remove_account, has_sel);
-    }
-}
-
-fn save_settings_change(
-    state: &SettingsState,
-    change: impl FnOnce(Settings) -> Settings,
-) -> Result<Settings, String> {
-    let (Some(store), Some(rt)) = (&state.store, &state.rt) else {
-        return Err("Data folder unavailable (APPDATA is not set).".to_string());
+    let mon = MonitorFromWindow(owner, MONITOR_DEFAULTTONEAREST);
+    let mut mi = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
     };
-    rt.block_on(store.update_settings(change))
-        .map_err(|e| format!("Failed to save settings: {e}"))
+    if GetMonitorInfoW(mon, &mut mi).as_bool() {
+        let wa = mi.rcWork;
+        let x = wa.left + ((wa.right - wa.left - def_w) / 2).max(0);
+        let y = wa.top + ((wa.bottom - wa.top - def_h) / 2).max(0);
+        let (cx, cy, cw, ch) = clamp_rect_to_work_area(x, y, def_w, def_h, min_w, min_h, wa);
+        (cx, cy, cw, ch, false)
+    } else {
+        (120, 100, def_w, def_h, false)
+    }
 }
 
-fn open_folder(dir: Option<PathBuf>) {
-    let Some(dir) = dir else { return };
-    let _ = std::fs::create_dir_all(&dir);
-    let _ = std::process::Command::new("explorer.exe").arg(&dir).spawn();
+// ---- Background Polling & Built-in Update Check ---------------------------------------------
+
+fn spawn_settings_poll() {
+    if POLL_IN_FLIGHT.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let _ = std::thread::Builder::new()
+        .name("usagedeck-settings-poll".into())
+        .spawn(|| {
+            let snap = (|| -> Option<SettingsSnapshot> {
+                let data_dir = default_data_dir()?;
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .ok()?;
+                let core = Core::new(Store::new(data_dir, Box::new(CredentialVault)));
+                Some(rt.block_on(poll_settings_snapshot(&core)))
+            })();
+
+            POLL_IN_FLIGHT.store(false, Ordering::Release);
+
+            if let Some(snapshot) = snap {
+                if let Ok(mut slot) = PENDING_SETTINGS_DATA.lock() {
+                    *slot = Some(snapshot);
+                }
+            }
+            let raw = SETTINGS_HWND.load(Ordering::Acquire);
+            if raw != 0 {
+                let hwnd = HWND(raw as *mut std::ffi::c_void);
+                // SAFETY: `PostMessageW` is thread-safe for custom `WM_APP` notifications.
+                unsafe {
+                    let _ = PostMessageW(Some(hwnd), WM_APP_SETTINGS_DATA, WPARAM(0), LPARAM(0));
+                }
+            }
+        });
 }
 
 fn run_builtin_update_check() {
@@ -871,7 +694,7 @@ fn run_builtin_update_check() {
             {
                 Ok(rt) => rt,
                 Err(e) => {
-                    post_update_status(format!("Update check failed: {e}"), true);
+                    post_update_status(format!("Update check failed: {e}"), false);
                     return;
                 }
             };
@@ -899,262 +722,893 @@ fn run_builtin_update_check() {
                 Ok(release) => {
                     if let Some(cur) = current_ver {
                         if is_newer(cur, release.version) {
+                            let ver_str = release.version.to_string();
+                            set_update_ready(Some(&ver_str));
                             post_update_status(
-                                format!(
-                                    "Update v{} available (current v{current_raw})",
-                                    release.version
-                                ),
-                                true,
+                                format!("Update v{ver_str} available (current v{current_raw})"),
+                                false,
                             );
                             return;
                         }
                     }
-                    post_update_status(
-                        format!(
-                            "You're up to date — v{current_raw} (latest v{})",
-                            release.version
-                        ),
-                        true,
-                    );
+                    post_update_status(format!("Up to date (v{current_raw})"), false);
                 }
                 Err(msg) => {
-                    post_update_status(format!("Couldn't check for updates ({msg})"), true);
+                    post_update_status(format!("Couldn't check for updates ({msg})"), false);
                 }
             }
         });
 }
 
-fn handle_command(hwnd: HWND, id: u16, notify: u16) {
-    if id == ID_LIST_ACCOUNTS && notify == LBN_SELCHANGE {
-        SETTINGS_STATE.with(|cell| {
-            if let Some(state) = cell.borrow().as_ref() {
-                sync_account_buttons(state);
-            }
+// ---- State Helpers --------------------------------------------------------------------------
+
+impl SettingsState {
+    fn rebuild_layout(&mut self) {
+        let app_version = self
+            .snapshot
+            .as_ref()
+            .map(|s| s.app_version.as_str())
+            .unwrap_or(env!("CARGO_PKG_VERSION"));
+        self.layout = build_layout(&LayoutInput {
+            client_w: self.client_w_dip,
+            client_h: self.client_h_dip,
+            page: self.page,
+            settings: &self.settings,
+            snapshot: self.snapshot.as_ref(),
+            loading: self.loading,
+            app_version,
+            update_status_text: &self.update_status_text,
+            update_checking: self.update_checking,
+            update_ready_version: self.update_ready_version.as_deref(),
+            expanded_snoozed: self.expanded_snoozed,
+            spend_range: self.spend_range,
+            scroll_y: self.scroll_y,
+            now_ms: now_ms_u64(),
+            toast: self.toast.as_deref(),
         });
-        return;
+        self.scroll_y = self.layout.scroll_y;
     }
 
-    if notify != BN_CLICKED {
-        return;
+    fn invalidate(&self) {
+        // SAFETY: invalidates our own window for repaint.
+        unsafe {
+            let _ = InvalidateRect(Some(self.hwnd), None, false);
+        }
     }
 
-    // Collect any callback or close request outside the RefCell borrow to avoid re-entrancy.
-    let mut notify_changed: Option<Arc<dyn Fn() + Send + Sync>> = None;
-    let mut custom_update_cb: Option<Arc<dyn Fn(HWND) + Send + Sync>> = None;
-    let mut run_builtin_update = false;
-    let mut should_close = false;
+    fn show_toast(&mut self, msg: impl Into<String>) {
+        self.toast = Some(msg.into());
+        // SAFETY: sets/replaces auto-hide toast timer on our own HWND.
+        unsafe {
+            let _ = SetTimer(Some(self.hwnd), TIMER_TOAST_ID, TIMER_TOAST_MS, None);
+        }
+        self.rebuild_layout();
+        self.invalidate();
+    }
 
-    SETTINGS_STATE.with(|cell| {
-        let mut borrow = cell.borrow_mut();
-        let Some(state) = borrow.as_mut() else {
-            return;
+    fn save_settings(
+        &mut self,
+        change: impl FnOnce(Settings) -> Settings,
+    ) -> Result<Settings, String> {
+        let (Some(store), Some(rt)) = (&self.store, &self.rt) else {
+            return Err("Data folder unavailable (APPDATA is not set).".to_string());
         };
+        let next = rt
+            .block_on(store.update_settings(change))
+            .map_err(|e| format!("Failed to save settings: {e}"))?;
+        self.settings = next.clone();
+        if let Some(ref mut snap) = self.snapshot {
+            snap.settings = next.clone();
+        }
+        Ok(next)
+    }
 
-        match id {
-            ID_CHK_CLAUDE | ID_CHK_CURSOR | ID_CHK_CODEX | ID_CHK_GROK | ID_CHK_OPENCODE
-            | ID_CHK_START_LOGIN | ID_CHK_HIDE_FS => {
-                let claude = is_checked(state.controls.chk_claude);
-                let cursor = is_checked(state.controls.chk_cursor);
-                let codex = is_checked(state.controls.chk_codex);
-                let grok = is_checked(state.controls.chk_grok);
-                let opencode = is_checked(state.controls.chk_opencode);
-                let start_login = is_checked(state.controls.chk_start_login);
-                let hide_fs = is_checked(state.controls.chk_hide_fs);
+    fn hit_at(&self, x_dip: f32, y_dip: f32) -> Option<(Action, bool)> {
+        for h in self.layout.hits.iter().rev() {
+            if h.rect.contains(x_dip, y_dip) {
+                return Some((h.action.clone(), h.enabled));
+            }
+        }
+        None
+    }
 
-                match save_settings_change(state, |mut s| {
-                    s.claude_enabled = claude;
-                    s.cursor_enabled = cursor;
-                    s.codex_enabled = codex;
-                    s.grok_enabled = grok;
-                    s.opencode_enabled = opencode;
-                    s.start_at_login = start_login;
-                    s.hide_in_fullscreen = hide_fs;
+    fn row_context_at(&self, x_dip: f32, y_dip: f32) -> Option<Action> {
+        for h in self.layout.row_context_hits.iter().rev() {
+            if h.rect.contains(x_dip, y_dip) {
+                return Some(h.action.clone());
+            }
+        }
+        None
+    }
+
+    fn update_account_row_hidden(
+        &mut self,
+        provider: ProviderKind,
+        account_id: &str,
+        hidden: bool,
+    ) {
+        if let Some(ref mut snap) = self.snapshot {
+            let list = match provider {
+                ProviderKind::Claude => &mut snap.claude,
+                ProviderKind::Codex => &mut snap.codex,
+                ProviderKind::Cursor => &mut snap.cursor,
+                ProviderKind::Grok => &mut snap.grok,
+                ProviderKind::OpenCode => &mut snap.opencode,
+            };
+            for row in list.iter_mut() {
+                if row.id.eq_ignore_ascii_case(account_id) {
+                    row.hidden = hidden;
+                }
+            }
+        }
+    }
+
+    fn update_account_row_nickname(
+        &mut self,
+        provider: ProviderKind,
+        account_id: &str,
+        nickname: Option<String>,
+    ) {
+        if let Some(ref mut snap) = self.snapshot {
+            let list = match provider {
+                ProviderKind::Claude => &mut snap.claude,
+                ProviderKind::Codex => &mut snap.codex,
+                ProviderKind::Cursor => &mut snap.cursor,
+                ProviderKind::Grok => &mut snap.grok,
+                ProviderKind::OpenCode => &mut snap.opencode,
+            };
+            for row in list.iter_mut() {
+                if row.id.eq_ignore_ascii_case(account_id) {
+                    row.nickname = nickname.clone();
+                }
+            }
+        }
+    }
+}
+
+fn open_folder(dir: Option<PathBuf>) {
+    let Some(dir) = dir else { return };
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::process::Command::new("explorer.exe").arg(&dir).spawn();
+}
+
+fn disabled_account_key(provider: ProviderKind, account_id: &str) -> String {
+    match provider {
+        ProviderKind::OpenCode => account_id.trim().to_lowercase(),
+        _ => format!("{}:{}", provider.key_prefix(), account_id.trim()).to_lowercase(),
+    }
+}
+
+fn display_name_key(provider: ProviderKind, account_id: &str) -> String {
+    match provider {
+        ProviderKind::OpenCode => account_id.trim().to_string(),
+        _ => format!("{}:{}", provider.key_prefix(), account_id.trim()),
+    }
+}
+
+// ---- Action Dispatch (Always Runs Win32 Modals / Menus / Callbacks Outside Borrow!) ---------
+
+enum DeferredAction {
+    None,
+    NotifyChanged(Arc<dyn Fn() + Send + Sync>),
+    RunCustomUpdate(Arc<dyn Fn(HWND) + Send + Sync>),
+    RunBuiltinUpdate,
+    PollSnapshot,
+    OpenAccountMenu {
+        provider: ProviderKind,
+        account_id: String,
+        label: String,
+        nickname: Option<String>,
+        hidden: bool,
+        is_dark: bool,
+    },
+    PromptAddOpenCode {
+        is_dark: bool,
+    },
+    PromptHourlyTarget {
+        is_dark: bool,
+        current: Option<u32>,
+    },
+}
+
+fn execute_action(hwnd: HWND, action: Action) {
+    let mut deferred = DeferredAction::None;
+    let mut new_title: Option<String> = None;
+    let mut new_dark_titlebar: Option<bool> = None;
+
+    try_with_state(|state| match action {
+        Action::SelectPage(page) => {
+            if state.page != page {
+                state.page = page;
+                state.scroll_y = 0.0;
+                state.hovered_action = None;
+                state.rebuild_layout();
+                state.invalidate();
+                new_title = Some(page.window_title());
+            }
+        }
+        Action::CheckUpdates => {
+            if let Some(cb) = state.on_check_updates.clone() {
+                state.update_status_text = "Checking for updates…".to_string();
+                state.update_checking = state.update_ready_version.is_none();
+                state.rebuild_layout();
+                state.invalidate();
+                deferred = DeferredAction::RunCustomUpdate(cb);
+            } else {
+                state.update_status_text = "Checking for updates…".to_string();
+                state.update_checking = true;
+                state.rebuild_layout();
+                state.invalidate();
+                deferred = DeferredAction::RunBuiltinUpdate;
+            }
+        }
+        Action::OpenAccountFolder => {
+            open_folder(default_data_dir());
+        }
+        Action::OpenLogFolder => {
+            open_folder(default_log_dir());
+        }
+        Action::CopyDiagnostics => {
+            let text = state
+                .snapshot
+                .as_ref()
+                .map(|s| s.diagnostics_text.clone())
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| format!("UsageDeck v{} (Windows)", env!("CARGO_PKG_VERSION")));
+            match clipboard::copy_text(&text) {
+                Ok(()) => state.show_toast("Diagnostics copied"),
+                Err(e) => {
+                    log::warn!("copy diagnostics failed: {e}");
+                    state.show_toast("Couldn't copy diagnostics");
+                }
+            }
+        }
+        Action::ToggleStartAtLogin => {
+            let next_val = !state.settings.start_at_login;
+            match state.save_settings(|mut s| {
+                s.start_at_login = next_val;
+                s
+            }) {
+                Ok(_) => {
+                    autostart::set_start_at_login(next_val);
+                    state.show_toast(if next_val {
+                        "Starts with Windows"
+                    } else {
+                        "No longer starts with Windows"
+                    });
+                    deferred = DeferredAction::NotifyChanged(state.on_changed.clone());
+                }
+                Err(e) => {
+                    log::warn!("{e}");
+                    state.show_toast("Couldn't save setting");
+                }
+            }
+        }
+        Action::ToggleHideInFullscreen => {
+            let next_val = !state.settings.hide_in_fullscreen;
+            match state.save_settings(|mut s| {
+                s.hide_in_fullscreen = next_val;
+                s
+            }) {
+                Ok(_) => {
+                    state.show_toast(if next_val {
+                        "Hides during full-screen apps"
+                    } else {
+                        "Stays visible during full-screen apps"
+                    });
+                    deferred = DeferredAction::NotifyChanged(state.on_changed.clone());
+                }
+                Err(e) => {
+                    log::warn!("{e}");
+                    state.show_toast("Couldn't save setting");
+                }
+            }
+        }
+        Action::SetPanelTheme(theme) => {
+            if state.settings.panel_theme == theme {
+                return;
+            }
+            if state
+                .save_settings(|mut s| {
+                    s.panel_theme = theme;
                     s
-                }) {
-                    Ok(_) => {
-                        if id == ID_CHK_START_LOGIN {
-                            autostart::set_start_at_login(start_login);
-                        }
-                        notify_changed = Some(state.on_changed.clone());
-                    }
-                    Err(e) => {
-                        log::warn!("{e}");
-                        set_control_text(state.controls.lbl_account_status, &e);
-                    }
-                }
+                })
+                .is_ok()
+            {
+                new_dark_titlebar = Some(resolve_is_dark(theme));
+                state.rebuild_layout();
+                state.invalidate();
+                deferred = DeferredAction::NotifyChanged(state.on_changed.clone());
             }
-            ID_BTN_ADD_ACCOUNT => {
-                let email = get_control_text(state.controls.edit_email)
-                    .trim()
-                    .to_string();
-                let key = get_control_text(state.controls.edit_key).trim().to_string();
-
-                if email.is_empty() || email.encode_utf16().count() > MAX_EMAIL_LENGTH {
-                    set_control_text(
-                        state.controls.lbl_account_status,
-                        "Enter an email or label (up to 320 characters).",
-                    );
-                    // SAFETY: focus email input on validation failure.
-                    unsafe {
-                        let _ = SetFocus(Some(state.controls.edit_email));
-                    }
-                    return;
-                }
-                if !is_valid_opencode_key(&key) {
-                    set_control_text(
-                        state.controls.lbl_account_status,
-                        "API key must start with oc_sk_ or sk- with no spaces.",
-                    );
-                    // SAFETY: focus key input on validation failure.
-                    unsafe {
-                        let _ = SetFocus(Some(state.controls.edit_key));
-                    }
-                    return;
-                }
-
-                let save_res = match (&state.store, &state.rt) {
-                    (Some(store), Some(rt)) => {
-                        let email_c = email.clone();
-                        let key_c = key.clone();
-                        rt.block_on(store.update_accounts(|mut accounts| {
-                            let lower = email_c.to_lowercase();
-                            match accounts
-                                .iter_mut()
-                                .find(|a| a.email.to_lowercase() == lower)
-                            {
-                                Some(existing) => existing.key = key_c,
-                                None => accounts.push(Account {
-                                    email: email_c,
-                                    key: key_c,
-                                }),
+        }
+        Action::SetWidgetTheme(mode) => {
+            if state.settings.theme_mode == mode {
+                return;
+            }
+            if state
+                .save_settings(|mut s| {
+                    s.theme_mode = mode;
+                    s
+                })
+                .is_ok()
+            {
+                state.rebuild_layout();
+                state.invalidate();
+                deferred = DeferredAction::NotifyChanged(state.on_changed.clone());
+            }
+        }
+        Action::MoveProviderUp(wp) => {
+            if let Some(pos) = state.settings.provider_order.iter().position(|p| *p == wp) {
+                if pos > 0
+                    && state
+                        .save_settings(|mut s| {
+                            if let Some(p) = s.provider_order.iter().position(|x| *x == wp) {
+                                if p > 0 {
+                                    s.provider_order.swap(p, p - 1);
+                                }
                             }
-                            accounts
-                        }))
-                        .map_err(|e| format!("Could not save OpenCode account: {e}"))
-                    }
-                    _ => Err("Data folder unavailable (APPDATA is not set).".to_string()),
-                };
-
-                match save_res {
-                    Ok(_) => {
-                        set_control_text(state.controls.edit_email, "");
-                        set_control_text(state.controls.edit_key, "");
-                        reload_accounts(state, Some(&email));
-                        set_control_text(
-                            state.controls.lbl_account_status,
-                            &format!("Saved OpenCode key for {email}."),
-                        );
-                        notify_changed = Some(state.on_changed.clone());
-                    }
-                    Err(e) => {
-                        log::warn!("{e}");
-                        set_control_text(state.controls.lbl_account_status, &e);
-                    }
+                            s
+                        })
+                        .is_ok()
+                {
+                    state.rebuild_layout();
+                    state.invalidate();
+                    deferred = DeferredAction::NotifyChanged(state.on_changed.clone());
                 }
             }
-            ID_BTN_COPY_KEY => {
-                let Some(idx) = selected_account_index(state) else {
-                    return;
-                };
-                let acc = &state.accounts[idx];
-                if acc.key.is_empty() {
-                    set_control_text(
-                        state.controls.lbl_account_status,
-                        &format!("No key stored in Credential Manager for {}.", acc.email),
-                    );
-                    return;
-                }
-                match clipboard::copy_text(&acc.key) {
-                    Ok(()) => {
-                        set_control_text(
-                            state.controls.lbl_account_status,
-                            &format!("Copied API key for {}.", acc.email),
-                        );
-                    }
-                    Err(e) => {
-                        log::warn!("copy_text failed: {e}");
-                        set_control_text(
-                            state.controls.lbl_account_status,
-                            &format!("Clipboard error: {e}"),
-                        );
-                    }
+        }
+        Action::MoveProviderDown(wp) => {
+            let len = state.settings.provider_order.len();
+            if let Some(pos) = state.settings.provider_order.iter().position(|p| *p == wp) {
+                if pos + 1 < len
+                    && state
+                        .save_settings(|mut s| {
+                            if let Some(p) = s.provider_order.iter().position(|x| *x == wp) {
+                                if p + 1 < s.provider_order.len() {
+                                    s.provider_order.swap(p, p + 1);
+                                }
+                            }
+                            s
+                        })
+                        .is_ok()
+                {
+                    state.rebuild_layout();
+                    state.invalidate();
+                    deferred = DeferredAction::NotifyChanged(state.on_changed.clone());
                 }
             }
-            ID_BTN_REMOVE_ACCOUNT => {
-                let Some(idx) = selected_account_index(state) else {
-                    return;
-                };
-                let email = state.accounts[idx].email.clone();
-                let lower = email.to_lowercase();
-
-                let remove_res = match (&state.store, &state.rt) {
-                    (Some(store), Some(rt)) => {
-                        let first = rt.block_on(store.update_accounts(|accounts| {
-                            accounts
-                                .into_iter()
-                                .filter(|a| a.email.to_lowercase() != lower)
-                                .collect()
-                        }));
-                        match first {
-                            Ok(_) => rt
-                                .block_on(store.forget_account(&email))
-                                .map(|_| ())
-                                .map_err(|e| format!("Failed to clean account settings: {e}")),
-                            Err(e) => Err(format!("Failed to remove account: {e}")),
-                        }
+        }
+        Action::ToggleProviderEnabled(wp) => {
+            let name = ProviderKind::from_widget_provider(wp).display_name();
+            let next_val = !layout::provider_enabled(&state.settings, wp);
+            if state
+                .save_settings(|mut s| {
+                    match wp {
+                        WidgetProvider::Claude => s.claude_enabled = next_val,
+                        WidgetProvider::Cursor => s.cursor_enabled = next_val,
+                        WidgetProvider::Codex => s.codex_enabled = next_val,
+                        WidgetProvider::Grok => s.grok_enabled = next_val,
+                        WidgetProvider::Opencode => s.opencode_enabled = next_val,
                     }
-                    _ => Err("Data folder unavailable (APPDATA is not set).".to_string()),
-                };
-
-                match remove_res {
-                    Ok(()) => {
-                        reload_accounts(state, None);
-                        set_control_text(
-                            state.controls.lbl_account_status,
-                            &format!("Removed {email}."),
-                        );
-                        notify_changed = Some(state.on_changed.clone());
-                    }
-                    Err(e) => {
-                        log::warn!("{e}");
-                        set_control_text(state.controls.lbl_account_status, &e);
-                    }
-                }
+                    s
+                })
+                .is_ok()
+            {
+                state.show_toast(format!(
+                    "{name} {} widget",
+                    if next_val { "shown on" } else { "hidden from" }
+                ));
+                deferred = DeferredAction::NotifyChanged(state.on_changed.clone());
             }
-            ID_BTN_CHECK_UPDATES => {
-                if let Some(ref cb) = state.on_check_updates {
-                    set_control_text(state.controls.lbl_update_status, "Checking for updates...");
-                    custom_update_cb = Some(cb.clone());
+        }
+        Action::ToggleSnoozedExpand(wp) => {
+            state.expanded_snoozed = if state.expanded_snoozed == Some(wp) {
+                None
+            } else {
+                Some(wp)
+            };
+            state.rebuild_layout();
+            state.invalidate();
+        }
+        Action::UnhideSnoozed(key) => {
+            if state
+                .save_settings(|mut s| {
+                    s.snoozed_until.remove(&key);
+                    s
+                })
+                .is_ok()
+            {
+                state.show_toast("Card is back on the widget");
+                deferred = DeferredAction::NotifyChanged(state.on_changed.clone());
+            }
+        }
+        Action::ToggleShowProviderNames => {
+            let next_val = !state.settings.show_provider_names;
+            if state
+                .save_settings(|mut s| {
+                    s.show_provider_names = next_val;
+                    s
+                })
+                .is_ok()
+            {
+                state.show_toast(if next_val {
+                    "Cards show provider names"
                 } else {
-                    set_control_text(state.controls.lbl_update_status, "Checking for updates...");
-                    // SAFETY: disable button while background check runs.
-                    unsafe {
-                        let _ = EnableWindow(state.controls.btn_check_updates, false);
-                    }
-                    run_builtin_update = true;
-                }
+                    "Cards show nicknames"
+                });
+                deferred = DeferredAction::NotifyChanged(state.on_changed.clone());
             }
-            ID_BTN_OPEN_DATA => open_folder(default_data_dir()),
-            ID_BTN_OPEN_LOGS => open_folder(default_log_dir()),
-            ID_BTN_CLOSE => should_close = true,
-            _ => {}
+        }
+        Action::RefreshData => {
+            state.loading = true;
+            state.rebuild_layout();
+            state.invalidate();
+            deferred = DeferredAction::PollSnapshot;
+        }
+        Action::OpenAccountMenu {
+            provider,
+            account_id,
+            label,
+            nickname,
+            hidden,
+        } => {
+            deferred = DeferredAction::OpenAccountMenu {
+                provider,
+                account_id,
+                label,
+                nickname,
+                hidden,
+                is_dark: resolve_is_dark(state.settings.panel_theme),
+            };
+        }
+        Action::ToggleBar { provider, bar_id } => {
+            let all_ids: Vec<&'static str> = provider_bars(provider, None)
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect();
+            let mut hidden: Vec<String> = state
+                .settings
+                .hidden_bars
+                .get(&provider)
+                .cloned()
+                .unwrap_or_default();
+            if let Some(pos) = hidden.iter().position(|id| id == &bar_id) {
+                hidden.remove(pos);
+            } else {
+                // Never allow hiding every bar of a provider.
+                let remaining_on = all_ids
+                    .iter()
+                    .filter(|id| **id != bar_id && !hidden.iter().any(|h| h == *id))
+                    .count();
+                if remaining_on == 0 {
+                    return;
+                }
+                hidden.push(bar_id);
+            }
+            if state
+                .save_settings(|mut s| {
+                    if hidden.is_empty() {
+                        s.hidden_bars.remove(&provider);
+                    } else {
+                        s.hidden_bars.insert(provider, hidden);
+                    }
+                    s
+                })
+                .is_ok()
+            {
+                state.rebuild_layout();
+                state.invalidate();
+                deferred = DeferredAction::NotifyChanged(state.on_changed.clone());
+            }
+        }
+        Action::ToggleFableShade => {
+            let next_val = !state.settings.fable_shade;
+            if state
+                .save_settings(|mut s| {
+                    s.fable_shade = next_val;
+                    s
+                })
+                .is_ok()
+            {
+                state.show_toast(if next_val {
+                    "Fable shown in a lighter shade"
+                } else {
+                    "Bars back to one color"
+                });
+                deferred = DeferredAction::NotifyChanged(state.on_changed.clone());
+            }
+        }
+        Action::SetHourlyTarget => {
+            deferred = DeferredAction::PromptHourlyTarget {
+                is_dark: resolve_is_dark(state.settings.panel_theme),
+                current: state.settings.claude_hourly_target,
+            };
+        }
+        Action::ClearHourlyTarget => {
+            if state.settings.claude_hourly_target.is_some()
+                && state
+                    .save_settings(|mut s| {
+                        s.claude_hourly_target = None;
+                        s
+                    })
+                    .is_ok()
+            {
+                state.show_toast("Hourly spend target off");
+                deferred = DeferredAction::NotifyChanged(state.on_changed.clone());
+            }
+        }
+        Action::SetSpendRange(range) => {
+            if state.spend_range != range {
+                state.spend_range = range;
+                state.rebuild_layout();
+                state.invalidate();
+            }
+        }
+        Action::AddOpenCodeAccount => {
+            deferred = DeferredAction::PromptAddOpenCode {
+                is_dark: resolve_is_dark(state.settings.panel_theme),
+            };
+        }
+        Action::ToggleDeepSeekPeakWarning => {
+            let next_val = !state.settings.deepseek_peak_hour_warning;
+            if state
+                .save_settings(|mut s| {
+                    s.deepseek_peak_hour_warning = next_val;
+                    s
+                })
+                .is_ok()
+            {
+                state.show_toast(if next_val {
+                    "Peak-hour warning on"
+                } else {
+                    "Peak-hour warning off"
+                });
+                deferred = DeferredAction::NotifyChanged(state.on_changed.clone());
+            }
         }
     });
 
-    if let Some(cb) = notify_changed {
+    if let Some(title) = new_title {
+        let w = wide(&title);
+        // SAFETY: updates our own window caption outside RefCell borrow.
+        unsafe {
+            let _ = SetWindowTextW(hwnd, PCWSTR(w.as_ptr()));
+        }
+    }
+    if let Some(dark) = new_dark_titlebar {
+        apply_titlebar_theme(hwnd, dark);
+    }
+
+    match deferred {
+        DeferredAction::None => {}
+        DeferredAction::NotifyChanged(cb) => cb(),
+        DeferredAction::RunCustomUpdate(cb) => cb(hwnd),
+        DeferredAction::RunBuiltinUpdate => run_builtin_update_check(),
+        DeferredAction::PollSnapshot => spawn_settings_poll(),
+        DeferredAction::PromptAddOpenCode { is_dark } => {
+            if let Some((email, key)) = modals::prompt_opencode_key(hwnd, is_dark, None) {
+                save_opencode_account(email, key, "Account added");
+            }
+        }
+        DeferredAction::PromptHourlyTarget { is_dark, current } => {
+            if let Some(target) = modals::prompt_hourly_target(hwnd, is_dark, current) {
+                let mut cb = None;
+                try_with_state(|state| {
+                    if state
+                        .save_settings(|mut s| {
+                            s.claude_hourly_target = target;
+                            s
+                        })
+                        .is_ok()
+                    {
+                        let msg = match target {
+                            Some(v) => format!("Hourly spend target ${v}/h"),
+                            None => "Hourly spend target off".to_string(),
+                        };
+                        state.show_toast(msg);
+                        cb = Some(state.on_changed.clone());
+                    }
+                });
+                if let Some(cb) = cb {
+                    cb();
+                }
+            }
+        }
+        DeferredAction::OpenAccountMenu {
+            provider,
+            account_id,
+            label,
+            nickname,
+            hidden,
+            is_dark,
+        } => {
+            run_account_context_menu(hwnd, provider, account_id, label, nickname, hidden, is_dark);
+        }
+    }
+}
+
+fn run_account_context_menu(
+    hwnd: HWND,
+    provider: ProviderKind,
+    account_id: String,
+    label: String,
+    nickname: Option<String>,
+    hidden: bool,
+    is_dark: bool,
+) {
+    // SAFETY: TrackPopupMenu runs strictly outside any SETTINGS_STATE borrow.
+    let cmd = unsafe {
+        let Ok(menu) = CreatePopupMenu() else {
+            return;
+        };
+        let hide_label = wide(if hidden {
+            "Show on widget"
+        } else {
+            "Hide from widget"
+        });
+        let _ = AppendMenuW(
+            menu,
+            MF_STRING,
+            MENU_TOGGLE_HIDE,
+            PCWSTR(hide_label.as_ptr()),
+        );
+        let _ = AppendMenuW(menu, MF_STRING, MENU_RENAME, w!("Rename…"));
+        if provider == ProviderKind::OpenCode {
+            let _ = AppendMenuW(menu, MF_STRING, MENU_COPY_KEY, w!("Copy API key"));
+            let _ = AppendMenuW(menu, MF_STRING, MENU_REPLACE_KEY, w!("Replace API key…"));
+        }
+        let _ = AppendMenuW(menu, MF_STRING, MENU_REFRESH, w!("Refresh now"));
+        if provider == ProviderKind::OpenCode {
+            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+            let _ = AppendMenuW(menu, MF_STRING, MENU_REMOVE, w!("Remove account…"));
+        }
+
+        let mut pt = POINT::default();
+        let _ = GetCursorPos(&mut pt);
+        let _ = SetForegroundWindow(hwnd);
+        let picked = TrackPopupMenu(
+            menu,
+            TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON,
+            pt.x,
+            pt.y,
+            Some(0),
+            hwnd,
+            None,
+        )
+        .0 as usize;
+        let _ = DestroyMenu(menu);
+        picked
+    };
+
+    match cmd {
+        MENU_TOGGLE_HIDE => {
+            let key = disabled_account_key(provider, &account_id);
+            let next_hidden = !hidden;
+            let mut cb = None;
+            try_with_state(|state| {
+                if state
+                    .save_settings(|mut s| {
+                        s.disabled_accounts
+                            .retain(|e| !e.eq_ignore_ascii_case(&key));
+                        if next_hidden {
+                            s.disabled_accounts.push(key.clone());
+                        }
+                        s
+                    })
+                    .is_ok()
+                {
+                    state.update_account_row_hidden(provider, &account_id, next_hidden);
+                    state.show_toast(if next_hidden {
+                        "Account hidden from widget"
+                    } else {
+                        "Account shown on widget"
+                    });
+                    cb = Some(state.on_changed.clone());
+                }
+            });
+            if let Some(cb) = cb {
+                cb();
+            }
+        }
+        MENU_RENAME => {
+            let cur_nick = nickname.as_deref().unwrap_or("");
+            if let Some(next_nick) = modals::prompt_rename(hwnd, is_dark, &label, cur_nick) {
+                let key = display_name_key(provider, &account_id);
+                let trimmed = next_nick.trim().to_string();
+                let mut cb = None;
+                try_with_state(|state| {
+                    if state
+                        .save_settings(|mut s| {
+                            s.display_names.retain(|k, _| !k.eq_ignore_ascii_case(&key));
+                            if !trimmed.is_empty() {
+                                s.display_names.insert(
+                                    key.clone(),
+                                    serde_json::Value::String(trimmed.clone()),
+                                );
+                            }
+                            s
+                        })
+                        .is_ok()
+                    {
+                        let stored = (!trimmed.is_empty()).then_some(trimmed.clone());
+                        state.update_account_row_nickname(provider, &account_id, stored);
+                        state.show_toast(if trimmed.is_empty() {
+                            "Name reset"
+                        } else {
+                            "Account renamed"
+                        });
+                        cb = Some(state.on_changed.clone());
+                    }
+                });
+                if let Some(cb) = cb {
+                    cb();
+                }
+            }
+        }
+        MENU_COPY_KEY => {
+            try_with_state(|state| {
+                let accounts = match (&state.store, &state.rt) {
+                    (Some(store), Some(rt)) => rt.block_on(store.get_accounts()),
+                    _ => Vec::new(),
+                };
+                let found = accounts
+                    .into_iter()
+                    .find(|a| a.email.eq_ignore_ascii_case(&account_id));
+                match found {
+                    Some(acc) if !acc.key.is_empty() => match clipboard::copy_text(&acc.key) {
+                        Ok(()) => state.show_toast("Key copied"),
+                        Err(e) => {
+                            log::warn!("copy key failed: {e}");
+                            state.show_toast("Couldn't copy key");
+                        }
+                    },
+                    _ => state.show_toast("No key stored in Credential Manager"),
+                }
+            });
+        }
+        MENU_REPLACE_KEY => {
+            if let Some((email, key)) =
+                modals::prompt_opencode_key(hwnd, is_dark, Some(&account_id))
+            {
+                save_opencode_account(email, key, "API key updated");
+            }
+        }
+        MENU_REFRESH => {
+            let mut cb = None;
+            try_with_state(|state| {
+                state.loading = true;
+                state.rebuild_layout();
+                state.invalidate();
+                cb = Some(state.on_changed.clone());
+            });
+            if let Some(cb) = cb {
+                cb();
+            }
+            spawn_settings_poll();
+        }
+        MENU_REMOVE => {
+            let display_name = nickname
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or(&label);
+            if modals::confirm_remove_account(hwnd, display_name) {
+                remove_opencode_account(&account_id);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn save_opencode_account(email: String, key: String, toast_ok: &str) {
+    let mut cb = None;
+    let mut poll = false;
+    try_with_state(|state| {
+        let res = match (&state.store, &state.rt) {
+            (Some(store), Some(rt)) => {
+                let lower = email.to_lowercase();
+                let email_c = email.clone();
+                let key_c = key.clone();
+                rt.block_on(store.update_accounts(|mut accounts| {
+                    match accounts
+                        .iter_mut()
+                        .find(|a| a.email.to_lowercase() == lower)
+                    {
+                        Some(existing) => existing.key = key_c,
+                        None => accounts.push(Account {
+                            email: email_c,
+                            key: key_c,
+                        }),
+                    }
+                    accounts
+                }))
+                .map_err(|e| format!("Could not save OpenCode account: {e}"))
+            }
+            _ => Err("Data folder unavailable.".to_string()),
+        };
+        match res {
+            Ok(_) => {
+                state.loading = true;
+                state.show_toast(toast_ok);
+                cb = Some(state.on_changed.clone());
+                poll = true;
+            }
+            Err(e) => {
+                log::warn!("{e}");
+                state.show_toast("Couldn't save account");
+            }
+        }
+    });
+    if let Some(cb) = cb {
         cb();
     }
-    if let Some(cb) = custom_update_cb {
-        cb(hwnd);
+    if poll {
+        spawn_settings_poll();
     }
-    if run_builtin_update {
-        run_builtin_update_check();
-    }
-    if should_close {
-        // SAFETY: closes our own Settings window cleanly without quitting the app.
-        unsafe {
-            let _ = DestroyWindow(hwnd);
+}
+
+fn remove_opencode_account(email: &str) {
+    let mut cb = None;
+    let mut poll = false;
+    try_with_state(|state| {
+        let lower = email.to_lowercase();
+        let res = match (&state.store, &state.rt) {
+            (Some(store), Some(rt)) => {
+                let first = rt.block_on(store.update_accounts(|accounts| {
+                    accounts
+                        .into_iter()
+                        .filter(|a| a.email.to_lowercase() != lower)
+                        .collect()
+                }));
+                match first {
+                    Ok(_) => rt
+                        .block_on(store.forget_account(email))
+                        .map(|next| {
+                            state.settings = next;
+                        })
+                        .map_err(|e| format!("Failed to clean account settings: {e}")),
+                    Err(e) => Err(format!("Failed to remove account: {e}")),
+                }
+            }
+            _ => Err("Data folder unavailable.".to_string()),
+        };
+        match res {
+            Ok(()) => {
+                if let Some(ref mut snap) = state.snapshot {
+                    snap.opencode.retain(|r| !r.id.eq_ignore_ascii_case(email));
+                }
+                state.loading = true;
+                state.show_toast("Account removed");
+                cb = Some(state.on_changed.clone());
+                poll = true;
+            }
+            Err(e) => {
+                log::warn!("{e}");
+                state.show_toast("Couldn't remove account");
+            }
         }
+    });
+    if let Some(cb) = cb {
+        cb();
+    }
+    if poll {
+        spawn_settings_poll();
+    }
+}
+
+// ---- Win32 Window Procedure -----------------------------------------------------------------
+
+fn mouse_xy_dip(lparam: LPARAM, dpi: u32) -> (f32, f32) {
+    let x_px = (lparam.0 & 0xffff) as i16 as f32;
+    let y_px = ((lparam.0 >> 16) & 0xffff) as i16 as f32;
+    let scale = (dpi as f32 / 96.0).max(0.5);
+    (x_px / scale, y_px / scale)
+}
+
+fn close_settings_window(hwnd: HWND) {
+    save_window_placement(hwnd);
+    // SAFETY: destroys our own Settings window cleanly without quitting the app.
+    unsafe {
+        let _ = DestroyWindow(hwnd);
     }
 }
 
@@ -1165,10 +1619,327 @@ unsafe extern "system" fn settings_wnd_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     match msg {
-        WM_COMMAND => {
-            let id = (wparam.0 & 0xffff) as u16;
-            let notify = ((wparam.0 >> 16) & 0xffff) as u16;
-            handle_command(hwnd, id, notify);
+        WM_ERASEBKGND => LRESULT(1),
+        WM_GETMINMAXINFO => {
+            if lparam.0 != 0 {
+                let dpi = {
+                    let d = GetDpiForWindow(hwnd);
+                    if d == 0 {
+                        96
+                    } else {
+                        d
+                    }
+                };
+                let scale = dpi as f32 / 96.0;
+                let mut min_rc = RECT {
+                    left: 0,
+                    top: 0,
+                    right: (MIN_WIN_W_DIP * scale).round() as i32,
+                    bottom: (MIN_WIN_H_DIP * scale).round() as i32,
+                };
+                let _ = AdjustWindowRectEx(
+                    &mut min_rc,
+                    WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+                    false,
+                    WINDOW_EX_STYLE(0),
+                );
+                let mmi = &mut *(lparam.0 as *mut MINMAXINFO);
+                mmi.ptMinTrackSize.x = min_rc.right - min_rc.left;
+                mmi.ptMinTrackSize.y = min_rc.bottom - min_rc.top;
+            }
+            LRESULT(0)
+        }
+        WM_SIZE => {
+            try_with_state(|state| {
+                let mut rc = RECT::default();
+                if GetClientRect(hwnd, &mut rc).is_ok() {
+                    let scale = (state.dpi as f32 / 96.0).max(0.5);
+                    state.client_w_dip = ((rc.right - rc.left).max(1) as f32) / scale;
+                    state.client_h_dip = ((rc.bottom - rc.top).max(1) as f32) / scale;
+                    state.rebuild_layout();
+                    state.invalidate();
+                }
+            });
+            LRESULT(0)
+        }
+        WM_DPICHANGED => {
+            let new_dpi = (wparam.0 & 0xffff) as u32;
+            if lparam.0 != 0 {
+                let suggested = &*(lparam.0 as *const RECT);
+                let _ = SetWindowPos(
+                    hwnd,
+                    None,
+                    suggested.left,
+                    suggested.top,
+                    suggested.right - suggested.left,
+                    suggested.bottom - suggested.top,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+            }
+            try_with_state(|state| {
+                if new_dpi > 0 {
+                    state.dpi = new_dpi;
+                }
+                let mut rc = RECT::default();
+                if GetClientRect(hwnd, &mut rc).is_ok() {
+                    let scale = (state.dpi as f32 / 96.0).max(0.5);
+                    state.client_w_dip = ((rc.right - rc.left).max(1) as f32) / scale;
+                    state.client_h_dip = ((rc.bottom - rc.top).max(1) as f32) / scale;
+                }
+                state.rebuild_layout();
+                state.invalidate();
+            });
+            LRESULT(0)
+        }
+        WM_SETTINGCHANGE => {
+            let theme_dark = try_with_state(|state| {
+                let dark = resolve_is_dark(state.settings.panel_theme);
+                state.invalidate();
+                dark
+            });
+            if let Some(dark) = theme_dark {
+                apply_titlebar_theme(hwnd, dark);
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_PAINT => {
+            try_with_state(|state| {
+                let is_dark = resolve_is_dark(state.settings.panel_theme);
+                let pal = SettingsPalette::for_mode(is_dark);
+                state.renderer.paint_window(
+                    hwnd,
+                    state.dpi,
+                    &pal,
+                    &state.layout,
+                    state.hovered_action.as_ref(),
+                    state.scrollbar_hovered || state.scrollbar_dragging,
+                );
+            });
+            LRESULT(0)
+        }
+        WM_MOUSEMOVE => {
+            let mut need_track = false;
+            try_with_state(|state| {
+                if !state.tracking_leave {
+                    state.tracking_leave = true;
+                    need_track = true;
+                }
+                let (x, y) = mouse_xy_dip(lparam, state.dpi);
+
+                if state.scrollbar_dragging {
+                    if let Some(ref sb) = state.layout.scrollbar {
+                        let travel = (sb.track.h - sb.thumb.h).max(1.0);
+                        let new_thumb_y = (y - state.scrollbar_drag_offset)
+                            .clamp(sb.track.y, sb.track.y + travel);
+                        let frac = (new_thumb_y - sb.track.y) / travel;
+                        state.scroll_y = frac * sb.max_scroll;
+                        state.rebuild_layout();
+                        state.invalidate();
+                    }
+                    return;
+                }
+
+                let sb_hover = state.layout.scrollbar.as_ref().is_some_and(|sb| {
+                    x >= sb.track.x - 4.0
+                        && x <= sb.track.x + sb.track.w + 4.0
+                        && y >= sb.track.y
+                        && y <= sb.track.y + sb.track.h
+                });
+                let next_hover = if sb_hover {
+                    None
+                } else {
+                    state.hit_at(x, y).and_then(|(a, en)| en.then_some(a))
+                };
+
+                if next_hover != state.hovered_action || sb_hover != state.scrollbar_hovered {
+                    state.hovered_action = next_hover;
+                    state.scrollbar_hovered = sb_hover;
+                    state.invalidate();
+                }
+            });
+            if need_track {
+                let mut tme = TRACKMOUSEEVENT {
+                    cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                    dwFlags: TME_LEAVE,
+                    hwndTrack: hwnd,
+                    dwHoverTime: 0,
+                };
+                let _ = TrackMouseEvent(&mut tme);
+            }
+            LRESULT(0)
+        }
+        WM_MOUSELEAVE => {
+            try_with_state(|state| {
+                state.tracking_leave = false;
+                if state.hovered_action.is_some() || state.scrollbar_hovered {
+                    state.hovered_action = None;
+                    state.scrollbar_hovered = false;
+                    state.invalidate();
+                }
+            });
+            LRESULT(0)
+        }
+        WM_SETCURSOR => {
+            // `HTCLIENT == 1` in Win32 WM_SETCURSOR LOWORD(lParam).
+            if (lparam.0 & 0xffff) == 1 {
+                let hand = try_with_state(|state| {
+                    state.hovered_action.is_some()
+                        || state.scrollbar_hovered
+                        || state.scrollbar_dragging
+                })
+                .unwrap_or(false);
+                if let Ok(cur) = LoadCursorW(None, if hand { IDC_HAND } else { IDC_ARROW }) {
+                    SetCursor(Some(cur));
+                }
+                return LRESULT(1);
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_MOUSEWHEEL => {
+            let delta = ((wparam.0 >> 16) & 0xffff) as i16 as f32;
+            try_with_state(|state| {
+                let step = -(delta / 120.0) * 48.0;
+                let max_scroll = (state.layout.content_height - state.client_h_dip).max(0.0);
+                let next = (state.scroll_y + step).clamp(0.0, max_scroll);
+                if (next - state.scroll_y).abs() > 0.1 {
+                    state.scroll_y = next;
+                    state.rebuild_layout();
+                    state.invalidate();
+                }
+            });
+            LRESULT(0)
+        }
+        WM_LBUTTONDOWN => {
+            let start_capture = try_with_state(|state| {
+                let (x, y) = mouse_xy_dip(lparam, state.dpi);
+                if let Some(ref sb) = state.layout.scrollbar {
+                    if x >= sb.track.x - 4.0
+                        && x <= sb.track.x + sb.track.w + 4.0
+                        && y >= sb.track.y
+                        && y <= sb.track.y + sb.track.h
+                    {
+                        if y >= sb.thumb.y && y <= sb.thumb.y + sb.thumb.h {
+                            state.scrollbar_drag_offset = y - sb.thumb.y;
+                        } else {
+                            let travel = (sb.track.h - sb.thumb.h).max(1.0);
+                            let centered =
+                                (y - sb.thumb.h * 0.5).clamp(sb.track.y, sb.track.y + travel);
+                            state.scroll_y = ((centered - sb.track.y) / travel) * sb.max_scroll;
+                            state.scrollbar_drag_offset = sb.thumb.h * 0.5;
+                            state.rebuild_layout();
+                            state.invalidate();
+                        }
+                        state.scrollbar_dragging = true;
+                        return true;
+                    }
+                }
+                false
+            })
+            .unwrap_or(false);
+            if start_capture {
+                let _ = SetCapture(hwnd);
+            }
+            LRESULT(0)
+        }
+        WM_LBUTTONUP => {
+            let mut release_cap = false;
+            let clicked: Option<Action> = try_with_state(|state| {
+                if state.scrollbar_dragging {
+                    state.scrollbar_dragging = false;
+                    release_cap = true;
+                    state.invalidate();
+                    return None;
+                }
+                let (x, y) = mouse_xy_dip(lparam, state.dpi);
+                state.hit_at(x, y).and_then(|(act, en)| en.then_some(act))
+            })
+            .flatten();
+            if release_cap {
+                let _ = ReleaseCapture();
+            }
+            if let Some(act) = clicked {
+                execute_action(hwnd, act);
+            }
+            LRESULT(0)
+        }
+        WM_RBUTTONUP => {
+            let ctx_action = try_with_state(|state| {
+                let (x, y) = mouse_xy_dip(lparam, state.dpi);
+                state.row_context_at(x, y)
+            })
+            .flatten();
+            if let Some(act) = ctx_action {
+                execute_action(hwnd, act);
+            }
+            LRESULT(0)
+        }
+        WM_KEYDOWN => {
+            let vk = wparam.0;
+            let ctrl_down = GetKeyState(i32::from(VK_CONTROL.0)) < 0;
+            if vk == usize::from(VK_ESCAPE.0) || (ctrl_down && vk == usize::from(b'W')) {
+                close_settings_window(hwnd);
+                return LRESULT(0);
+            }
+            let scroll_delta = if vk == usize::from(VK_DOWN.0) {
+                Some(48.0)
+            } else if vk == usize::from(VK_UP.0) {
+                Some(-48.0)
+            } else if vk == usize::from(VK_NEXT.0) {
+                Some(320.0)
+            } else if vk == usize::from(VK_PRIOR.0) {
+                Some(-320.0)
+            } else if vk == usize::from(VK_HOME.0) {
+                Some(-100_000.0)
+            } else if vk == usize::from(VK_END.0) {
+                Some(100_000.0)
+            } else {
+                None
+            };
+            if let Some(delta) = scroll_delta {
+                try_with_state(|state| {
+                    let max_scroll = (state.layout.content_height - state.client_h_dip).max(0.0);
+                    let next = (state.scroll_y + delta).clamp(0.0, max_scroll);
+                    if (next - state.scroll_y).abs() > 0.1 {
+                        state.scroll_y = next;
+                        state.rebuild_layout();
+                        state.invalidate();
+                    }
+                });
+                return LRESULT(0);
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_TIMER => {
+            if wparam.0 == TIMER_TOAST_ID {
+                let _ = KillTimer(Some(hwnd), TIMER_TOAST_ID);
+                try_with_state(|state| {
+                    if state.toast.take().is_some() {
+                        state.rebuild_layout();
+                        state.invalidate();
+                    }
+                });
+                return LRESULT(0);
+            }
+            if wparam.0 == TIMER_POLL_ID {
+                spawn_settings_poll();
+                return LRESULT(0);
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_APP_SETTINGS_DATA => {
+            let incoming = PENDING_SETTINGS_DATA
+                .lock()
+                .ok()
+                .and_then(|mut slot| slot.take());
+            try_with_state(|state| {
+                state.loading = false;
+                if let Some(snap) = incoming {
+                    state.settings = snap.settings.clone();
+                    state.snapshot = Some(snap);
+                }
+                state.rebuild_layout();
+                state.invalidate();
+            });
             LRESULT(0)
         }
         WM_APP_UPDATE_STATUS => {
@@ -1176,40 +1947,113 @@ unsafe extern "system" fn settings_wnd_proc(
                 .lock()
                 .ok()
                 .and_then(|mut slot| slot.take());
-            if let Some((text, enable_btn)) = pending {
-                SETTINGS_STATE.with(|cell| {
-                    if let Some(state) = cell.borrow().as_ref() {
-                        set_control_text(state.controls.lbl_update_status, &text);
-                        let _ = EnableWindow(state.controls.btn_check_updates, enable_btn);
-                    }
+            if let Some((text, checking)) = pending {
+                try_with_state(|state| {
+                    state.update_status_text = text;
+                    state.update_checking = checking;
+                    state.rebuild_layout();
+                    state.invalidate();
                 });
             }
             LRESULT(0)
         }
-        WM_CTLCOLORSTATIC => {
-            let hdc = HDC(wparam.0 as *mut std::ffi::c_void);
-            SetBkMode(hdc, TRANSPARENT);
-            LRESULT(GetSysColorBrush(COLOR_BTNFACE).0 as isize)
-        }
-        WM_KEYDOWN => {
-            if wparam.0 == usize::from(VK_ESCAPE.0) {
-                let _ = DestroyWindow(hwnd);
-                return LRESULT(0);
+        WM_APP_UPDATE_READY => {
+            let pending = PENDING_UPDATE_READY
+                .lock()
+                .ok()
+                .and_then(|mut slot| slot.take());
+            if let Some(ver) = pending {
+                try_with_state(|state| {
+                    state.update_ready_version = ver;
+                    state.update_checking = false;
+                    state.rebuild_layout();
+                    state.invalidate();
+                });
             }
-            DefWindowProcW(hwnd, msg, wparam, lparam)
+            LRESULT(0)
         }
         WM_CLOSE => {
-            let _ = DestroyWindow(hwnd);
+            close_settings_window(hwnd);
             LRESULT(0)
         }
         WM_NCDESTROY => {
+            let _ = KillTimer(Some(hwnd), TIMER_TOAST_ID);
+            let _ = KillTimer(Some(hwnd), TIMER_POLL_ID);
             SETTINGS_OPEN.store(false, Ordering::Release);
             SETTINGS_HWND.store(0, Ordering::Release);
             SETTINGS_STATE.with(|cell| {
-                let _ = cell.borrow_mut().take();
+                if let Ok(mut borrow) = cell.try_borrow_mut() {
+                    let _ = borrow.take();
+                }
             });
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use theme::{format_snooze_duration, format_usd, spend_series};
+    use usagedeck_core::view::SettingsPaceData;
+
+    #[test]
+    fn validates_opencode_keys() {
+        assert!(is_valid_opencode_key("oc_sk_abc123"));
+        assert!(is_valid_opencode_key("sk-xyz987"));
+        assert!(!is_valid_opencode_key(""));
+        assert!(!is_valid_opencode_key("oc_sk_"));
+        assert!(!is_valid_opencode_key("sk-"));
+        assert!(!is_valid_opencode_key("bad_prefix_123"));
+        assert!(!is_valid_opencode_key("oc_sk_has space"));
+    }
+
+    #[test]
+    fn formats_usd_and_snooze_durations() {
+        assert_eq!(format_usd(0.0), "$0.0");
+        assert_eq!(format_usd(7.42), "$7.4");
+        assert_eq!(format_usd(9.96), "$10");
+        assert_eq!(format_usd(1293.4), "$1,293");
+        assert_eq!(format_snooze_duration(45 * 60_000), "45m");
+        assert_eq!(format_snooze_duration(134 * 60_000), "2h 14m");
+        assert_eq!(format_snooze_duration(26 * 3_600_000), "1d 2h");
+    }
+
+    #[test]
+    fn converts_pace_buckets_to_oldest_first_hourly_rates() {
+        let pace = SettingsPaceData {
+            minutes: vec![1.0, 0.5, 0.25],
+            minutes_fable: vec![0.5, 0.0, 0.25],
+            quarters: vec![10.0, 5.0],
+            quarters_fable: vec![2.5, 0.0],
+            ..Default::default()
+        };
+        assert_eq!(
+            spend_series(&pace, SpendRange::Min15),
+            vec![(15.0, 15.0), (30.0, 0.0), (60.0, 30.0)]
+        );
+        assert_eq!(
+            spend_series(&pace, SpendRange::Hours24),
+            vec![(20.0, 0.0), (40.0, 10.0)]
+        );
+    }
+
+    #[test]
+    fn clamps_window_rect_inside_work_area() {
+        let wa = RECT {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1040,
+        };
+        assert_eq!(
+            clamp_rect_to_work_area(1500, 800, 960, 680, 640, 480, wa),
+            (960, 360, 960, 680)
+        );
+        assert_eq!(
+            clamp_rect_to_work_area(-100, -50, 960, 680, 640, 480, wa),
+            (0, 0, 960, 680)
+        );
     }
 }
