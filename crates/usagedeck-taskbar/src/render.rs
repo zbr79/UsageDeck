@@ -196,6 +196,15 @@ fn provider_badge_style(
                 rgba(4, 120, 87, 1.0)
             },
         ),
+        ProviderKind::Antigravity => (
+            "A",
+            rgba(96, 165, 250, if dark { 0.24 } else { 0.20 }),
+            if dark {
+                rgba(147, 197, 253, 1.0)
+            } else {
+                rgba(29, 78, 216, 1.0)
+            },
+        ),
     }
 }
 
