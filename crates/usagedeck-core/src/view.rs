@@ -95,6 +95,10 @@ pub struct BarView {
     pub percent: Option<f64>,
     pub resets_at: Option<String>,
     pub reset_short: Option<String>,
+    /// Local wall-clock reset label (e.g. `"Today 1:30 AM"`, `"Tomorrow 9:00 AM"`, `"Thu 9:00 PM"`).
+    pub reset_at_local: Option<String>,
+    /// Expected linear time-elapsed percentage (`0.0..=100.0`) inside the bar's window.
+    pub pace_pct: Option<f64>,
     pub severity: BarSeverity,
     /// Fable's portion of the bar in percentage points (0..=percent), drawn in a lighter shade.
     pub fable_segment_pct: Option<f64>,
@@ -111,6 +115,7 @@ impl BarView {
         now_ms: i64,
         dimmed: bool,
     ) -> Self {
+        let key = key.into();
         let passed = resets_at
             .as_deref()
             .and_then(parse_iso_ms)
@@ -129,17 +134,31 @@ impl BarView {
                 .as_deref()
                 .and_then(|iso| format_reset_short(iso, now_ms))
         };
+        let reset_at_local = if passed {
+            None
+        } else {
+            resets_at
+                .as_deref()
+                .and_then(|iso| format_reset_local(iso, now_ms))
+        };
+        let pace_pct = if passed {
+            None
+        } else {
+            compute_pace_pct(&key, resets_at.as_deref(), now_ms)
+        };
         let severity = if dimmed {
             BarSeverity::Muted
         } else {
             severity_of(effective_pct)
         };
         Self {
-            key: key.into(),
+            key,
             label: label.into(),
             percent: effective_pct,
             resets_at,
             reset_short,
+            reset_at_local,
+            pace_pct,
             severity,
             fable_segment_pct: None,
             tooltip_lines: Vec::new(),
@@ -170,6 +189,14 @@ pub struct ProviderItem {
     pub taskbar_bars: Vec<BarView>,
     /// All visible bars rendered inside the click flyout.
     pub flyout_bars: Vec<BarView>,
+    /// All non-empty raw bars for this provider (including bars hidden from the compact strip).
+    pub hover_bars: Vec<BarView>,
+    /// Structured `(label, value)` detail rows rendered inside the hover card.
+    pub hover_details: Vec<(String, String)>,
+    /// Compact badge showing resets in hand (e.g. `Some("↺ 2")` for Claude).
+    pub resets_badge: Option<String>,
+    /// Exact future epoch-ms timestamp when an exhausted card resets.
+    pub exhausted_until_ms: Option<u64>,
     /// Inline live spend rate (currently Claude Code `$/h`, e.g. `"$42/h"`).
     pub spend_rate_text: Option<String>,
     /// Severity colour of `spend_rate_text` against `settings.claude_hourly_target`.
@@ -196,6 +223,8 @@ pub struct TaskbarSnapshot {
     pub hide_in_fullscreen: bool,
     pub is_demo: bool,
     pub theme_mode: ThemeMode,
+    /// Number of exhausted cards currently hidden via manual snooze or `auto_hide_exhausted`.
+    pub snoozed_count: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -321,6 +350,56 @@ pub fn format_reset_short(iso: &str, now_ms: i64) -> Option<String> {
     }
 }
 
+/// Local wall-clock reset label (`"Today 1:30 AM"`, `"Tomorrow 9:00 AM"`, `"Thu 9:00 PM"`).
+pub fn format_reset_local(iso: &str, now_ms: i64) -> Option<String> {
+    format_reset_local_tz(&Local, iso, now_ms)
+}
+
+fn format_reset_local_tz<Tz: TimeZone>(tz: &Tz, iso: &str, now_ms: i64) -> Option<String>
+where
+    Tz::Offset: Display,
+{
+    let target_ms = parse_iso_ms(iso)?;
+    if target_ms <= now_ms {
+        return None;
+    }
+    let target_dt = DateTime::<Utc>::from_timestamp_millis(target_ms)?.with_timezone(tz);
+    let now_dt = DateTime::<Utc>::from_timestamp_millis(now_ms)?.with_timezone(tz);
+    let days_ahead = target_dt
+        .date_naive()
+        .signed_duration_since(now_dt.date_naive())
+        .num_days();
+    let time = target_dt.format("%-I:%M %p");
+    let label = match days_ahead {
+        0 => format!("Today {time}"),
+        1 => format!("Tomorrow {time}"),
+        2..=6 => format!("{} {time}", target_dt.format("%a")),
+        _ => format!("{}, {time}", target_dt.format("%b %-d")),
+    };
+    Some(label)
+}
+
+fn bar_window_ms(key: &str) -> Option<i64> {
+    match key {
+        "fiveHour" | "rolling" => Some(5 * 3_600_000),
+        "weekly" | "scoped" => Some(7 * 86_400_000),
+        "monthly" | "firstParty" | "api" => Some(30 * 86_400_000),
+        _ => None,
+    }
+}
+
+/// Expected linear time-elapsed percentage (`0.0..=100.0`) inside the bar's window.
+pub fn compute_pace_pct(key: &str, resets_at: Option<&str>, now_ms: i64) -> Option<f64> {
+    let window_ms = bar_window_ms(key)?;
+    let resets_ms = resets_at.and_then(parse_iso_ms)?;
+    let remaining = resets_ms - now_ms;
+    if remaining > 0 && remaining < window_ms {
+        Some((((window_ms - remaining) as f64 / window_ms as f64) * 100.0).clamp(0.0, 100.0))
+    } else {
+        None
+    }
+}
+
 /// Format Claude Code hourly spend rate (`$42/h`, `$4.5/h`). Returns `None` below `$0.50/h`.
 pub fn format_rate_usd(usd_per_hour: f64) -> Option<String> {
     if !usd_per_hour.is_finite() || usd_per_hour < 0.5 {
@@ -340,6 +419,50 @@ fn format_usd_exact(v: f64) -> String {
     } else {
         format!("${v:.2}")
     }
+}
+
+fn format_u64_commas(mut n: u64) -> String {
+    if n < 1_000 {
+        return n.to_string();
+    }
+    let mut parts = Vec::new();
+    while n >= 1_000 {
+        parts.push(format!("{:03}", n % 1_000));
+        n /= 1_000;
+    }
+    parts.push(n.to_string());
+    parts.reverse();
+    parts.join(",")
+}
+
+/// Compact USD for spend summaries (`"$1,120"`, `"$210"`, `"$4.50"`).
+fn format_usd_compact(v: f64) -> String {
+    if !v.is_finite() || v <= 0.0 {
+        return "$0".to_string();
+    }
+    if v >= 10.0 {
+        format!("${}", format_u64_commas(v.round() as u64))
+    } else {
+        format_usd_exact(v)
+    }
+}
+
+fn format_claude_spend_summary(spend: &claude_logs::Spend) -> Option<String> {
+    if spend.backfilling {
+        return None;
+    }
+    let buckets = [
+        ("1h", spend.last_hour),
+        ("5h", spend.last5h),
+        ("Today", spend.today),
+        ("7d", spend.last7d),
+    ];
+    let parts: Vec<String> = buckets
+        .into_iter()
+        .filter(|(_, v)| v.is_finite() && *v >= 0.05)
+        .map(|(label, v)| format!("{label} {}", format_usd_compact(v)))
+        .collect();
+    (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
 /// `"claude-opus-5-5"` -> `"Opus 5.5"`, `"claude-fable-5-2-20261001"` -> `"Fable 5.2"`,
@@ -501,9 +624,25 @@ fn is_disabled(settings: &Settings, provider: ProviderKind, account_id: &str) ->
         .any(|d| d.eq_ignore_ascii_case(&key))
 }
 
+/// Whether a manual snooze timestamp is currently active (in the future) for `provider:account_id`.
+fn manual_snooze_active(
+    settings: &Settings,
+    provider: ProviderKind,
+    account_id: &str,
+    now_ms: i64,
+) -> bool {
+    let key = format!("{}:{}", provider.key_prefix(), account_id.trim()).to_lowercase();
+    settings
+        .snoozed_until
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(&key))
+        .is_some_and(|(_, &until)| (until as i64) > now_ms)
+}
+
 /// Snoozes use `"<prefix>:<id>"` for all providers (including `opencode:<email>`), matched
 /// case-insensitively, and only hide the card while it is still exhausted so an early reset
-/// brings the card back immediately (`src/lib/used-up.ts:isSnoozed`).
+/// brings the card back immediately (`src/lib/used-up.ts:isSnoozed`). When
+/// `settings.auto_hide_exhausted` is enabled, any exhausted card is hidden automatically.
 fn is_snoozed(
     settings: &Settings,
     provider: ProviderKind,
@@ -511,15 +650,49 @@ fn is_snoozed(
     exhausted: bool,
     now_ms: i64,
 ) -> bool {
-    if !exhausted {
-        return false;
-    }
-    let key = format!("{}:{}", provider.key_prefix(), account_id.trim()).to_lowercase();
-    settings
-        .snoozed_until
+    exhausted
+        && (settings.auto_hide_exhausted
+            || manual_snooze_active(settings, provider, account_id, now_ms))
+}
+
+fn non_empty_hover_bars(bars: Vec<BarView>) -> Vec<BarView> {
+    let non_empty: Vec<BarView> = bars
         .iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case(&key))
-        .is_some_and(|(_, &until)| (until as i64) > now_ms)
+        .filter(|b| b.percent.is_some() || b.resets_at.is_some())
+        .cloned()
+        .collect();
+    if non_empty.is_empty() {
+        bars
+    } else {
+        non_empty
+    }
+}
+
+/// Exact future epoch-ms timestamp when an exhausted card resets: latest future `resets_at` among
+/// full (`Danger`) bars (excluding Claude's scoped bar), falling back to the latest future
+/// `resets_at` among `flyout_bars`. Returns `None` when `!exhausted` or no future reset exists.
+fn compute_exhausted_until_ms(
+    exhausted: bool,
+    flyout_bars: &[BarView],
+    now_ms: i64,
+) -> Option<u64> {
+    if !exhausted {
+        return None;
+    }
+    let danger_max = flyout_bars
+        .iter()
+        .filter(|b| b.key != "scoped" && b.severity == BarSeverity::Danger)
+        .filter_map(|b| b.resets_at.as_deref().and_then(parse_iso_ms))
+        .filter(|&ms| ms > now_ms)
+        .max();
+    let until = danger_max.or_else(|| {
+        flyout_bars
+            .iter()
+            .filter_map(|b| b.resets_at.as_deref().and_then(parse_iso_ms))
+            .filter(|&ms| ms > now_ms)
+            .max()
+    })?;
+    u64::try_from(until).ok()
 }
 
 fn lookup_display_name(settings: &Settings, key: &str) -> Option<String> {
@@ -680,11 +853,15 @@ pub async fn poll_snapshot(core: &Core) -> TaskbarSnapshot {
         },
     );
 
-    // Claude Code hourly spend rate (reads local transcripts already scanned in background).
-    let (claude_rate_text, claude_rate_severity) = if settings.claude_enabled {
+    // Claude Code hourly spend rate + hover spend summary (reads local transcripts already scanned).
+    let claude_spend_info = if settings.claude_enabled {
         let spend = core.spend.spend(now_ms);
         if spend.backfilling {
-            (None, BarSeverity::Muted)
+            ClaudeSpendInfo {
+                rate_text: None,
+                rate_severity: BarSeverity::Muted,
+                summary: None,
+            }
         } else {
             let rate = if spend.rate60m >= 0.5 {
                 spend.rate60m
@@ -693,58 +870,52 @@ pub async fn poll_snapshot(core: &Core) -> TaskbarSnapshot {
             } else {
                 spend.rate60m
             };
-            (
-                format_rate_usd(rate),
-                spend_rate_severity(spend.rate60m, settings.claude_hourly_target),
-            )
+            ClaudeSpendInfo {
+                rate_text: format_rate_usd(rate),
+                rate_severity: spend_rate_severity(spend.rate60m, settings.claude_hourly_target),
+                summary: format_claude_spend_summary(&spend),
+            }
         }
     } else {
-        (None, BarSeverity::Muted)
+        ClaudeSpendInfo {
+            rate_text: None,
+            rate_severity: BarSeverity::Muted,
+            summary: None,
+        }
     };
 
     let mut items = Vec::new();
+    let mut snoozed_count = 0usize;
     for &wp in &settings.provider_order {
         if !is_provider_enabled(&settings, wp) {
             continue;
         }
-        match wp {
-            WidgetProvider::Claude => {
-                items.extend(build_claude_items(
-                    &claude_rows,
-                    &settings,
-                    claude_rate_text.clone(),
-                    claude_rate_severity,
-                    now_ms,
-                    |five_start| {
-                        (
-                            core.spend.fable_share(five_start, now_ms),
-                            core.spend.models_between(five_start, now_ms),
-                        )
-                    },
-                ));
-            }
-            WidgetProvider::Cursor => {
-                if let Some(ref resp) = cursor_resp {
-                    items.extend(build_cursor_items(resp, &settings, now_ms));
-                }
-            }
-            WidgetProvider::Codex => {
-                items.extend(build_codex_items(&codex_rows, &settings, now_ms));
-            }
-            WidgetProvider::Grok => {
-                items.extend(build_grok_items(&grok_rows, &settings, now_ms));
-            }
-            WidgetProvider::Opencode => {
-                items.extend(build_opencode_items(&opencode_rows, &settings, now_ms));
-            }
+        let (built, hidden_count) = match wp {
+            WidgetProvider::Claude => build_claude_items(
+                &claude_rows,
+                &settings,
+                &claude_spend_info,
+                now_ms,
+                |five_start| {
+                    (
+                        core.spend.fable_share(five_start, now_ms),
+                        core.spend.models_between(five_start, now_ms),
+                    )
+                },
+            ),
+            WidgetProvider::Cursor => match cursor_resp {
+                Some(ref resp) => build_cursor_items(resp, &settings, now_ms),
+                None => (Vec::new(), 0),
+            },
+            WidgetProvider::Codex => build_codex_items(&codex_rows, &settings, now_ms),
+            WidgetProvider::Grok => build_grok_items(&grok_rows, &settings, now_ms),
+            WidgetProvider::Opencode => build_opencode_items(&opencode_rows, &settings, now_ms),
             WidgetProvider::Antigravity => {
-                items.extend(build_antigravity_items(
-                    &antigravity_rows,
-                    &settings,
-                    now_ms,
-                ));
+                build_antigravity_items(&antigravity_rows, &settings, now_ms)
             }
-        }
+        };
+        items.extend(built);
+        snoozed_count += hidden_count;
     }
 
     TaskbarSnapshot {
@@ -753,7 +924,14 @@ pub async fn poll_snapshot(core: &Core) -> TaskbarSnapshot {
         hide_in_fullscreen: settings.hide_in_fullscreen,
         is_demo: false,
         theme_mode: settings.theme_mode,
+        snoozed_count,
     }
+}
+
+struct ClaudeSpendInfo {
+    rate_text: Option<String>,
+    rate_severity: BarSeverity,
+    summary: Option<String>,
 }
 
 struct PendingItem {
@@ -761,6 +939,10 @@ struct PendingItem {
     display_email: Option<String>,
     flyout_bars: Vec<BarView>,
     taskbar_bars: Vec<BarView>,
+    hover_bars: Vec<BarView>,
+    hover_details: Vec<(String, String)>,
+    resets_badge: Option<String>,
+    exhausted_until_ms: Option<u64>,
     spend_rate_text: Option<String>,
     spend_rate_severity: BarSeverity,
     reset_short: Option<String>,
@@ -799,6 +981,10 @@ fn finalize_tracked_items(
                 title,
                 taskbar_bars: p.taskbar_bars,
                 flyout_bars: p.flyout_bars,
+                hover_bars: p.hover_bars,
+                hover_details: p.hover_details,
+                resets_badge: p.resets_badge,
+                exhausted_until_ms: p.exhausted_until_ms,
                 spend_rate_text: p.spend_rate_text,
                 spend_rate_severity: p.spend_rate_severity,
                 secondary: false,
@@ -818,16 +1004,16 @@ fn finalize_tracked_items(
 fn build_claude_items<F>(
     rows: &[Value],
     settings: &Settings,
-    spend_rate_text: Option<String>,
-    spend_rate_severity: BarSeverity,
+    spend_info: &ClaudeSpendInfo,
     now_ms: i64,
     mut five_hour_spend: F,
-) -> Vec<ProviderItem>
+) -> (Vec<ProviderItem>, usize)
 where
     F: FnMut(i64) -> (Option<ModelShare>, Vec<ModelUsd>),
 {
     let hidden = hidden_bars_for(settings, ProviderKind::Claude);
     let mut pending = Vec::new();
+    let mut snoozed = 0usize;
 
     for row in rows {
         if !row.get("active").and_then(Value::as_bool).unwrap_or(false) {
@@ -910,6 +1096,34 @@ where
             ));
         }
 
+        let mut hover_raw = raw_bars.clone();
+        if u.weekly_scoped.is_empty() {
+            if let Some(ref opus) = u.weekly_opus {
+                if opus.percent.is_some() || opus.resets_at.is_some() {
+                    hover_raw.push(BarView::new(
+                        "scoped",
+                        "Opus",
+                        opus.percent,
+                        opus.resets_at.clone(),
+                        now_ms,
+                        auth_expired,
+                    ));
+                }
+            }
+            if let Some(ref sonnet) = u.weekly_sonnet {
+                if sonnet.percent.is_some() || sonnet.resets_at.is_some() {
+                    hover_raw.push(BarView::new(
+                        "scoped",
+                        "Sonnet",
+                        sonnet.percent,
+                        sonnet.resets_at.clone(),
+                        now_ms,
+                        auth_expired,
+                    ));
+                }
+            }
+        }
+        let hover_bars = non_empty_hover_bars(hover_raw);
         let flyout_bars = filter_hidden_bars(raw_bars, &hidden);
 
         // Only check visible fiveHour and weekly bars; explicitly exclude scoped (Fable).
@@ -919,6 +1133,7 @@ where
             .any(|b| b.severity == BarSeverity::Danger);
 
         if is_snoozed(settings, ProviderKind::Claude, id, exhausted, now_ms) {
+            snoozed += 1;
             continue;
         }
 
@@ -938,18 +1153,55 @@ where
             .or(u.email.as_deref())
             .map(str::to_string);
 
+        let mut hover_details = Vec::new();
+        if is_primary {
+            if let Some(ref summary) = spend_info.summary {
+                hover_details.push(("Spend".to_string(), summary.clone()));
+            }
+        }
+        if let Some(resets_text) = claude_resets_detail_text(u.resets.as_ref()) {
+            hover_details.push(("Resets".to_string(), resets_text));
+        }
+        let plan = u
+            .plan_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(claude_plan_label)
+            .or_else(|| {
+                u.subscription_type
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(|s| capitalize(&claude_plan_label(s)))
+            });
+        if let Some(plan) = plan {
+            hover_details.push(("Plan".to_string(), plan));
+        }
+        if let Some(ref email) = display_email {
+            if !email.is_empty() {
+                hover_details.push(("Account".to_string(), email.clone()));
+            }
+        }
+        let resets_badge = claude_resets_badge(&u);
+        let exhausted_until_ms = compute_exhausted_until_ms(exhausted, &flyout_bars, now_ms);
+
         pending.push(PendingItem {
             account_id: id.to_string(),
             display_email,
             flyout_bars,
             taskbar_bars,
+            hover_bars,
+            hover_details,
+            resets_badge,
+            exhausted_until_ms,
             spend_rate_text: if is_primary {
-                spend_rate_text.clone()
+                spend_info.rate_text.clone()
             } else {
                 None
             },
             spend_rate_severity: if is_primary {
-                spend_rate_severity
+                spend_info.rate_severity
             } else {
                 BarSeverity::Muted
             },
@@ -962,15 +1214,23 @@ where
         });
     }
 
-    finalize_tracked_items(ProviderKind::Claude, settings, pending)
+    (
+        finalize_tracked_items(ProviderKind::Claude, settings, pending),
+        snoozed,
+    )
 }
 
-fn build_cursor_items(resp: &Value, settings: &Settings, now_ms: i64) -> Vec<ProviderItem> {
+fn build_cursor_items(
+    resp: &Value,
+    settings: &Settings,
+    now_ms: i64,
+) -> (Vec<ProviderItem>, usize) {
     let Some(rows) = resp.get("accounts").and_then(Value::as_array) else {
-        return Vec::new();
+        return (Vec::new(), 0);
     };
     let hidden = hidden_bars_for(settings, ProviderKind::Cursor);
     let mut pending = Vec::new();
+    let mut snoozed = 0usize;
 
     for row in rows {
         if !row.get("active").and_then(Value::as_bool).unwrap_or(false) {
@@ -1011,6 +1271,7 @@ fn build_cursor_items(resp: &Value, settings: &Settings, now_ms: i64) -> Vec<Pro
         }
 
         let raw_bars = vec![fp_bar, api_bar];
+        let hover_bars = non_empty_hover_bars(raw_bars.clone());
         let flyout_bars = filter_hidden_bars(raw_bars, &hidden);
 
         let known_bars: Vec<&BarView> =
@@ -1027,6 +1288,7 @@ fn build_cursor_items(resp: &Value, settings: &Settings, now_ms: i64) -> Vec<Pro
         let exhausted = !auth_expired && all_full && !on_demand_left;
 
         if is_snoozed(settings, ProviderKind::Cursor, id, exhausted, now_ms) {
+            snoozed += 1;
             continue;
         }
 
@@ -1056,11 +1318,54 @@ fn build_cursor_items(resp: &Value, settings: &Settings, now_ms: i64) -> Vec<Pro
             .or(u.account_name.as_deref())
             .map(str::to_string);
 
+        let mut hover_details = Vec::new();
+        if !cycle_passed {
+            if let Some(ref s) = u.api_spend {
+                let val = match s.limit_usd {
+                    Some(lim) if lim > 0.0 => format!("${:.2} / ${:.2}", s.spent_usd, lim),
+                    _ => format!("${:.2}", s.spent_usd),
+                };
+                hover_details.push(("API spend".to_string(), val));
+            }
+        }
+        if let Some(ref od) = u.on_demand {
+            let val = match od {
+                OnDemand::Disabled => "Off".to_string(),
+                OnDemand::Enabled {
+                    spent_usd,
+                    limit_usd: Some(lim),
+                } if *lim > 0.0 => format!("${spent_usd:.2} / ${lim:.2}"),
+                OnDemand::Enabled { spent_usd, .. } if *spent_usd > 0.0 => {
+                    format!("${spent_usd:.2}")
+                }
+                OnDemand::Enabled { .. } => "Enabled".to_string(),
+            };
+            hover_details.push(("On-demand".to_string(), val));
+        }
+        if let Some(plan) = u
+            .plan_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            hover_details.push(("Plan".to_string(), plan.to_string()));
+        }
+        if let Some(ref email) = display_email {
+            if !email.is_empty() {
+                hover_details.push(("Account".to_string(), email.clone()));
+            }
+        }
+        let exhausted_until_ms = compute_exhausted_until_ms(exhausted, &flyout_bars, now_ms);
+
         pending.push(PendingItem {
             account_id: id.to_string(),
             display_email,
             flyout_bars,
             taskbar_bars,
+            hover_bars,
+            hover_details,
+            resets_badge: None,
+            exhausted_until_ms,
             spend_rate_text: None,
             spend_rate_severity: BarSeverity::Muted,
             reset_short,
@@ -1072,12 +1377,20 @@ fn build_cursor_items(resp: &Value, settings: &Settings, now_ms: i64) -> Vec<Pro
         });
     }
 
-    finalize_tracked_items(ProviderKind::Cursor, settings, pending)
+    (
+        finalize_tracked_items(ProviderKind::Cursor, settings, pending),
+        snoozed,
+    )
 }
 
-fn build_codex_items(rows: &[Value], settings: &Settings, now_ms: i64) -> Vec<ProviderItem> {
+fn build_codex_items(
+    rows: &[Value],
+    settings: &Settings,
+    now_ms: i64,
+) -> (Vec<ProviderItem>, usize) {
     let hidden = hidden_bars_for(settings, ProviderKind::Codex);
     let mut pending = Vec::new();
+    let mut snoozed = 0usize;
 
     for row in rows {
         if !row.get("active").and_then(Value::as_bool).unwrap_or(false) {
@@ -1112,6 +1425,7 @@ fn build_codex_items(rows: &[Value], settings: &Settings, now_ms: i64) -> Vec<Pr
                 auth_expired,
             ));
         }
+        let hover_bars = non_empty_hover_bars(raw_bars.clone());
         let flyout_bars = filter_hidden_bars(raw_bars, &hidden);
 
         let five_hour_shown = flyout_bars.iter().any(|b| b.key == "fiveHour");
@@ -1123,6 +1437,7 @@ fn build_codex_items(rows: &[Value], settings: &Settings, now_ms: i64) -> Vec<Pr
                     .any(|b| b.severity == BarSeverity::Danger);
 
         if is_snoozed(settings, ProviderKind::Codex, id, exhausted, now_ms) {
+            snoozed += 1;
             continue;
         }
 
@@ -1139,11 +1454,31 @@ fn build_codex_items(rows: &[Value], settings: &Settings, now_ms: i64) -> Vec<Pr
             .or(u.email.as_deref())
             .map(str::to_string);
 
+        let mut hover_details = Vec::new();
+        if let Some(plan) = u
+            .plan_type
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            hover_details.push(("Plan".to_string(), capitalize(plan)));
+        }
+        if let Some(ref email) = display_email {
+            if !email.is_empty() {
+                hover_details.push(("Account".to_string(), email.clone()));
+            }
+        }
+        let exhausted_until_ms = compute_exhausted_until_ms(exhausted, &flyout_bars, now_ms);
+
         pending.push(PendingItem {
             account_id: id.to_string(),
             display_email,
             flyout_bars,
             taskbar_bars,
+            hover_bars,
+            hover_details,
+            resets_badge: None,
+            exhausted_until_ms,
             spend_rate_text: None,
             spend_rate_severity: BarSeverity::Muted,
             reset_short,
@@ -1155,11 +1490,19 @@ fn build_codex_items(rows: &[Value], settings: &Settings, now_ms: i64) -> Vec<Pr
         });
     }
 
-    finalize_tracked_items(ProviderKind::Codex, settings, pending)
+    (
+        finalize_tracked_items(ProviderKind::Codex, settings, pending),
+        snoozed,
+    )
 }
 
-fn build_grok_items(rows: &[Value], settings: &Settings, now_ms: i64) -> Vec<ProviderItem> {
+fn build_grok_items(
+    rows: &[Value],
+    settings: &Settings,
+    now_ms: i64,
+) -> (Vec<ProviderItem>, usize) {
     let mut pending = Vec::new();
+    let mut snoozed = 0usize;
 
     for row in rows {
         if !row.get("active").and_then(Value::as_bool).unwrap_or(false) {
@@ -1189,9 +1532,11 @@ fn build_grok_items(rows: &[Value], settings: &Settings, now_ms: i64) -> Vec<Pro
             .is_some_and(|b| b.severity == BarSeverity::Danger);
 
         if is_snoozed(settings, ProviderKind::Grok, id, exhausted, now_ms) {
+            snoozed += 1;
             continue;
         }
 
+        let hover_bars = non_empty_hover_bars(flyout_bars.clone());
         let taskbar_bars = flyout_bars.clone();
         let reset_short = flyout_bars.first().and_then(|b| b.reset_short.clone());
         let subtitle = if auth_expired {
@@ -1205,11 +1550,32 @@ fn build_grok_items(rows: &[Value], settings: &Settings, now_ms: i64) -> Vec<Pro
             .or(u.email.as_deref())
             .map(str::to_string);
 
+        let mut hover_details = Vec::new();
+        if let Some(plan) = u
+            .plan_label
+            .as_deref()
+            .or(u.cursor_plan_name.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            hover_details.push(("Plan".to_string(), plan.to_string()));
+        }
+        if let Some(ref email) = display_email {
+            if !email.is_empty() {
+                hover_details.push(("Account".to_string(), email.clone()));
+            }
+        }
+        let exhausted_until_ms = compute_exhausted_until_ms(exhausted, &flyout_bars, now_ms);
+
         pending.push(PendingItem {
             account_id: id.to_string(),
             display_email,
             flyout_bars,
             taskbar_bars,
+            hover_bars,
+            hover_details,
+            resets_badge: None,
+            exhausted_until_ms,
             spend_rate_text: None,
             spend_rate_severity: BarSeverity::Muted,
             reset_short,
@@ -1221,12 +1587,20 @@ fn build_grok_items(rows: &[Value], settings: &Settings, now_ms: i64) -> Vec<Pro
         });
     }
 
-    finalize_tracked_items(ProviderKind::Grok, settings, pending)
+    (
+        finalize_tracked_items(ProviderKind::Grok, settings, pending),
+        snoozed,
+    )
 }
 
-fn build_antigravity_items(rows: &[Value], settings: &Settings, now_ms: i64) -> Vec<ProviderItem> {
+fn build_antigravity_items(
+    rows: &[Value],
+    settings: &Settings,
+    now_ms: i64,
+) -> (Vec<ProviderItem>, usize) {
     let hidden = hidden_bars_for(settings, ProviderKind::Antigravity);
     let mut pending = Vec::new();
+    let mut snoozed = 0usize;
 
     for row in rows {
         if !row.get("active").and_then(Value::as_bool).unwrap_or(false) {
@@ -1271,6 +1645,7 @@ fn build_antigravity_items(rows: &[Value], settings: &Settings, now_ms: i64) -> 
             continue;
         }
 
+        let hover_bars = non_empty_hover_bars(raw_bars.clone());
         let flyout_bars = {
             let f = filter_hidden_bars(raw_bars.clone(), &hidden);
             if f.is_empty() {
@@ -1284,6 +1659,7 @@ fn build_antigravity_items(rows: &[Value], settings: &Settings, now_ms: i64) -> 
             .iter()
             .any(|b| b.severity == BarSeverity::Danger);
         if is_snoozed(settings, ProviderKind::Antigravity, id, exhausted, now_ms) {
+            snoozed += 1;
             continue;
         }
 
@@ -1302,11 +1678,23 @@ fn build_antigravity_items(rows: &[Value], settings: &Settings, now_ms: i64) -> 
             .map(str::to_string)
             .or(u.email);
 
+        let mut hover_details = Vec::new();
+        if let Some(ref email) = display_email {
+            if !email.is_empty() {
+                hover_details.push(("Account".to_string(), email.clone()));
+            }
+        }
+        let exhausted_until_ms = compute_exhausted_until_ms(exhausted, &flyout_bars, now_ms);
+
         pending.push(PendingItem {
             account_id: id.to_string(),
             display_email,
             flyout_bars,
             taskbar_bars,
+            hover_bars,
+            hover_details,
+            resets_badge: None,
+            exhausted_until_ms,
             spend_rate_text: None,
             spend_rate_severity: BarSeverity::Muted,
             reset_short,
@@ -1318,7 +1706,10 @@ fn build_antigravity_items(rows: &[Value], settings: &Settings, now_ms: i64) -> 
         });
     }
 
-    finalize_tracked_items(ProviderKind::Antigravity, settings, pending)
+    (
+        finalize_tracked_items(ProviderKind::Antigravity, settings, pending),
+        snoozed,
+    )
 }
 
 struct OpenCodeCandidate {
@@ -1328,12 +1719,17 @@ struct OpenCodeCandidate {
     item: ProviderItem,
 }
 
-fn build_opencode_items(rows: &[Value], settings: &Settings, now_ms: i64) -> Vec<ProviderItem> {
+fn build_opencode_items(
+    rows: &[Value],
+    settings: &Settings,
+    now_ms: i64,
+) -> (Vec<ProviderItem>, usize) {
     let hidden = hidden_bars_for(settings, ProviderKind::OpenCode);
     let hidden_set: HashSet<&str> = hidden.iter().map(String::as_str).collect();
     let bar_shown = |key: &str| hidden.is_empty() || !hidden_set.contains(key);
 
     let mut candidates = Vec::new();
+    let mut snoozed = 0usize;
 
     for row in rows {
         if row.get("enabled").and_then(Value::as_bool) == Some(false) {
@@ -1369,6 +1765,7 @@ fn build_opencode_items(rows: &[Value], settings: &Settings, now_ms: i64) -> Vec
             card_exhausted,
             now_ms,
         ) {
+            snoozed += 1;
             continue;
         }
 
@@ -1416,6 +1813,7 @@ fn build_opencode_items(rows: &[Value], settings: &Settings, now_ms: i64) -> Vec
         }
 
         let raw_bars = vec![rolling_bar, weekly_bar, monthly_bar];
+        let hover_bars = non_empty_hover_bars(raw_bars.clone());
         let flyout_bars = filter_hidden_bars(raw_bars, &hidden);
         let taskbar_bars = pick_taskbar_bars(&flyout_bars);
         let reset_short = flyout_bars.first().and_then(|b| b.reset_short.clone());
@@ -1426,6 +1824,11 @@ fn build_opencode_items(rows: &[Value], settings: &Settings, now_ms: i64) -> Vec
             Some(email.to_string())
         };
         let tooltip = build_tooltip(&title, &flyout_bars, None, subtitle.as_deref());
+        let exhausted_until_ms = compute_exhausted_until_ms(card_exhausted, &flyout_bars, now_ms);
+        let mut hover_details = Vec::new();
+        if !email.is_empty() {
+            hover_details.push(("Account".to_string(), email.to_string()));
+        }
 
         let rank_exhausted = is_opencode_account_exhausted(&u, stale, now_ms);
         let usable_again_at = opencode_usable_again_at(&u, stale, now_ms);
@@ -1441,6 +1844,10 @@ fn build_opencode_items(rows: &[Value], settings: &Settings, now_ms: i64) -> Vec
                 title,
                 taskbar_bars,
                 flyout_bars,
+                hover_bars,
+                hover_details,
+                resets_badge: None,
+                exhausted_until_ms,
                 spend_rate_text: None,
                 spend_rate_severity: BarSeverity::Muted,
                 secondary: false,
@@ -1469,14 +1876,22 @@ fn build_opencode_items(rows: &[Value], settings: &Settings, now_ms: i64) -> Vec
         })
     });
 
-    candidates
+    let total_active = candidates.len();
+    let items = candidates
         .into_iter()
         .enumerate()
         .map(|(idx, mut cand)| {
             cand.item.secondary = idx > 0;
+            if idx == 0 && total_active > 1 {
+                cand.item.hover_details.push((
+                    "Accounts".to_string(),
+                    format!("{total_active} active accounts"),
+                ));
+            }
             cand.item
         })
-        .collect()
+        .collect();
+    (items, snoozed)
 }
 
 fn build_tooltip(
@@ -1605,6 +2020,52 @@ fn claude_resets_cell_text(resets: Option<&ClaudeResets>) -> Option<String> {
                 format!("{count} {short}")
             }
         })
+        .collect();
+    Some(parts.join(" · "))
+}
+
+/// Compact badge showing resets in hand (`Some("↺ 2")`), or `None` when zero/absent.
+fn claude_resets_badge(u: &ClaudeUsage) -> Option<String> {
+    let total = u
+        .resets
+        .as_ref()
+        .map(ClaudeResets::total)
+        .or(u.reset_credits)
+        .unwrap_or(0);
+    (total > 0).then(|| format!("↺ {total}"))
+}
+
+/// Hover-card reset grants breakdown (e.g. `"1 Fable reset · 1 Full reset"`), or `None`.
+fn claude_resets_detail_text(resets: Option<&ClaudeResets>) -> Option<String> {
+    let resets = resets?;
+    if resets.total() <= 0 {
+        return None;
+    }
+    let mut merged: Vec<(String, i64)> = Vec::new();
+    let mut push_group = |name: String, count: i64| {
+        if count <= 0 {
+            return;
+        }
+        if let Some(entry) = merged.iter_mut().find(|(n, _)| *n == name) {
+            entry.1 += count;
+        } else {
+            merged.push((name, count));
+        }
+    };
+    for g in &resets.groups {
+        if !g.paused {
+            push_group(claude_reset_type_name(g), g.count);
+        }
+    }
+    if resets.weekly_five_hour_available == Some(true) {
+        push_group("5-hour reset".to_string(), 1);
+    }
+    if merged.is_empty() {
+        return None;
+    }
+    let parts: Vec<String> = merged
+        .into_iter()
+        .map(|(name, count)| format!("{count} {name}"))
         .collect();
     Some(parts.join(" · "))
 }
@@ -2716,6 +3177,7 @@ pub fn demo_snapshot(now_ms: i64) -> TaskbarSnapshot {
     let codex_tooltip = build_tooltip("Codex", &codex_bars, None, None);
     let opencode_tooltip =
         build_tooltip("OpenCode", &opencode_bars, None, Some("demo@opencode.ai"));
+    let codex_exhausted_until = compute_exhausted_until_ms(true, &codex_bars, now_ms);
 
     TaskbarSnapshot {
         items: vec![
@@ -2724,7 +3186,19 @@ pub fn demo_snapshot(now_ms: i64) -> TaskbarSnapshot {
                 account_id: "demo@claude.ai".into(),
                 title: "Claude".into(),
                 taskbar_bars: pick_taskbar_bars(&claude_bars),
-                flyout_bars: claude_bars,
+                flyout_bars: claude_bars.clone(),
+                hover_bars: claude_bars,
+                hover_details: vec![
+                    (
+                        "Spend".into(),
+                        "1h $42 · 5h $115 · Today $210 · 7d $1,120".into(),
+                    ),
+                    ("Resets".into(), "1 Fable reset · 1 Full reset".into()),
+                    ("Plan".into(), "Ultra".into()),
+                    ("Account".into(), "demo@claude.ai".into()),
+                ],
+                resets_badge: Some("↺ 2".into()),
+                exhausted_until_ms: None,
                 spend_rate_text: Some("$42/h".into()),
                 spend_rate_severity: BarSeverity::Muted,
                 secondary: false,
@@ -2742,7 +3216,16 @@ pub fn demo_snapshot(now_ms: i64) -> TaskbarSnapshot {
                 account_id: "demo@cursor.sh".into(),
                 title: "Cursor".into(),
                 taskbar_bars: pick_taskbar_bars(&cursor_bars),
-                flyout_bars: cursor_bars,
+                flyout_bars: cursor_bars.clone(),
+                hover_bars: cursor_bars,
+                hover_details: vec![
+                    ("API spend".into(), "$10.80 / $20.00".into()),
+                    ("On-demand".into(), "$4.20 / $50.00".into()),
+                    ("Plan".into(), "Pro".into()),
+                    ("Account".into(), "demo@cursor.sh".into()),
+                ],
+                resets_badge: None,
+                exhausted_until_ms: None,
                 spend_rate_text: None,
                 spend_rate_severity: BarSeverity::Muted,
                 secondary: false,
@@ -2760,7 +3243,14 @@ pub fn demo_snapshot(now_ms: i64) -> TaskbarSnapshot {
                 account_id: "demo@openai.com".into(),
                 title: "Codex".into(),
                 taskbar_bars: pick_taskbar_bars(&codex_bars),
-                flyout_bars: codex_bars,
+                flyout_bars: codex_bars.clone(),
+                hover_bars: codex_bars,
+                hover_details: vec![
+                    ("Plan".into(), "Plus".into()),
+                    ("Account".into(), "demo@openai.com".into()),
+                ],
+                resets_badge: None,
+                exhausted_until_ms: codex_exhausted_until,
                 spend_rate_text: None,
                 spend_rate_severity: BarSeverity::Muted,
                 secondary: false,
@@ -2778,7 +3268,11 @@ pub fn demo_snapshot(now_ms: i64) -> TaskbarSnapshot {
                 account_id: "demo@opencode.ai".into(),
                 title: "OpenCode".into(),
                 taskbar_bars: pick_taskbar_bars(&opencode_bars),
-                flyout_bars: opencode_bars,
+                flyout_bars: opencode_bars.clone(),
+                hover_bars: opencode_bars,
+                hover_details: vec![("Account".into(), "demo@opencode.ai".into())],
+                resets_badge: None,
+                exhausted_until_ms: None,
                 spend_rate_text: None,
                 spend_rate_severity: BarSeverity::Muted,
                 secondary: false,
@@ -2796,6 +3290,7 @@ pub fn demo_snapshot(now_ms: i64) -> TaskbarSnapshot {
         hide_in_fullscreen: true,
         is_demo: true,
         theme_mode: ThemeMode::Auto,
+        snoozed_count: 0,
     }
 }
 
@@ -2871,6 +3366,82 @@ mod tests {
     }
 
     #[test]
+    fn bar_view_computes_reset_at_local_and_pace_pct() {
+        let base = Utc
+            .with_ymd_and_hms(2026, 6, 1, 10, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+        assert_eq!(
+            format_reset_local_tz(&Utc, "2026-06-01T13:30:00Z", base).as_deref(),
+            Some("Today 1:30 PM")
+        );
+        assert_eq!(
+            format_reset_local_tz(&Utc, "2026-06-02T13:30:00Z", base).as_deref(),
+            Some("Tomorrow 1:30 PM")
+        );
+        assert_eq!(
+            format_reset_local_tz(&Utc, "2026-06-04T13:30:00Z", base).as_deref(),
+            Some("Thu 1:30 PM")
+        );
+        assert_eq!(
+            format_reset_local_tz(&Utc, "2026-06-10T13:30:00Z", base).as_deref(),
+            Some("Jun 10, 1:30 PM")
+        );
+        assert_eq!(
+            format_reset_local_tz(&Utc, "2026-06-01T09:55:00Z", base),
+            None
+        );
+
+        let five_h = BarView::new("fiveHour", "5h", Some(40.0), Some(iso_in(150)), NOW, false);
+        assert!(five_h.reset_at_local.is_some());
+        assert!((five_h.pace_pct.unwrap() - 50.0).abs() < 1e-6);
+
+        let weekly = BarView::new(
+            "weekly",
+            "Weekly",
+            Some(60.0),
+            Some(iso_in(7 * 24 * 60 / 4)),
+            NOW,
+            false,
+        );
+        assert!((weekly.pace_pct.unwrap() - 75.0).abs() < 1e-6);
+
+        let monthly = BarView::new(
+            "monthly",
+            "Monthly",
+            Some(30.0),
+            Some(iso_in(15 * 24 * 60)),
+            NOW,
+            false,
+        );
+        assert!((monthly.pace_pct.unwrap() - 50.0).abs() < 1e-6);
+
+        let api = BarView::new(
+            "api",
+            "API",
+            Some(25.0),
+            Some(iso_in(15 * 24 * 60)),
+            NOW,
+            false,
+        );
+        assert!((api.pace_pct.unwrap() - 50.0).abs() < 1e-6);
+
+        // Past reset clears both reset_at_local and pace_pct.
+        let passed = BarView::new("fiveHour", "5h", Some(80.0), Some(iso_in(-5)), NOW, false);
+        assert_eq!(passed.reset_at_local, None);
+        assert_eq!(passed.pace_pct, None);
+
+        // Remaining >= window_ms yields None pace_pct.
+        let beyond = BarView::new("fiveHour", "5h", Some(10.0), Some(iso_in(360)), NOW, false);
+        assert_eq!(beyond.pace_pct, None);
+
+        // Unknown bar key yields None pace_pct.
+        let unknown = BarView::new("custom", "Custom", Some(10.0), Some(iso_in(60)), NOW, false);
+        assert_eq!(unknown.pace_pct, None);
+    }
+
+    #[test]
     fn opencode_filters_lapsed_subscriptions_and_bare_disabled_emails() {
         let rows = vec![
             json!({
@@ -2929,13 +3500,26 @@ mod tests {
             .disabled_accounts
             .push("hidden@example.com".to_string());
 
-        let items = build_opencode_items(&rows, &settings, NOW);
+        let (items, snoozed) = build_opencode_items(&rows, &settings, NOW);
+        assert_eq!(snoozed, 0);
         assert_eq!(items.len(), 2);
         // Most recently changed non-exhausted account ranks first and is primary.
         assert_eq!(items[0].account_id, "active-new@example.com");
         assert!(!items[0].secondary);
+        assert_eq!(items[0].hover_bars.len(), 3);
+        assert_eq!(
+            items[0].hover_details,
+            vec![
+                ("Account".to_string(), "active-new@example.com".to_string()),
+                ("Accounts".to_string(), "2 active accounts".to_string()),
+            ]
+        );
         assert_eq!(items[1].account_id, "active-old@example.com");
         assert!(items[1].secondary);
+        assert_eq!(
+            items[1].hover_details,
+            vec![("Account".to_string(), "active-old@example.com".to_string())]
+        );
     }
 
     #[test]
@@ -2967,11 +3551,20 @@ mod tests {
             }),
         ];
 
-        let items = build_opencode_items(&rows, &Settings::default(), NOW);
+        let (items, snoozed) = build_opencode_items(&rows, &Settings::default(), NOW);
+        assert_eq!(snoozed, 0);
         assert_eq!(items.len(), 2);
         // `sooner` waits 600m (weekly); `later` waits 5000m (latest of weekly+monthly).
         assert_eq!(items[0].account_id, "sooner@example.com");
         assert_eq!(items[1].account_id, "later@example.com");
+        assert_eq!(
+            items[0].exhausted_until_ms,
+            Some((NOW + 600 * 60_000) as u64)
+        );
+        assert_eq!(
+            items[1].exhausted_until_ms,
+            Some((NOW + 5000 * 60_000) as u64)
+        );
 
         // On `sooner`: weekly full -> rolling dimmed, weekly Danger, monthly Ok.
         assert_eq!(items[0].flyout_bars[0].severity, BarSeverity::Muted);
@@ -3011,12 +3604,41 @@ mod tests {
                     "allowancePctOfWeekly": 50.0
                 }],
                 "resetCredits": 2,
-                "resets": null,
+                "resets": {
+                    "groups": [
+                        {
+                            "kind": "weekly",
+                            "label": "Fable weekly",
+                            "count": 1,
+                            "earliestExpiry": null,
+                            "paused": false
+                        },
+                        {
+                            "kind": "full",
+                            "label": "Full reset",
+                            "count": 1,
+                            "earliestExpiry": null,
+                            "paused": false
+                        }
+                    ],
+                    "weeklyFiveHourAvailable": false
+                },
                 "billingType": null,
                 "rateLimitTier": null,
                 "orgUuid": null
             }
         })];
+
+        let spend_info = ClaudeSpendInfo {
+            rate_text: Some("$42/h".to_string()),
+            rate_severity: BarSeverity::Ok,
+            summary: Some("1h $42 · 5h $115 · Today $210 · 7d $1,120".to_string()),
+        };
+        let empty_spend = ClaudeSpendInfo {
+            rate_text: None,
+            rate_severity: BarSeverity::Muted,
+            summary: None,
+        };
 
         let mut settings = Settings::default();
         // Hide fiveHour so flyout_bars is [weekly, scoped] — previously `.take(2)` hit Fable!
@@ -3024,36 +3646,52 @@ mod tests {
             .hidden_bars
             .insert(WidgetProvider::Claude, vec!["fiveHour".to_string()]);
 
-        let items = build_claude_items(
-            &rows,
-            &settings,
-            Some("$42/h".to_string()),
-            BarSeverity::Ok,
-            NOW,
-            |_| {
-                (
-                    Some(ModelShare {
-                        usd: 25.0,
-                        total_usd: 100.0,
-                    }),
-                    vec![
-                        ModelUsd {
-                            model: "claude-opus-5-5".to_string(),
-                            usd: 60.0,
-                        },
-                        ModelUsd {
-                            model: "claude-fable-5-2".to_string(),
-                            usd: 40.0,
-                        },
-                    ],
-                )
-            },
-        );
+        let (items, snoozed) = build_claude_items(&rows, &settings, &spend_info, NOW, |_| {
+            (
+                Some(ModelShare {
+                    usd: 25.0,
+                    total_usd: 100.0,
+                }),
+                vec![
+                    ModelUsd {
+                        model: "claude-opus-5-5".to_string(),
+                        usd: 60.0,
+                    },
+                    ModelUsd {
+                        model: "claude-fable-5-2".to_string(),
+                        usd: 40.0,
+                    },
+                ],
+            )
+        });
+        assert_eq!(snoozed, 0);
         assert_eq!(items.len(), 1);
         let item = &items[0];
         // Fable is 100% but weekly is 82% -> Claude must NOT be marked exhausted.
         assert!(!item.exhausted);
+        assert_eq!(item.exhausted_until_ms, None);
+        assert_eq!(item.flyout_bars.len(), 2);
         assert_eq!(item.flyout_bars[0].key, "weekly");
+        // hover_bars keeps ALL raw bars including the hidden fiveHour bar.
+        assert_eq!(item.hover_bars.len(), 3);
+        assert_eq!(item.hover_bars[0].key, "fiveHour");
+        assert_eq!(item.hover_bars[2].key, "scoped");
+        assert_eq!(item.resets_badge.as_deref(), Some("↺ 2"));
+        assert_eq!(
+            item.hover_details,
+            vec![
+                (
+                    "Spend".to_string(),
+                    "1h $42 · 5h $115 · Today $210 · 7d $1,120".to_string()
+                ),
+                (
+                    "Resets".to_string(),
+                    "1 Fable reset · 1 Full reset".to_string()
+                ),
+                ("Plan".to_string(), "Ultra".to_string()),
+                ("Account".to_string(), "alice@claude.ai".to_string()),
+            ]
+        );
         assert_eq!(item.flyout_bars[0].fable_segment_pct, Some(23.0));
         assert_eq!(
             item.flyout_bars[0].tooltip_lines,
@@ -3064,13 +3702,8 @@ mod tests {
             .contains("Weekly: Fable 23 pts · Other models 59 pts"));
 
         // Now with all bars visible: check 5h Fable shade & per-model tooltip lines.
-        let items_all = build_claude_items(
-            &rows,
-            &Settings::default(),
-            Some("$42/h".to_string()),
-            BarSeverity::Ok,
-            NOW,
-            |_| {
+        let (items_all, _) =
+            build_claude_items(&rows, &Settings::default(), &spend_info, NOW, |_| {
                 (
                     Some(ModelShare {
                         usd: 25.0,
@@ -3087,8 +3720,7 @@ mod tests {
                         },
                     ],
                 )
-            },
-        );
+            });
         let bar_5h = &items_all[0].flyout_bars[0];
         assert_eq!(bar_5h.key, "fiveHour");
         assert_eq!(bar_5h.fable_segment_pct, Some(20.0)); // 80% * (25/100)
@@ -3102,16 +3734,15 @@ mod tests {
             fable_shade: false,
             ..Settings::default()
         };
-        let items_no_shade =
-            build_claude_items(&rows, &no_shade, None, BarSeverity::Muted, NOW, |_| {
-                (
-                    Some(ModelShare {
-                        usd: 25.0,
-                        total_usd: 100.0,
-                    }),
-                    Vec::new(),
-                )
-            });
+        let (items_no_shade, _) = build_claude_items(&rows, &no_shade, &empty_spend, NOW, |_| {
+            (
+                Some(ModelShare {
+                    usd: 25.0,
+                    total_usd: 100.0,
+                }),
+                Vec::new(),
+            )
+        });
         assert_eq!(items_no_shade[0].flyout_bars[0].fable_segment_pct, None);
         assert_eq!(items_no_shade[0].flyout_bars[1].fable_segment_pct, None);
     }
@@ -3131,12 +3762,15 @@ mod tests {
             "stale": false,
             "usage": {
                 "email": "user@openai.com",
+                "planType": "plus",
                 "usedPercent": 100.0,
                 "resetAt": iso_in(60),
                 "limitReached": true
             }
         })];
-        assert!(build_codex_items(&exhausted_rows, &settings, NOW).is_empty());
+        let (hidden_items, hidden_count) = build_codex_items(&exhausted_rows, &settings, NOW);
+        assert!(hidden_items.is_empty());
+        assert_eq!(hidden_count, 1);
 
         // Window resets early (now 10%, not exhausted) -> card returns immediately!
         let reset_rows = vec![json!({
@@ -3145,14 +3779,82 @@ mod tests {
             "stale": false,
             "usage": {
                 "email": "user@openai.com",
+                "planType": "plus",
                 "usedPercent": 10.0,
                 "resetAt": iso_in(300),
                 "limitReached": false
             }
         })];
-        let items = build_codex_items(&reset_rows, &settings, NOW);
+        let (items, snoozed) = build_codex_items(&reset_rows, &settings, NOW);
+        assert_eq!(snoozed, 0);
         assert_eq!(items.len(), 1);
         assert!(!items[0].exhausted);
+        assert_eq!(items[0].exhausted_until_ms, None);
+        assert_eq!(
+            items[0].hover_details,
+            vec![
+                ("Plan".to_string(), "Plus".to_string()),
+                ("Account".to_string(), "user@openai.com".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn auto_hide_exhausted_hides_and_restores_cards_and_counts_snoozed() {
+        let settings = Settings {
+            auto_hide_exhausted: true,
+            ..Settings::default()
+        };
+        let exhausted_rows = vec![json!({
+            "id": "dev@openai.com",
+            "active": true,
+            "stale": false,
+            "usage": {
+                "email": "dev@openai.com",
+                "planType": "pro",
+                "usedPercent": 100.0,
+                "resetAt": iso_in(90),
+                "weeklyUsedPercent": 40.0,
+                "weeklyResetAt": iso_in(5 * 24 * 60),
+                "limitReached": true
+            }
+        })];
+        // With auto_hide_exhausted = false, card is visible and carries exhausted_until_ms.
+        let (visible, snoozed_off) = build_codex_items(&exhausted_rows, &Settings::default(), NOW);
+        assert_eq!(snoozed_off, 0);
+        assert_eq!(visible.len(), 1);
+        assert!(visible[0].exhausted);
+        assert_eq!(
+            visible[0].exhausted_until_ms,
+            Some((NOW + 90 * 60_000) as u64)
+        );
+        assert_eq!(visible[0].hover_bars.len(), 2);
+
+        // With auto_hide_exhausted = true, exhausted card is hidden and snoozed count increments.
+        let (hidden, snoozed_on) = build_codex_items(&exhausted_rows, &settings, NOW);
+        assert!(hidden.is_empty());
+        assert_eq!(snoozed_on, 1);
+
+        // Once usage drops below 100% (no longer exhausted), card returns immediately.
+        let recovered_rows = vec![json!({
+            "id": "dev@openai.com",
+            "active": true,
+            "stale": false,
+            "usage": {
+                "email": "dev@openai.com",
+                "planType": "pro",
+                "usedPercent": 25.0,
+                "resetAt": iso_in(290),
+                "weeklyUsedPercent": 40.0,
+                "weeklyResetAt": iso_in(5 * 24 * 60),
+                "limitReached": false
+            }
+        })];
+        let (recovered, snoozed_after) = build_codex_items(&recovered_rows, &settings, NOW);
+        assert_eq!(snoozed_after, 0);
+        assert_eq!(recovered.len(), 1);
+        assert!(!recovered[0].exhausted);
+        assert_eq!(recovered[0].exhausted_until_ms, None);
     }
 
     #[test]
@@ -3189,14 +3891,15 @@ mod tests {
             .display_names
             .insert("grok:a@example.com".to_string(), json!("Work Grok"));
 
-        let items = build_grok_items(&rows, &settings, NOW);
+        let (items, snoozed) = build_grok_items(&rows, &settings, NOW);
+        assert_eq!(snoozed, 0);
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].title, "Work Grok");
         assert!(items[0].auth_expired); // via error == "auth-rejected"
         assert_eq!(items[1].title, "b@example.com"); // multiple -> falls back to label
 
         settings.show_provider_names = true;
-        let items_provider_names = build_grok_items(&rows, &settings, NOW);
+        let (items_provider_names, _) = build_grok_items(&rows, &settings, NOW);
         assert_eq!(items_provider_names[0].title, "Grok");
         assert_eq!(items_provider_names[1].title, "Grok");
     }
@@ -3215,6 +3918,11 @@ mod tests {
                     "resetsAt": iso_in(5 * 24 * 60),
                     "accountName": "dev@cursor.sh",
                     "planName": "Pro",
+                    "onDemand": {
+                        "state": "enabled",
+                        "spentUsd": 4.2,
+                        "limitUsd": 50.0
+                    },
                     "apiSpend": {
                         "spentUsd": 12.5,
                         "limitUsd": 20.0,
@@ -3230,11 +3938,27 @@ mod tests {
             }]
         });
 
-        let items = build_cursor_items(&resp, &Settings::default(), NOW);
+        let mut settings = Settings::default();
+        settings
+            .hidden_bars
+            .insert(WidgetProvider::Cursor, vec!["firstParty".to_string()]);
+        let (items, snoozed) = build_cursor_items(&resp, &settings, NOW);
+        assert_eq!(snoozed, 0);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].title, "dev@cursor.sh");
+        assert_eq!(items[0].flyout_bars.len(), 1);
+        assert_eq!(items[0].hover_bars.len(), 2);
         assert_eq!(
-            items[0].flyout_bars[1].tooltip_lines,
+            items[0].hover_details,
+            vec![
+                ("API spend".to_string(), "$12.50 / $20.00".to_string()),
+                ("On-demand".to_string(), "$4.20 / $50.00".to_string()),
+                ("Plan".to_string(), "Pro".to_string()),
+                ("Account".to_string(), "dev@cursor.sh".to_string()),
+            ]
+        );
+        assert_eq!(
+            items[0].flyout_bars[0].tooltip_lines,
             vec!["claude-4.6-opus $6", "gpt-5 $3.50", "o3 $2", "other $1",]
         );
         assert!(items[0].tooltip.contains("API: claude-4.6-opus $6"));
@@ -3321,11 +4045,21 @@ mod tests {
     fn demo_snapshot_has_four_providers_with_at_most_two_taskbar_bars() {
         let snap = demo_snapshot(NOW);
         assert_eq!(snap.items.len(), 4);
+        assert_eq!(snap.snoozed_count, 0);
         assert_eq!(snap.items[0].spend_rate_text.as_deref(), Some("$42/h"));
+        assert_eq!(snap.items[0].resets_badge.as_deref(), Some("↺ 2"));
+        assert_eq!(snap.items[0].hover_bars.len(), 3);
+        assert!(!snap.items[0].hover_details.is_empty());
+        assert_eq!(
+            snap.items[2].exhausted_until_ms,
+            Some((NOW + 220 * 60_000) as u64)
+        );
         assert_eq!(snap.theme_mode, ThemeMode::Auto);
         for item in &snap.items {
             assert!(item.taskbar_bars.len() <= 2);
             assert!(!item.flyout_bars.is_empty());
+            assert!(!item.hover_bars.is_empty());
+            assert!(!item.hover_details.is_empty());
         }
     }
 }

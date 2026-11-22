@@ -89,6 +89,7 @@ pub enum Action {
     CopyDiagnostics,
     ToggleStartAtLogin,
     ToggleHideInFullscreen,
+    ToggleAutoHideExhausted,
     SetPanelTheme(PanelTheme),
     SetWidgetTheme(ThemeMode),
     MoveProviderUp(WidgetProvider),
@@ -992,6 +993,12 @@ fn build_general_page(b: &mut ContentBuilder, input: &LayoutInput<'_>) {
         None,
         input.settings.hide_in_fullscreen,
         Action::ToggleHideInFullscreen,
+    );
+    b.add_toggle_row(
+        "Auto-hide full cards until reset",
+        Some("Temporarily hide exhausted accounts from the taskbar until usage comes back"),
+        input.settings.auto_hide_exhausted,
+        Action::ToggleAutoHideExhausted,
     );
 
     // Theme section

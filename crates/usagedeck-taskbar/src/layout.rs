@@ -61,6 +61,8 @@ pub struct PillSlot {
     pub rect: DipRect,
     /// Clickable icon region on the left of each pill (e.g. OpenCode click-to-copy).
     pub icon_rect: DipRect,
+    /// Optional top-right `×` hide-until-reset chip rect for exhausted pills with a known reset.
+    pub hide_rect: Option<DipRect>,
     /// True when the pill includes the rate/reset column (`CompactStacked`) or inline rate (`WideMeters`).
     pub extended: bool,
     /// Active layout style selected for this slot.
@@ -114,6 +116,18 @@ impl StripLayout {
             StripMode::Pills { slots, .. } => slots
                 .iter()
                 .find(|slot| slot.icon_rect.contains(px, py))
+                .map(|slot| slot.item_index),
+            StripMode::Hidden | StripMode::CompactSummary { .. } | StripMode::Empty { .. } => None,
+        }
+    }
+
+    /// Return the `snapshot.items` index of the exhausted provider pill whose top-right
+    /// hide-until-reset `×` chip contains `(px, py)` (in strip DIPs).
+    pub fn hit_test_pill_hide(&self, px: f32, py: f32) -> Option<usize> {
+        match &self.mode {
+            StripMode::Pills { slots, .. } => slots
+                .iter()
+                .find(|slot| slot.hide_rect.is_some_and(|hr| hr.contains(px, py)))
                 .map(|slot| slot.item_index),
             StripMode::Hidden | StripMode::CompactSummary { .. } | StripMode::Empty { .. } => None,
         }
@@ -367,10 +381,17 @@ pub fn compute_strip_layout(
                 (icon_rect, Vec::new())
             }
         };
+        let hide_rect = exhausted_until_ms(item, snapshot.updated_at_ms).map(|_| DipRect {
+            x: rect.x + rect.w - 17.0,
+            y: rect.y + 1.0,
+            w: 16.0,
+            h: 16.0,
+        });
         slots.push(PillSlot {
             item_index: idx,
             rect,
             icon_rect,
+            hide_rect,
             extended,
             style,
             meter_rects,
@@ -515,6 +536,11 @@ impl FlyoutLayout {
 pub fn exhausted_until_ms(item: &ProviderItem, now_ms: i64) -> Option<u64> {
     if !item.exhausted {
         return None;
+    }
+    if let Some(ms) = item.exhausted_until_ms {
+        if i64::try_from(ms).is_ok_and(|t| t > now_ms) {
+            return Some(ms);
+        }
     }
     let danger_max = item
         .flyout_bars
@@ -757,6 +783,10 @@ mod tests {
             title: "Grok Bot".into(),
             taskbar_bars: vec![BarView::new("main", "5h", Some(32.0), None, now, false)],
             flyout_bars: vec![],
+            hover_bars: vec![],
+            hover_details: vec![],
+            resets_badge: None,
+            exhausted_until_ms: None,
             spend_rate_text: None,
             spend_rate_severity: BarSeverity::Muted,
             secondary: false,
@@ -985,6 +1015,10 @@ mod tests {
                 BarView::new("fiveHour", "5h", Some(100.0), iso(90), now, false),
                 BarView::new("weekly", "Weekly", Some(100.0), iso(24 * 60), now, false),
             ],
+            hover_bars: vec![],
+            hover_details: vec![],
+            resets_badge: None,
+            exhausted_until_ms: None,
             spend_rate_text: None,
             spend_rate_severity: BarSeverity::Muted,
             reset_short: None,
@@ -1089,6 +1123,39 @@ mod tests {
         // Header area is not a bar.
         assert_eq!(
             fl.hit_test_bar(FLYOUT_PAD_DIP + 10.0, FLYOUT_PAD_DIP + 5.0),
+            None
+        );
+    }
+
+    #[test]
+    fn strip_hit_tests_exhausted_pill_hide_chip() {
+        let now = 1_700_000_000_000i64;
+        let snap = demo_snapshot(now);
+        let layout = compute_strip_layout(&snap, 920.0, false);
+        let StripMode::Pills { ref slots, .. } = layout.mode else {
+            panic!("expected Pills mode");
+        };
+        // Non-exhausted pills (Claude 0, Cursor 1, OpenCode 3) have no hide_rect.
+        for idx in [0usize, 1, 3] {
+            let slot = &slots[idx];
+            assert_eq!(slot.hide_rect, None);
+            assert_eq!(
+                layout.hit_test_pill_hide(slot.rect.x + slot.rect.w - 8.0, slot.rect.y + 8.0),
+                None
+            );
+        }
+        // Exhausted pill (Codex 2) exposes a 16x16 top-right hide chip and hit-tests cleanly.
+        let codex = &slots[2];
+        let hr = codex.hide_rect.expect("exhausted pill has hide_rect");
+        assert_eq!(hr.w, 16.0);
+        assert_eq!(hr.h, 16.0);
+        assert_eq!(
+            layout.hit_test_pill_hide(hr.x + hr.w * 0.5, hr.y + hr.h * 0.5),
+            Some(2)
+        );
+        // Center of the pill outside the top-right chip does not hit the hide chip.
+        assert_eq!(
+            layout.hit_test_pill_hide(codex.rect.x + 24.0, codex.rect.y + codex.rect.h * 0.5),
             None
         );
     }

@@ -107,64 +107,76 @@ pub fn read_taskbar_theme() -> TaskbarTheme {
     }
 }
 
-/// Classify raw GDI `COLORREF` (`0x00BBGGRR`) samples into Dark/Light by average perceived
-/// luminance (`0.299*R + 0.587*G + 0.114*B`). Returns `None` if all samples are `CLR_INVALID`.
+/// Classify raw GDI `COLORREF` (`0x00BBGGRR`) samples into Dark/Light by median perceived
+/// luminance (`0.299*R + 0.587*G + 0.114*B`). Using the median prevents a single bright icon or
+/// hairline border pixel from flipping a dark taskbar into Light mode.
 fn classify_pixel_samples(samples: &[u32]) -> Option<TaskbarTheme> {
-    let mut lum_sum = 0.0f32;
-    let mut valid = 0u32;
-    for &c in samples {
-        if c == CLR_INVALID_RAW {
-            continue;
-        }
-        let r = (c & 0xFF) as f32;
-        let g = ((c >> 8) & 0xFF) as f32;
-        let b = ((c >> 16) & 0xFF) as f32;
-        lum_sum += 0.299 * r + 0.587 * g + 0.114 * b;
-        valid += 1;
-    }
-    if valid == 0 {
+    let mut lums: Vec<f32> = samples
+        .iter()
+        .copied()
+        .filter(|&c| c != CLR_INVALID_RAW)
+        .map(|c| {
+            let r = (c & 0xFF) as f32;
+            let g = ((c >> 8) & 0xFF) as f32;
+            let b = ((c >> 16) & 0xFF) as f32;
+            0.299 * r + 0.587 * g + 0.114 * b
+        })
+        .collect();
+    if lums.is_empty() {
         return None;
     }
-    let avg_lum = lum_sum / valid as f32;
-    if avg_lum < LUMINANCE_LIGHT_THRESHOLD {
+    lums.sort_by(|a, b| a.total_cmp(b));
+    let median_lum = lums[lums.len() / 2];
+    if median_lum < LUMINANCE_LIGHT_THRESHOLD {
         Some(TaskbarTheme::Dark)
     } else {
         Some(TaskbarTheme::Light)
     }
 }
 
-/// Sample actual screen pixels along the unobstructed top strip of `Shell_TrayWnd`
-/// (`y = tray_rect.top + 3`, above our vertically centered 38-DIP strip) so dark accent-colored
-/// Windows 11 taskbars are accurately detected as Dark even when `SystemUsesLightTheme == 1`.
+/// Detect whether the Windows taskbar surface is Dark or Light.
+///
+/// First respects Windows' own taskbar icon polarity (`read_taskbar_theme`): whenever
+/// `SystemUsesLightTheme == 0` or `ColorPrevalence == 1`, Windows itself renders white icons
+/// (`^`, clock, tray), so we must always use `TaskbarTheme::Dark` and never let a stray bright
+/// pixel (such as the Widgets/Weather tile or top border highlight) flip the strip into unreadable
+/// dark-on-dark text. When Windows reports Light, we also sample pixels near `TrayNotifyWnd` so
+/// dark TranslucentTB / Mica / wallpaper-tinted taskbars still automatically pick Dark mode.
 pub fn sample_taskbar_theme(tray_rect: RECT, notify_rect: RECT) -> TaskbarTheme {
+    if read_taskbar_theme() == TaskbarTheme::Dark {
+        return TaskbarTheme::Dark;
+    }
     if tray_rect.right <= tray_rect.left || tray_rect.bottom <= tray_rect.top {
-        return read_taskbar_theme();
+        return TaskbarTheme::Light;
     }
     let min_x = tray_rect.left;
     let max_x = tray_rect.right - 1;
-    let y = (tray_rect.top + 3).min(tray_rect.bottom - 1);
+    let y_top = (tray_rect.top + 4).min(tray_rect.bottom - 1);
+    let y_bot = (tray_rect.bottom - 4).max(tray_rect.top);
     let xs = [
         (notify_rect.left - 2).clamp(min_x, max_x),
-        (notify_rect.left - 6).clamp(min_x, max_x),
-        (tray_rect.left + 8).clamp(min_x, max_x),
+        (notify_rect.left - 5).clamp(min_x, max_x),
+        (notify_rect.left - 9).clamp(min_x, max_x),
     ];
 
     // SAFETY: read-only screen DC pixel sampling balanced with `ReleaseDC`.
     let samples = unsafe {
         let screen_dc = GetDC(None);
         if screen_dc.is_invalid() {
-            return read_taskbar_theme();
+            return TaskbarTheme::Light;
         }
         let pixels = [
-            GetPixel(screen_dc, xs[0], y).0,
-            GetPixel(screen_dc, xs[1], y).0,
-            GetPixel(screen_dc, xs[2], y).0,
+            GetPixel(screen_dc, xs[0], y_top).0,
+            GetPixel(screen_dc, xs[1], y_top).0,
+            GetPixel(screen_dc, xs[2], y_top).0,
+            GetPixel(screen_dc, xs[0], y_bot).0,
+            GetPixel(screen_dc, xs[1], y_bot).0,
         ];
         let _ = ReleaseDC(None, screen_dc);
         pixels
     };
 
-    classify_pixel_samples(&samples).unwrap_or_else(read_taskbar_theme)
+    classify_pixel_samples(&samples).unwrap_or(TaskbarTheme::Light)
 }
 
 /// Check if Windows 11 taskbar alignment is set to Center (`TaskbarAl == 1`, default on Win11).

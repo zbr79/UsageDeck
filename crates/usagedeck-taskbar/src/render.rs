@@ -102,10 +102,10 @@ fn palette(theme: TaskbarTheme) -> Palette {
             card_border: rgba(255, 255, 255, 0.09),
             btn_bg: rgba(255, 255, 255, 0.08),
             btn_bg_hover: rgba(255, 255, 255, 0.16),
-            track: rgba(255, 255, 255, 0.16),
-            sep: rgba(255, 255, 255, 0.13),
-            text: rgba(248, 248, 250, 0.96),
-            muted: rgba(218, 218, 224, 0.72),
+            track: rgba(255, 255, 255, 0.24),
+            sep: rgba(255, 255, 255, 0.20),
+            text: rgba(255, 255, 255, 0.97),
+            muted: rgba(232, 232, 240, 0.84),
             ok: rgba(0x00, 0xd4, 0x92, 1.0),
             warn: rgba(0xff, 0xb9, 0x00, 1.0),
             danger: rgba(0xff, 0x64, 0x67, 1.0),
@@ -361,6 +361,10 @@ impl Renderer {
                 fmt_btn,
             })
         }
+    }
+
+    pub fn icons(&self) -> &IconAtlas {
+        &self.icons
     }
 
     fn draw_text(
@@ -685,6 +689,9 @@ impl Renderer {
     /// When `hovered_pill` is `Some(item_index)`, only that provider pill receives the hover
     /// highlight so hovering individual pills matches the per-pill tooltip cleanly. When
     /// `hovered_icon_pill` matches an OpenCode pill, its icon shows a copy-key affordance.
+    /// When `hovered_hide_pill` matches an exhausted pill's top-right `×` chip, that chip
+    /// highlights in danger red. When `forced_contrast_backdrop` is `true` (explicit theme
+    /// opposite the actual taskbar background), pills render a subtle high-contrast plate at rest.
     #[allow(clippy::too_many_arguments)]
     pub fn render_strip(
         &self,
@@ -698,6 +705,8 @@ impl Renderer {
         hovered: bool,
         hovered_pill: Option<usize>,
         hovered_icon_pill: Option<usize>,
+        hovered_hide_pill: Option<usize>,
+        forced_contrast_backdrop: bool,
     ) -> Result<()> {
         let scale = dpi as f32 / 96.0;
         let width_px = (layout.width_dip * scale).ceil() as i32;
@@ -721,7 +730,14 @@ impl Renderer {
             match &layout.mode {
                 StripMode::Hidden => {}
                 StripMode::Empty { rect, label } => {
-                    self.draw_slot_plate(rt, *rect, &pal, hovered)?;
+                    self.draw_slot_plate(
+                        rt,
+                        *rect,
+                        &pal,
+                        theme,
+                        hovered,
+                        forced_contrast_backdrop,
+                    )?;
                     self.draw_text(rt, label, &self.fmt_btn, *rect, pal.muted)?;
                 }
                 StripMode::CompactSummary {
@@ -729,7 +745,14 @@ impl Renderer {
                     peak_percent,
                     severity,
                 } => {
-                    self.draw_slot_plate(rt, *rect, &pal, hovered)?;
+                    self.draw_slot_plate(
+                        rt,
+                        *rect,
+                        &pal,
+                        theme,
+                        hovered,
+                        forced_contrast_backdrop,
+                    )?;
                     if !hovered && matches!(severity, BarSeverity::Danger | BarSeverity::Warn) {
                         let accent = match severity {
                             BarSeverity::Danger => pal.danger,
@@ -768,6 +791,7 @@ impl Renderer {
                         if let Some(item) = snapshot.items.get(slot.item_index) {
                             let pill_hovered = hovered_pill == Some(slot.item_index);
                             let icon_hovered = hovered_icon_pill == Some(slot.item_index);
+                            let hide_hovered = hovered_hide_pill == Some(slot.item_index);
                             self.draw_provider_pill(
                                 rt,
                                 item,
@@ -776,36 +800,47 @@ impl Renderer {
                                 &pal,
                                 pill_hovered,
                                 icon_hovered,
+                                hide_hovered,
+                                forced_contrast_backdrop,
                             )?;
                         }
                     }
                     // Subtle 1px vertical hairline dividers centered between adjacent providers
-                    // when neither adjacent slot is hovered.
-                    for pair in slots.windows(2) {
-                        let left = &pair[0];
-                        let right = &pair[1];
-                        if hovered_pill != Some(left.item_index)
-                            && hovered_pill != Some(right.item_index)
-                        {
-                            let sep_x = (left.rect.x + left.rect.w + right.rect.x) * 0.5 - 0.5;
-                            let sep_h = 18.0;
-                            let sep_y = (layout.height_dip - sep_h) * 0.5;
-                            self.fill_rounded(
-                                rt,
-                                DipRect {
-                                    x: sep_x,
-                                    y: sep_y,
-                                    w: 1.0,
-                                    h: sep_h,
-                                },
-                                0.5,
-                                pal.sep,
-                            )?;
+                    // when neither adjacent slot is hovered (and not using per-pill contrast plates).
+                    if !forced_contrast_backdrop {
+                        for pair in slots.windows(2) {
+                            let left = &pair[0];
+                            let right = &pair[1];
+                            if hovered_pill != Some(left.item_index)
+                                && hovered_pill != Some(right.item_index)
+                            {
+                                let sep_x = (left.rect.x + left.rect.w + right.rect.x) * 0.5 - 0.5;
+                                let sep_h = 18.0;
+                                let sep_y = (layout.height_dip - sep_h) * 0.5;
+                                self.fill_rounded(
+                                    rt,
+                                    DipRect {
+                                        x: sep_x,
+                                        y: sep_y,
+                                        w: 1.0,
+                                        h: sep_h,
+                                    },
+                                    0.5,
+                                    pal.sep,
+                                )?;
+                            }
                         }
                     }
                     if let Some((rect, count)) = overflow_badge {
                         let badge_hovered = hovered && hovered_pill.is_none();
-                        self.draw_slot_plate(rt, *rect, &pal, badge_hovered)?;
+                        self.draw_slot_plate(
+                            rt,
+                            *rect,
+                            &pal,
+                            theme,
+                            badge_hovered,
+                            forced_contrast_backdrop,
+                        )?;
                         let label = format!("+{count}");
                         self.draw_text(rt, &label, &self.fmt_btn, *rect, pal.muted)?;
                     }
@@ -820,25 +855,69 @@ impl Renderer {
         rt: &ID2D1DCRenderTarget,
         rect: DipRect,
         pal: &Palette,
+        theme: TaskbarTheme,
         hovered: bool,
+        forced_contrast_backdrop: bool,
     ) -> Result<()> {
-        let bg = if hovered {
-            pal.pill_bg_hover
+        let (bg, border) = if forced_contrast_backdrop {
+            match (theme, hovered) {
+                (TaskbarTheme::Light, false) => (rgba(250, 251, 253, 0.88), rgba(0, 0, 0, 0.10)),
+                (TaskbarTheme::Light, true) => (rgba(255, 255, 255, 0.96), pal.pill_border_hover),
+                (TaskbarTheme::Dark, false) => (rgba(24, 25, 30, 0.86), rgba(255, 255, 255, 0.14)),
+                (TaskbarTheme::Dark, true) => (rgba(36, 38, 46, 0.94), pal.pill_border_hover),
+            }
+        } else if hovered {
+            (pal.pill_bg_hover, pal.pill_border_hover)
         } else {
-            pal.pill_bg
+            (pal.pill_bg, pal.pill_border)
         };
         if bg.a > 0.0 {
             self.fill_rounded(rt, rect, 6.0, bg)?;
         }
-        let border = if hovered {
-            pal.pill_border_hover
-        } else {
-            pal.pill_border
-        };
         if border.a > 0.0 {
             self.stroke_rounded(rt, rect, 6.0, 1.0, border)?;
         }
         Ok(())
+    }
+
+    /// Render the sleek top-right `×` hide-until-reset chip on a hovered exhausted taskbar pill.
+    fn draw_pill_hide_chip(
+        &self,
+        rt: &ID2D1DCRenderTarget,
+        hr: DipRect,
+        theme: TaskbarTheme,
+        pal: &Palette,
+        hide_hovered: bool,
+    ) -> Result<()> {
+        let bg = if hide_hovered {
+            rgba(239, 68, 68, 0.24)
+        } else if theme == TaskbarTheme::Dark {
+            rgba(255, 255, 255, 0.14)
+        } else {
+            rgba(0, 0, 0, 0.09)
+        };
+        let border = if hide_hovered {
+            pal.pill_border_danger
+        } else if theme == TaskbarTheme::Dark {
+            rgba(255, 255, 255, 0.22)
+        } else {
+            rgba(0, 0, 0, 0.16)
+        };
+        let fg = if hide_hovered { pal.danger } else { pal.muted };
+        self.fill_rounded(rt, hr, 4.0, bg)?;
+        self.stroke_rounded(rt, hr, 4.0, 1.0, border)?;
+        self.draw_text(
+            rt,
+            "×",
+            &self.fmt_icon,
+            DipRect {
+                x: hr.x,
+                y: hr.y - 0.5,
+                w: hr.w,
+                h: hr.h,
+            },
+            fg,
+        )
     }
 
     fn draw_status_accent_bar(
@@ -871,14 +950,32 @@ impl Renderer {
         pal: &Palette,
         hovered: bool,
         icon_hovered: bool,
+        hide_hovered: bool,
+        forced_contrast_backdrop: bool,
     ) -> Result<()> {
         match slot.style {
-            PillStyle::WideMeters => {
-                self.draw_wide_meter_pill(rt, item, slot, theme, pal, hovered, icon_hovered)
-            }
-            PillStyle::CompactStacked => {
-                self.draw_compact_stacked_pill(rt, item, slot, theme, pal, hovered, icon_hovered)
-            }
+            PillStyle::WideMeters => self.draw_wide_meter_pill(
+                rt,
+                item,
+                slot,
+                theme,
+                pal,
+                hovered,
+                icon_hovered,
+                hide_hovered,
+                forced_contrast_backdrop,
+            ),
+            PillStyle::CompactStacked => self.draw_compact_stacked_pill(
+                rt,
+                item,
+                slot,
+                theme,
+                pal,
+                hovered,
+                icon_hovered,
+                hide_hovered,
+                forced_contrast_backdrop,
+            ),
         }
     }
 
@@ -892,10 +989,12 @@ impl Renderer {
         pal: &Palette,
         hovered: bool,
         icon_hovered: bool,
+        hide_hovered: bool,
+        forced_contrast_backdrop: bool,
     ) -> Result<()> {
         let r = slot.rect;
-        // Option 1 borderless at rest; subtle Fluent rounded plate on hover only.
-        self.draw_slot_plate(rt, r, pal, hovered)?;
+        // Option 1 borderless at rest (unless theme mismatches taskbar); subtle Fluent rounded plate on hover.
+        self.draw_slot_plate(rt, r, pal, theme, hovered, forced_contrast_backdrop)?;
 
         // Subtle 2 DIP bottom status accent bar when exhausted or auth-expired and not hovered.
         if !hovered && (item.exhausted || item.auth_expired) {
@@ -979,6 +1078,11 @@ impl Renderer {
                     pal.muted
                 },
             )?;
+            if hovered {
+                if let Some(hr) = slot.hide_rect {
+                    self.draw_pill_hide_chip(rt, hr, theme, pal, hide_hovered)?;
+                }
+            }
             return Ok(());
         }
 
@@ -1034,6 +1138,12 @@ impl Renderer {
             self.draw_bar_fill(rt, track_rect, 2.25, bar, pal)?;
         }
 
+        if hovered {
+            if let Some(hr) = slot.hide_rect {
+                self.draw_pill_hide_chip(rt, hr, theme, pal, hide_hovered)?;
+            }
+        }
+
         Ok(())
     }
 
@@ -1047,9 +1157,11 @@ impl Renderer {
         pal: &Palette,
         hovered: bool,
         icon_hovered: bool,
+        hide_hovered: bool,
+        forced_contrast_backdrop: bool,
     ) -> Result<()> {
         let r = slot.rect;
-        self.draw_slot_plate(rt, r, pal, hovered)?;
+        self.draw_slot_plate(rt, r, pal, theme, hovered, forced_contrast_backdrop)?;
         if !hovered && (item.exhausted || item.auth_expired) {
             let accent = if item.exhausted { pal.danger } else { pal.warn };
             self.draw_status_accent_bar(rt, r, accent)?;
@@ -1170,6 +1282,12 @@ impl Renderer {
                     },
                     pal.muted,
                 )?;
+            }
+        }
+
+        if hovered {
+            if let Some(hr) = slot.hide_rect {
+                self.draw_pill_hide_chip(rt, hr, theme, pal, hide_hovered)?;
             }
         }
 
