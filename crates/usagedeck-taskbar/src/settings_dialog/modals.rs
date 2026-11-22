@@ -671,7 +671,7 @@ fn run_modal(
         }
 
         let _ = DestroyWindow(hwnd);
-        ACTIVE_MODAL.with(|cell| cell.borrow_mut().take().and_then(|s| s.outcome))
+        ACTIVE_MODAL.with(|cell| cell.borrow_mut().take().and_then(|mut s| s.outcome.take()))
     }
 }
 
