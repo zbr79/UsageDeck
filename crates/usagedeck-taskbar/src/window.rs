@@ -14,8 +14,8 @@
 
 use crate::clipboard;
 use crate::layout::{
-    compute_flyout_layout, compute_strip_layout, FlyoutAction, FlyoutLayout, PillStyle,
-    StripLayout, StripMode,
+    compute_flyout_layout, compute_strip_layout, exhausted_until_ms, FlyoutAction, FlyoutLayout,
+    PillStyle, StripLayout, StripMode,
 };
 use crate::poller::{PollerCmd, SharedSnapshot, WM_APP_SNAPSHOT};
 use crate::render::Renderer;
@@ -24,7 +24,7 @@ use crate::taskbar::{query_taskbar, TaskbarMetrics, TaskbarTheme};
 use crate::tooltip::{pill_screen_rect_px, TooltipWindow};
 use crate::updater::UpdaterHandle;
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -35,6 +35,7 @@ use usagedeck_core::{default_data_dir, default_log_dir};
 use windows::core::{w, Result, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_ESCAPE,
 };
@@ -50,16 +51,22 @@ use windows::Win32::UI::WindowsAndMessaging::{
     LR_DEFAULTCOLOR, MF_SEPARATOR, MF_STRING, MSG, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
     SWP_SHOWWINDOW, SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
     TPM_RETURNCMD, TPM_RIGHTBUTTON, WA_INACTIVE, WM_ACTIVATE, WM_APP, WM_DESTROY, WM_KEYDOWN,
-    WM_LBUTTONUP, WM_MOUSEMOVE, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMER, WNDCLASSEXW,
-    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    WM_LBUTTONUP, WM_MOUSEMOVE, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMER, WM_WINDOWPOSCHANGED,
+    WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 const WM_MOUSELEAVE: u32 = 0x02A3;
+const EVENT_SYSTEM_FOREGROUND: u32 = 0x0003;
+const EVENT_OBJECT_REORDER: u32 = 0x8004;
+const WINEVENT_OUTOFCONTEXT: u32 = 0x0000;
 
 const WM_TRAY_ICON: u32 = WM_APP + 2;
 const WM_APP_TOAST: u32 = WM_APP + 3;
+pub const WM_APP_ENSURE_ZORDER: u32 = WM_APP + 4;
 const TIMER_SYNC_ID: usize = 1;
 const TIMER_SYNC_MS: u32 = 300;
+const TIMER_ZORDER_ID: usize = 2;
+const TIMER_ZORDER_MS: u32 = 60;
 const TOAST_DURATION: Duration = Duration::from_millis(2200);
 
 const MENU_TOGGLE_FLYOUT: usize = 1001;
@@ -70,15 +77,24 @@ const MENU_CHECK_UPDATES: usize = 1005;
 const MENU_OPEN_DATA: usize = 1006;
 const MENU_OPEN_LOGS: usize = 1007;
 const MENU_QUIT: usize = 1008;
+const MENU_HIDE_PILL_UNTIL_RESET: usize = 1009;
 
 const APP_ICON_BYTES: &[u8] = include_bytes!("../assets/icon.ico");
 
 /// Registered `TaskbarCreated` message ID stored in an atomic so `strip_wnd_proc` never
 /// needs to borrow `STATE` on unrelated Win32 messages.
 static TASKBAR_CREATED_MSG: AtomicU32 = AtomicU32::new(0);
+static STRIP_HWND_RAW: AtomicIsize = AtomicIsize::new(0);
+static TRAY_HWND_RAW: AtomicIsize = AtomicIsize::new(0);
+static STRIP_VISIBLE_FLAG: AtomicBool = AtomicBool::new(false);
+static RAISING_ZORDER: AtomicBool = AtomicBool::new(false);
 
 /// Pending brief toast notification posted from background worker threads (e.g. "Key copied").
 static PENDING_TOAST: Mutex<Option<(String, Option<RECT>)>> = Mutex::new(None);
+
+fn wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
 
 struct ToastNotice {
     text: String,
@@ -103,6 +119,7 @@ struct AppState {
     strip_hovered: bool,
     strip_hovered_pill: Option<usize>,
     strip_hovered_icon_pill: Option<usize>,
+    strip_hovered_hide_pill: Option<usize>,
     strip_tracking_leave: bool,
     flyout_visible: bool,
     flyout_hovered_action: Option<FlyoutAction>,
@@ -277,20 +294,42 @@ fn open_settings_ui() {
     );
 }
 
-fn show_context_menu_ui() {
-    let Some((strip_hwnd, flyout_visible)) = try_with_state(|state| {
+fn show_context_menu_ui(target: Option<HideTarget>) {
+    let Some((strip_hwnd, flyout_visible, snoozed_count)) = try_with_state(|state| {
         hide_tooltip(state);
-        (state.strip_hwnd, state.flyout_visible)
+        let (snap, _) = state.shared.get();
+        (state.strip_hwnd, state.flyout_visible, snap.snoozed_count)
     }) else {
         return;
     };
 
+    let hide_pill_label = target.as_ref().map(|(_, _, title, until_ms)| {
+        let remaining = format_remaining(until_ms.saturating_sub(now_epoch_ms()));
+        wide(&format!("Hide {title} until reset ({remaining})"))
+    });
+    let show_hidden_label = if snoozed_count == 1 {
+        wide("Show 1 hidden card")
+    } else if snoozed_count > 1 {
+        wide(&format!("Show {snoozed_count} hidden cards"))
+    } else {
+        wide("Show hidden cards")
+    };
+
     // SAFETY: standard Win32 popup menu anchored at the current cursor position.
-    // Runs completely outside any `STATE` borrow so 300ms timers never collide.
+    // Runs completely outside any `STATE` borrow so timers never collide.
     let cmd_id = unsafe {
         let Ok(menu) = CreatePopupMenu() else {
             return;
         };
+        if let Some(ref label) = hide_pill_label {
+            let _ = AppendMenuW(
+                menu,
+                MF_STRING,
+                MENU_HIDE_PILL_UNTIL_RESET,
+                PCWSTR(label.as_ptr()),
+            );
+            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+        }
         let flyout_label = if flyout_visible {
             w!("Hide UsageDeck")
         } else {
@@ -298,7 +337,12 @@ fn show_context_menu_ui() {
         };
         let _ = AppendMenuW(menu, MF_STRING, MENU_TOGGLE_FLYOUT, flyout_label);
         let _ = AppendMenuW(menu, MF_STRING, MENU_REFRESH, w!("Refresh now"));
-        let _ = AppendMenuW(menu, MF_STRING, MENU_SHOW_HIDDEN, w!("Show hidden cards"));
+        let _ = AppendMenuW(
+            menu,
+            MF_STRING,
+            MENU_SHOW_HIDDEN,
+            PCWSTR(show_hidden_label.as_ptr()),
+        );
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(menu, MF_STRING, MENU_SETTINGS, w!("Settings..."));
         let _ = AppendMenuW(menu, MF_STRING, MENU_CHECK_UPDATES, w!("Check for updates"));
@@ -325,6 +369,11 @@ fn show_context_menu_ui() {
     };
 
     match cmd_id {
+        MENU_HIDE_PILL_UNTIL_RESET => {
+            if let Some(hide_target) = target {
+                hide_target_with_toast(hide_target, None);
+            }
+        }
         MENU_TOGGLE_FLYOUT => toggle_flyout_ui(),
         MENU_REFRESH => request_refresh_ui(),
         MENU_SHOW_HIDDEN => clear_snoozed_cards_ui(),
@@ -483,14 +532,14 @@ fn hide_tooltip(state: &mut AppState) {
 }
 
 fn update_active_tooltip(state: &mut AppState) {
-    let Some(mut metrics) = state.metrics else {
+    let Some(metrics) = state.metrics else {
         hide_tooltip(state);
         return;
     };
     let (snapshot, _) = state.shared.get();
-    metrics.theme = effective_theme(snapshot.theme_mode, metrics.theme);
+    let theme = effective_theme(snapshot.theme_mode, metrics.theme);
 
-    // 1. Brief toast notice (e.g. "Key copied" / "Copy failed") takes precedence for ~2.2s.
+    // 1. Brief toast notice (e.g. "Key copied" / "Hidden until reset") takes precedence for ~2.2s.
     if let Some(ref toast) = state.toast {
         if Instant::now() < toast.expires_at {
             let (sx, sy, sw, sh) = state.strip_pos;
@@ -501,7 +550,7 @@ fn update_active_tooltip(state: &mut AppState) {
                 bottom: sy + sh.max(1),
             });
             if let Some(ref mut tip) = state.tooltip {
-                tip.show(&toast.text, anchor, &metrics);
+                tip.show(&toast.text, anchor, &metrics, theme);
             }
             return;
         }
@@ -527,7 +576,7 @@ fn update_active_tooltip(state: &mut AppState) {
                     let (fx, fy, _, _) = state.flyout_pos;
                     let anchor = pill_screen_rect_px(fx, fy, bar_rect, metrics.scale);
                     if let Some(ref mut tip) = state.tooltip {
-                        tip.show(&text, anchor, &metrics);
+                        tip.show(&text, anchor, &metrics, theme);
                     }
                     return;
                 }
@@ -537,7 +586,7 @@ fn update_active_tooltip(state: &mut AppState) {
         return;
     }
 
-    // 3. Taskbar strip pill / icon hover tooltip.
+    // 3. Taskbar strip pill hover: rich Windows 11 Fluent Detail Card in the active theme.
     if !state.strip_hovered || !state.strip_visible {
         hide_tooltip(state);
         return;
@@ -554,31 +603,37 @@ fn update_active_tooltip(state: &mut AppState) {
     };
     let (sx, sy, _, _) = state.strip_pos;
     let anchor = pill_screen_rect_px(sx, sy, pill_rect, metrics.scale);
-    let text = if state.strip_hovered_icon_pill == Some(pill_idx)
+    let footer_hint: Option<String> = if state.strip_hovered_hide_pill == Some(pill_idx) {
+        Some("Click × to temporarily hide until usage resets".to_string())
+    } else if state.strip_hovered_icon_pill == Some(pill_idx)
         && item.provider == ProviderKind::OpenCode
     {
-        format!("Click icon to copy API key\n{}", item.account_id)
+        Some(format!("Click icon to copy API key ({})", item.account_id))
     } else if state.strip_hovered_icon_pill == Some(pill_idx)
         && item.provider == ProviderKind::Cursor
         && item.can_open_cursor
     {
-        "Click icon to open Cursor and renew sign-in".to_string()
+        Some("Click icon to open Cursor and renew sign-in".to_string())
     } else {
-        item.tooltip.clone()
+        None
     };
     if let Some(ref mut tip) = state.tooltip {
-        tip.show(&text, anchor, &metrics);
+        tip.show_provider_card(
+            item,
+            state.renderer.icons(),
+            anchor,
+            &metrics,
+            theme,
+            snapshot.updated_at_ms,
+            footer_hint.as_deref(),
+        );
     }
 }
 
 enum StripWindowOp {
     None,
     Hide(HWND),
-    Show {
-        strip_hwnd: HWND,
-        tray_hwnd: HWND,
-        need_show: bool,
-    },
+    Show { strip_hwnd: HWND, need_show: bool },
 }
 
 fn sync_and_paint_strip_ui() {
@@ -597,10 +652,15 @@ fn sync_and_paint_strip_ui() {
             }
             return StripWindowOp::None;
         };
+        TRAY_HWND_RAW.store(metrics.tray_hwnd.0 as isize, Ordering::Release);
         state.metrics = Some(metrics);
 
         let (snapshot, loading) = state.shared.get();
         let theme = effective_theme(snapshot.theme_mode, metrics.theme);
+        let forced_contrast_backdrop = matches!(
+            (snapshot.theme_mode, metrics.theme),
+            (ThemeMode::Light, TaskbarTheme::Dark) | (ThemeMode::Dark, TaskbarTheme::Light)
+        );
 
         // Hide during full-screen apps (debounced over 2 ticks, reusing usagedeck_core::win::fullscreen).
         if snapshot.hide_in_fullscreen {
@@ -694,6 +754,8 @@ fn sync_and_paint_strip_ui() {
             state.strip_hovered,
             state.strip_hovered_pill,
             state.strip_hovered_icon_pill,
+            state.strip_hovered_hide_pill,
+            forced_contrast_backdrop,
         ) {
             log::warn!("render_strip failed: {e}");
         }
@@ -710,7 +772,6 @@ fn sync_and_paint_strip_ui() {
 
         StripWindowOp::Show {
             strip_hwnd: state.strip_hwnd,
-            tray_hwnd: metrics.tray_hwnd,
             need_show,
         }
     })
@@ -721,6 +782,7 @@ fn sync_and_paint_strip_ui() {
     match op {
         StripWindowOp::None => {}
         StripWindowOp::Hide(strip_hwnd) => {
+            STRIP_VISIBLE_FLAG.store(false, Ordering::Release);
             // SAFETY: hides our own strip window.
             unsafe {
                 let _ = ShowWindow(strip_hwnd, SW_HIDE);
@@ -728,26 +790,67 @@ fn sync_and_paint_strip_ui() {
         }
         StripWindowOp::Show {
             strip_hwnd,
-            tray_hwnd,
             need_show,
         } => {
-            // SAFETY: non-activating topmost Z-order maintenance on our own HWND.
-            unsafe {
-                if need_show {
+            STRIP_VISIBLE_FLAG.store(true, Ordering::Release);
+            if need_show {
+                // SAFETY: non-activating reveal on our own HWND.
+                unsafe {
                     let _ = ShowWindow(strip_hwnd, SW_SHOWNOACTIVATE);
                 }
-                if !is_above_tray(strip_hwnd, tray_hwnd) {
-                    let _ = SetWindowPos(
-                        strip_hwnd,
-                        Some(HWND_TOPMOST),
-                        0,
-                        0,
-                        0,
-                        0,
-                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
-                    );
-                }
             }
+            ensure_strip_above_tray_now();
+        }
+    }
+}
+
+/// Re-assert topmost Z-order above `Shell_TrayWnd` using atomics only so it is safe to invoke
+/// from WinEvent hooks, Settings window activation handlers, and `WM_WINDOWPOSCHANGED` without
+/// ever borrowing `STATE`.
+pub fn ensure_strip_above_tray_now() {
+    if !STRIP_VISIBLE_FLAG.load(Ordering::Acquire) {
+        return;
+    }
+    let strip_raw = STRIP_HWND_RAW.load(Ordering::Acquire);
+    let tray_raw = TRAY_HWND_RAW.load(Ordering::Acquire);
+    if strip_raw == 0 || tray_raw == 0 {
+        return;
+    }
+    if RAISING_ZORDER
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    let strip_hwnd = HWND(strip_raw as *mut std::ffi::c_void);
+    let tray_hwnd = HWND(tray_raw as *mut std::ffi::c_void);
+    // SAFETY: non-activating topmost Z-order maintenance on our own HWND; guarded against
+    // re-entrancy by `RAISING_ZORDER`.
+    unsafe {
+        if !is_above_tray(strip_hwnd, tray_hwnd) {
+            let _ = SetWindowPos(
+                strip_hwnd,
+                Some(HWND_TOPMOST),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            );
+        }
+    }
+    RAISING_ZORDER.store(false, Ordering::Release);
+}
+
+/// Queue an asynchronous Z-order check on the strip message loop (used after Settings caption
+/// updates when Explorer re-raises `Shell_TrayWnd` one frame later).
+pub fn post_ensure_zorder() {
+    let strip_raw = STRIP_HWND_RAW.load(Ordering::Acquire);
+    if strip_raw != 0 {
+        let hwnd = HWND(strip_raw as *mut std::ffi::c_void);
+        // SAFETY: `PostMessageW` is safe for custom `WM_APP` messages on our own strip HWND.
+        unsafe {
+            let _ = PostMessageW(Some(hwnd), WM_APP_ENSURE_ZORDER, WPARAM(0), LPARAM(0));
         }
     }
 }
@@ -755,7 +858,7 @@ fn sync_and_paint_strip_ui() {
 /// True if `strip` appears above `tray` in the Win32 Z-order chain.
 unsafe fn is_above_tray(strip: HWND, tray: HWND) -> bool {
     let mut cur = tray;
-    for _ in 0..32 {
+    for _ in 0..128 {
         match GetWindow(cur, GW_HWNDPREV) {
             Ok(prev) if !prev.is_invalid() => {
                 if prev == strip {
@@ -871,10 +974,86 @@ fn track_mouse_leave(hwnd: HWND) {
     }
 }
 
+/// Exhausted card the user can hide until it resets: `(provider, account_id, title, until_ms)`.
+type HideTarget = (ProviderKind, String, String, u64);
+
+/// Compact remaining-time label like `"45m"`, `"3h 56m"`, `"2d 4h"`.
+fn format_remaining(ms: u64) -> String {
+    let mins = ms.div_ceil(60_000);
+    let (d, h, m) = (mins / 1440, (mins % 1440) / 60, mins % 60);
+    if d > 0 {
+        format!("{d}d {h}h")
+    } else if h > 0 {
+        format!("{h}h {m}m")
+    } else {
+        format!("{}m", m.max(1))
+    }
+}
+
+fn now_epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
+/// Resolve the hide-until-reset target for snapshot item `item_idx`, if it is exhausted with a
+/// known future reset time.
+fn hide_target_for(state: &AppState, item_idx: usize) -> Option<HideTarget> {
+    let (snapshot, _) = state.shared.get();
+    let item = snapshot.items.get(item_idx)?;
+    let until = exhausted_until_ms(item, snapshot.updated_at_ms)?;
+    Some((
+        item.provider,
+        item.account_id.clone(),
+        item.title.clone(),
+        until,
+    ))
+}
+
+fn hide_target_with_toast(target: HideTarget, anchor: Option<RECT>) {
+    let (provider, account_id, title, until_ms) = target;
+    let remaining = format_remaining(until_ms.saturating_sub(now_epoch_ms()));
+    hide_card_until_reset_ui(provider, account_id, until_ms);
+    let strip_hwnd_raw = STRIP_HWND_RAW.load(Ordering::Acquire);
+    if strip_hwnd_raw != 0 {
+        post_toast(
+            strip_hwnd_raw,
+            format!("{title} hidden until reset ({remaining})"),
+            anchor,
+        );
+    }
+}
+
 enum StripClickAction {
     ToggleFlyout,
-    CopyOpenCodeKey { email: String, anchor: Option<RECT> },
+    CopyOpenCodeKey {
+        email: String,
+        anchor: Option<RECT>,
+    },
     OpenCursor,
+    HideUntilReset {
+        target: HideTarget,
+        anchor: Option<RECT>,
+    },
+}
+
+unsafe extern "system" fn win_event_proc(
+    _hook: HWINEVENTHOOK,
+    event: u32,
+    hwnd: HWND,
+    _id_object: i32,
+    _id_child: i32,
+    _id_event_thread: u32,
+    _time: u32,
+) {
+    if event == EVENT_SYSTEM_FOREGROUND {
+        ensure_strip_above_tray_now();
+        return;
+    }
+    let tray = TRAY_HWND_RAW.load(Ordering::Acquire);
+    if tray != 0 && hwnd.0 as isize == tray {
+        ensure_strip_above_tray_now();
+    }
 }
 
 unsafe extern "system" fn strip_wnd_proc(
@@ -896,6 +1075,20 @@ unsafe extern "system" fn strip_wnd_proc(
         WM_TIMER if wparam.0 == TIMER_SYNC_ID => {
             sync_and_paint_strip_ui();
             LRESULT(0)
+        }
+        WM_TIMER if wparam.0 == TIMER_ZORDER_ID => {
+            ensure_strip_above_tray_now();
+            LRESULT(0)
+        }
+        WM_APP_ENSURE_ZORDER => {
+            ensure_strip_above_tray_now();
+            LRESULT(0)
+        }
+        WM_WINDOWPOSCHANGED => {
+            if !RAISING_ZORDER.load(Ordering::Acquire) {
+                ensure_strip_above_tray_now();
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_APP_SNAPSHOT | WM_SETTINGCHANGE => {
             sync_and_paint_strip_ui();
@@ -923,21 +1116,19 @@ unsafe extern "system" fn strip_wnd_proc(
                 }
                 let scale = s.metrics.map_or(1.0, |m| m.scale);
                 let (dx, dy) = cursor_dip(lparam, scale);
-                let hit_pill = s
-                    .strip_layout
-                    .as_ref()
-                    .and_then(|l| l.hit_test_pill(dx, dy));
-                let hit_icon = s
-                    .strip_layout
-                    .as_ref()
-                    .and_then(|l| l.hit_test_pill_icon(dx, dy));
+                let layout = s.strip_layout.as_ref();
+                let hit_pill = layout.and_then(|l| l.hit_test_pill(dx, dy));
+                let hit_icon = layout.and_then(|l| l.hit_test_pill_icon(dx, dy));
+                let hit_hide = layout.and_then(|l| l.hit_test_pill_hide(dx, dy));
                 if !s.strip_hovered
                     || hit_pill != s.strip_hovered_pill
                     || hit_icon != s.strip_hovered_icon_pill
+                    || hit_hide != s.strip_hovered_hide_pill
                 {
                     s.strip_hovered = true;
                     s.strip_hovered_pill = hit_pill;
                     s.strip_hovered_icon_pill = hit_icon;
+                    s.strip_hovered_hide_pill = hit_hide;
                     true
                 } else {
                     false
@@ -955,10 +1146,12 @@ unsafe extern "system" fn strip_wnd_proc(
                 if s.strip_hovered
                     || s.strip_hovered_pill.is_some()
                     || s.strip_hovered_icon_pill.is_some()
+                    || s.strip_hovered_hide_pill.is_some()
                 {
                     s.strip_hovered = false;
                     s.strip_hovered_pill = None;
                     s.strip_hovered_icon_pill = None;
+                    s.strip_hovered_hide_pill = None;
                     update_active_tooltip(s);
                     true
                 } else {
@@ -975,6 +1168,29 @@ unsafe extern "system" fn strip_wnd_proc(
             let action = try_with_state(|s| {
                 let scale = s.metrics.map_or(1.0, |m| m.scale);
                 let (dx, dy) = cursor_dip(lparam, scale);
+                let (sx, sy, _, _) = s.strip_pos;
+                let anchor_for = |s: &AppState, idx: usize| {
+                    s.strip_layout
+                        .as_ref()
+                        .and_then(|l| l.pill_rect(idx))
+                        .map(|r| pill_screen_rect_px(sx, sy, r, scale))
+                };
+
+                // 1. Hovered `×` chip on an exhausted pill: hide until it resets.
+                if let Some(item_idx) = s
+                    .strip_layout
+                    .as_ref()
+                    .and_then(|l| l.hit_test_pill_hide(dx, dy))
+                {
+                    if let Some(target) = hide_target_for(s, item_idx) {
+                        return StripClickAction::HideUntilReset {
+                            target,
+                            anchor: anchor_for(s, item_idx),
+                        };
+                    }
+                }
+
+                // 2. Provider icon actions (OpenCode copy key, Cursor sign-in).
                 if let Some(item_idx) = s
                     .strip_layout
                     .as_ref()
@@ -983,15 +1199,9 @@ unsafe extern "system" fn strip_wnd_proc(
                     let (snapshot, _) = s.shared.get();
                     if let Some(item) = snapshot.items.get(item_idx) {
                         if item.provider == ProviderKind::OpenCode {
-                            let (sx, sy, _, _) = s.strip_pos;
-                            let anchor = s
-                                .strip_layout
-                                .as_ref()
-                                .and_then(|l| l.pill_rect(item_idx))
-                                .map(|r| pill_screen_rect_px(sx, sy, r, scale));
                             return StripClickAction::CopyOpenCodeKey {
                                 email: item.account_id.clone(),
-                                anchor,
+                                anchor: anchor_for(s, item_idx),
                             };
                         }
                         if item.provider == ProviderKind::Cursor && item.can_open_cursor {
@@ -1009,22 +1219,35 @@ unsafe extern "system" fn strip_wnd_proc(
                     copy_opencode_key(email, anchor);
                 }
                 StripClickAction::OpenCursor => open_cursor_and_watch_ui(),
+                StripClickAction::HideUntilReset { target, anchor } => {
+                    hide_target_with_toast(target, anchor);
+                }
             }
             LRESULT(0)
         }
         WM_RBUTTONUP => {
-            show_context_menu_ui();
+            let target = try_with_state(|s| {
+                let scale = s.metrics.map_or(1.0, |m| m.scale);
+                let (dx, dy) = cursor_dip(lparam, scale);
+                s.strip_layout
+                    .as_ref()
+                    .and_then(|l| l.hit_test_pill(dx, dy))
+                    .and_then(|idx| hide_target_for(s, idx))
+            })
+            .flatten();
+            show_context_menu_ui(target);
             LRESULT(0)
         }
         WM_TRAY_ICON => {
             match lparam.0 as u32 {
                 WM_LBUTTONUP => toggle_flyout_ui(),
-                WM_RBUTTONUP => show_context_menu_ui(),
+                WM_RBUTTONUP => show_context_menu_ui(None),
                 _ => {}
             }
             LRESULT(0)
         }
         WM_DESTROY => {
+            STRIP_VISIBLE_FLAG.store(false, Ordering::Release);
             remove_tray_icon(hwnd);
             PostQuitMessage(0);
             LRESULT(0)
@@ -1212,6 +1435,7 @@ pub fn run_ui(
         let taskbar_created_msg = RegisterWindowMessageW(w!("TaskbarCreated"));
         TASKBAR_CREATED_MSG.store(taskbar_created_msg, Ordering::Relaxed);
         add_tray_icon(strip_hwnd, tray_icon);
+        STRIP_HWND_RAW.store(strip_hwnd.0 as isize, Ordering::Release);
 
         let poller_tx = crate::poller::start_poller(strip_hwnd.0 as isize, shared.clone(), demo);
 
@@ -1233,6 +1457,7 @@ pub fn run_ui(
                 strip_hovered: false,
                 strip_hovered_pill: None,
                 strip_hovered_icon_pill: None,
+                strip_hovered_hide_pill: None,
                 strip_tracking_leave: false,
                 flyout_visible: false,
                 flyout_hovered_action: None,
@@ -1250,6 +1475,29 @@ pub fn run_ui(
             open_settings_ui();
         }
         SetTimer(Some(strip_hwnd), TIMER_SYNC_ID, TIMER_SYNC_MS, None);
+        SetTimer(Some(strip_hwnd), TIMER_ZORDER_ID, TIMER_ZORDER_MS, None);
+
+        // Re-raise the strip the instant Explorer lifts `Shell_TrayWnd` (foreground changes,
+        // taskbar button title updates when switching Settings tabs, etc.) instead of waiting
+        // for the next sync tick.
+        let hook_fg = SetWinEventHook(
+            EVENT_SYSTEM_FOREGROUND,
+            EVENT_SYSTEM_FOREGROUND,
+            None,
+            Some(win_event_proc),
+            0,
+            0,
+            WINEVENT_OUTOFCONTEXT,
+        );
+        let hook_reorder = SetWinEventHook(
+            EVENT_OBJECT_REORDER,
+            EVENT_OBJECT_REORDER,
+            None,
+            Some(win_event_proc),
+            0,
+            0,
+            WINEVENT_OUTOFCONTEXT,
+        );
         log::info!("UI message loop started");
 
         let mut msg = MSG::default();
@@ -1257,6 +1505,14 @@ pub fn run_ui(
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
+
+        if !hook_fg.is_invalid() {
+            let _ = UnhookWinEvent(hook_fg);
+        }
+        if !hook_reorder.is_invalid() {
+            let _ = UnhookWinEvent(hook_reorder);
+        }
+        STRIP_VISIBLE_FLAG.store(false, Ordering::Release);
 
         STATE.with(|cell| {
             if let Some(s) = cell.borrow_mut().take() {

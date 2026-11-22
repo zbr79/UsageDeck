@@ -60,13 +60,15 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SetWindowTextW, ShowWindow, TrackPopupMenu, HICON, IDC_ARROW, IDC_HAND, IDI_APPLICATION,
     LR_DEFAULTCOLOR, MF_SEPARATOR, MF_STRING, MINMAXINFO, SWP_NOACTIVATE, SWP_NOZORDER, SW_RESTORE,
     SW_SHOW, SW_SHOWMAXIMIZED, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON, TPM_TOPALIGN,
-    WINDOWPLACEMENT, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CLOSE, WM_DPICHANGED, WM_ERASEBKGND,
-    WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-    WM_NCDESTROY, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR, WM_SETTINGCHANGE, WM_SIZE, WM_TIMER,
-    WNDCLASSEXW, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW,
+    WINDOWPLACEMENT, WINDOW_EX_STYLE, WINDOW_STYLE, WM_ACTIVATE, WM_APP, WM_CLOSE, WM_DPICHANGED,
+    WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+    WM_MOUSEWHEEL, WM_NCDESTROY, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR, WM_SETTINGCHANGE, WM_SIZE,
+    WM_TIMER, WNDCLASSEXW, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW,
 };
 
 const WM_MOUSELEAVE: u32 = 0x02A3;
+const WM_NCACTIVATE: u32 = 0x0086;
+const WM_SETFOCUS: u32 = 0x0007;
 const WM_APP_UPDATE_STATUS: u32 = WM_APP + 20;
 const WM_APP_SETTINGS_DATA: u32 = WM_APP + 21;
 const WM_APP_UPDATE_READY: u32 = WM_APP + 22;
@@ -1006,6 +1008,26 @@ fn execute_action(hwnd: HWND, action: Action) {
                 }
             }
         }
+        Action::ToggleAutoHideExhausted => {
+            let next_val = !state.settings.auto_hide_exhausted;
+            match state.save_settings(|mut s| {
+                s.auto_hide_exhausted = next_val;
+                s
+            }) {
+                Ok(_) => {
+                    state.show_toast(if next_val {
+                        "Full cards auto-hide until reset"
+                    } else {
+                        "Full cards stay visible"
+                    });
+                    deferred = DeferredAction::NotifyChanged(state.on_changed.clone());
+                }
+                Err(e) => {
+                    log::warn!("{e}");
+                    state.show_toast("Couldn't save setting");
+                }
+            }
+        }
         Action::SetPanelTheme(theme) => {
             if state.settings.panel_theme == theme {
                 return;
@@ -1277,6 +1299,8 @@ fn execute_action(hwnd: HWND, action: Action) {
         unsafe {
             let _ = SetWindowTextW(hwnd, PCWSTR(w.as_ptr()));
         }
+        crate::window::ensure_strip_above_tray_now();
+        crate::window::post_ensure_zorder();
     }
     if let Some(dark) = new_dark_titlebar {
         apply_titlebar_theme(hwnd, dark);
@@ -1623,6 +1647,11 @@ unsafe extern "system" fn settings_wnd_proc(
 ) -> LRESULT {
     match msg {
         WM_ERASEBKGND => LRESULT(1),
+        WM_ACTIVATE | WM_NCACTIVATE | WM_SETFOCUS => {
+            crate::window::ensure_strip_above_tray_now();
+            crate::window::post_ensure_zorder();
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
         WM_GETMINMAXINFO => {
             if lparam.0 != 0 {
                 let dpi = {

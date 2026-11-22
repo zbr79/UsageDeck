@@ -522,6 +522,9 @@ pub struct Settings {
     pub snoozed_until: BTreeMap<String, u64>,
     /// usage bars turned off on each provider's cards; never every bar of a provider
     pub hidden_bars: BTreeMap<WidgetProvider, Vec<String>>,
+    /// automatically hide exhausted cards from the taskbar until they reset
+    #[serde(rename = "autoHideExhausted", default)]
+    pub auto_hide_exhausted: bool,
 }
 
 impl Default for Settings {
@@ -546,6 +549,7 @@ impl Default for Settings {
             claude_hourly_target: None,
             snoozed_until: BTreeMap::new(),
             hidden_bars: BTreeMap::new(),
+            auto_hide_exhausted: false,
         }
     }
 }
@@ -725,7 +729,7 @@ pub fn apply_settings_patch_at(current: &Settings, patch: &Value, now_ms: u64) -
     };
     let mut next = current.clone();
     {
-        let bools: [(&str, &mut bool); 11] = [
+        let bools: [(&str, &mut bool); 12] = [
             ("opencodeEnabled", &mut next.opencode_enabled),
             ("cursorEnabled", &mut next.cursor_enabled),
             ("grokEnabled", &mut next.grok_enabled),
@@ -740,6 +744,7 @@ pub fn apply_settings_patch_at(current: &Settings, patch: &Value, now_ms: u64) -
             ("showProviderNames", &mut next.show_provider_names),
             ("fableShade", &mut next.fable_shade),
             ("startAtLogin", &mut next.start_at_login),
+            ("autoHideExhausted", &mut next.auto_hide_exhausted),
         ];
         for (key, slot) in bools {
             if let Some(Value::Bool(b)) = obj.get(key) {
@@ -1175,6 +1180,40 @@ mod tests {
         let off = apply_settings_patch(&Settings::default(), &json!({ "fableShade": false }));
         assert!(!off.fable_shade);
         assert!(!apply_settings_patch(&off, &json!({ "fableShade": "yes" })).fable_shade);
+    }
+
+    #[test]
+    fn settings_patch_auto_hide_exhausted() {
+        let current = Settings::default();
+        assert!(!current.auto_hide_exhausted);
+        assert_eq!(
+            serde_json::to_value(&current).unwrap()["autoHideExhausted"],
+            json!(false)
+        );
+        let on = apply_settings_patch(&current, &json!({ "autoHideExhausted": true }));
+        assert!(on.auto_hide_exhausted);
+        // wrong types are ignored
+        let same = apply_settings_patch(&on, &json!({ "autoHideExhausted": "false" }));
+        assert!(same.auto_hide_exhausted);
+        let same_num = apply_settings_patch(&on, &json!({ "autoHideExhausted": 0 }));
+        assert!(same_num.auto_hide_exhausted);
+        // JSON round-trip with camelCase key
+        let serialized = serde_json::to_value(&on).unwrap();
+        assert_eq!(serialized["autoHideExhausted"], json!(true));
+        let round_tripped: Settings = serde_json::from_value(serialized).unwrap();
+        assert!(round_tripped.auto_hide_exhausted);
+        // toggling back off
+        let off = apply_settings_patch(&on, &json!({ "autoHideExhausted": false }));
+        assert!(!off.auto_hide_exhausted);
+        // normalize_settings and legacy JSON without the field default to false
+        assert!(!normalize_settings(Some(&json!({ "grokEnabled": false }))).auto_hide_exhausted);
+        assert!(
+            normalize_settings(Some(&json!({ "autoHideExhausted": true }))).auto_hide_exhausted
+        );
+        let mut legacy = serde_json::to_value(Settings::default()).unwrap();
+        legacy.as_object_mut().unwrap().remove("autoHideExhausted");
+        let parsed: Settings = serde_json::from_value(legacy).unwrap();
+        assert!(!parsed.auto_hide_exhausted);
     }
 
     #[test]

@@ -41,6 +41,7 @@ impl SharedSnapshot {
                 hide_in_fullscreen: true,
                 is_demo: false,
                 theme_mode: ThemeMode::Auto,
+                snoozed_count: 0,
             }
         };
         Arc::new(Self {
