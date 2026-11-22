@@ -312,7 +312,7 @@ fn invert_premultiplied_icon(src: &DecodedIcon) -> DecodedIcon {
 }
 
 fn invert_premultiplied_bgra(pbgra: &mut [u8]) {
-    for px in pbgra.chunks_exact_mut(4) {
+    for px in pbgra.as_chunks_mut::<4>().0 {
         let a = px[3];
         px[0] = a.saturating_sub(px[0]);
         px[1] = a.saturating_sub(px[1]);
@@ -335,7 +335,7 @@ mod tests {
         let center = ((32 * ICON_PX + 32) * 4) as usize;
         assert_eq!(&buf[center..center + 4], &[255, 255, 255, 255]);
         // Premultiplied invariant `c <= a` holds everywhere.
-        for px in buf.chunks_exact(4) {
+        for px in buf.as_chunks::<4>().0 {
             assert!(px[0] <= px[3] && px[1] <= px[3] && px[2] <= px[3]);
         }
     }

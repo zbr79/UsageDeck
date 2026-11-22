@@ -1264,7 +1264,7 @@ fn build_provider_page(b: &mut ContentBuilder, kind: ProviderKind, input: &Layou
 
     match rows {
         None => build_loading_card(b),
-        Some(list) if list.is_empty() => build_empty_state_card(
+        Some([]) => build_empty_state_card(
             b,
             &format!(
                 "UsageDeck reads {}'s own sign-in. Sign in with {} and the account shows up here.",
@@ -1343,7 +1343,7 @@ fn build_opencode_page(b: &mut ContentBuilder, input: &LayoutInput<'_>) {
 
     match rows {
         None => build_loading_card(b),
-        Some(list) if list.is_empty() => build_empty_state_card(
+        Some([]) => build_empty_state_card(
             b,
             "Add an OpenCode Go API key to track its usage.",
             Some(("Add account", Action::AddOpenCodeAccount)),
