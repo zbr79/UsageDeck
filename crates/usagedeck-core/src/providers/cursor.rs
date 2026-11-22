@@ -24,7 +24,7 @@ use super::cursor_auth::{
     WebReason,
 };
 use super::cursor_diag::{CursorAttempt, DbHow, DbRead, HttpAttempt, TokenInfo};
-use super::cursor_signin::{exe_candidates, reuse_state};
+use super::cursor_signin::{exe_candidates, is_safe_local_path, reuse_state};
 pub use super::cursor_usage::CursorUsage;
 use super::cursor_usage::{
     api_spend, cycle_of, events_complete, events_page, reply_detail, usage_from_dashboard,
@@ -45,6 +45,7 @@ use std::time::{Duration, Instant};
 
 const API_HOST: &str = "api2.cursor.sh";
 const API_PATH: &str = "aiserver.v1.DashboardService";
+const EXCHANGE_API_KEY_PATH: &str = "auth/exchange_user_api_key";
 const WEB_SUMMARY: &str = "cursor.com/api/usage-summary";
 const WEB_EVENTS: &str = "cursor.com/api/dashboard/get-filtered-usage-events";
 /// Events asked for per page; Cursor may send fewer, so `totalUsageEventsCount` decides the end.
@@ -56,6 +57,7 @@ const SECTION: &str = "cursor";
 const BUSY_TIMEOUT: Duration = Duration::from_secs(2);
 const STATE_TTL: Duration = Duration::from_secs(60);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const TEMP_DIR_PREFIX: &str = "cursor-state-";
 
 fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
@@ -64,7 +66,7 @@ fn now_ms() -> i64 {
 // ---- state.vscdb ----------------------------------------------------------------------------
 
 /// What `state.vscdb` holds about the sign-in, as stored (the token may be sealed).
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Default, PartialEq)]
 struct RawState {
     token: Option<String>,
     account_name: Option<String>,
@@ -81,6 +83,38 @@ fn cursor_dir() -> PathBuf {
             home.join("AppData").join("Roaming")
         });
     roaming.join("Cursor")
+}
+
+/// Private per-user temp root: `%LOCALAPPDATA%\com.usagedeck.app\tmp`.
+fn private_temp_root() -> PathBuf {
+    std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join(crate::APP_IDENTIFIER)
+        .join("tmp")
+}
+
+/// Best-effort startup cleanup of any orphaned `cursor-state-*` temp folders left behind by a
+/// prior crash under `%LOCALAPPDATA%\com.usagedeck.app\tmp`.
+pub fn sweep_stale_temp_dirs() {
+    sweep_stale_temp_dirs_in(&private_temp_root());
+}
+
+fn sweep_stale_temp_dirs_in(root: &Path) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with(TEMP_DIR_PREFIX) && entry.file_type().is_ok_and(|t| t.is_dir()) {
+            if let Err(e) = std::fs::remove_dir_all(entry.path()) {
+                log::warn!(
+                    "cursor: could not remove stale temp copy {name} ({:?})",
+                    e.kind()
+                );
+            }
+        }
+    }
 }
 
 /// Where the sign-in and the key that seals it live.
@@ -144,22 +178,19 @@ fn query(db: &Path, flags: OpenFlags, busy: Duration) -> rusqlite::Result<RawSta
     })
 }
 
-/// Read a private copy of the DB. The copy takes the -wal and -shm (a WAL database's newest
-/// pages) and a -journal (so SQLite rolls a half-written transaction back in the copy), is opened
-/// read-write because both recoveries write, and is deleted before this returns: it holds the
-/// sign-in.
+/// Read a private copy of the DB under `%LOCALAPPDATA%\com.usagedeck.app\tmp\`. The copy takes the
+/// -wal and -shm (a WAL database's newest pages) and a -journal (so SQLite rolls a half-written
+/// transaction back in the copy), is opened read-write because both recoveries write, and is
+/// deleted before this returns: it holds the sign-in.
 fn query_copy(db: &Path, busy: Duration) -> Result<RawState, String> {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
-    let dir = std::env::temp_dir().join(format!(
-        "usagedeck-cursor-state-{}-{nanos}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).map_err(|e| format!("no temporary folder: {e}"))?;
+    let dir = private_temp_root().join(format!("{TEMP_DIR_PREFIX}{}-{nanos}", std::process::id()));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("no temporary folder ({:?})", e.kind()))?;
     let read = || -> Result<RawState, String> {
         let copy = dir.join("state.vscdb");
-        std::fs::copy(db, &copy).map_err(|e| format!("copy failed: {e}"))?;
+        std::fs::copy(db, &copy).map_err(|e| format!("copy failed ({:?})", e.kind()))?;
         for suffix in ["-wal", "-shm", "-journal"] {
             let mut side = db.as_os_str().to_owned();
             side.push(suffix);
@@ -172,7 +203,10 @@ fn query_copy(db: &Path, busy: Duration) -> Result<RawState, String> {
     };
     let result = read();
     if let Err(e) = std::fs::remove_dir_all(&dir) {
-        log::warn!("cursor: could not delete the temporary copy of state.vscdb: {e}");
+        log::warn!(
+            "cursor: could not delete the temporary copy of state.vscdb ({:?})",
+            e.kind()
+        );
     }
     result
 }
@@ -204,7 +238,7 @@ fn read_state(db: &Path, busy: Duration) -> (Option<RawState>, DbRead) {
             } else {
                 DbHow::Failed
             };
-            log::info!("cursor state DB unreadable: {why}; {copy}");
+            log::info!("cursor state DB unreadable");
             let detail = format!("{why}; {}", excerpt(&copy, 120));
             (None, outcome(how, Some(detail)))
         }
@@ -214,7 +248,7 @@ fn read_state(db: &Path, busy: Duration) -> (Option<RawState>, DbRead) {
 // ---- the sign-in ----------------------------------------------------------------------------
 
 /// One read of Cursor's sign-in: how it went, and the token when there is a usable one.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct SignIn {
     db: DbRead,
     token: TokenInfo,
@@ -222,6 +256,22 @@ struct SignIn {
     label: Option<String>,
     /// Ok(None): signed out. Err: a sign-in may be there but could not be read.
     access: Result<Option<String>, ProviderError>,
+}
+
+impl std::fmt::Debug for SignIn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let access: Result<Option<&str>, ProviderError> = self
+            .access
+            .as_ref()
+            .map(|o| o.as_ref().map(|_| "<redacted>"))
+            .map_err(|e| *e);
+        f.debug_struct("SignIn")
+            .field("db", &self.db)
+            .field("token", &self.token)
+            .field("label", &self.label)
+            .field("access", &access)
+            .finish()
+    }
 }
 
 /// Open a `cursor-safe-storage:v1:` value with the key in Cursor's `Local State`.
@@ -307,13 +357,17 @@ static LAST_TOKEN: Mutex<Option<String>> = Mutex::new(None);
 
 fn current_sign_in(paths: &Paths, busy: Duration) -> SignIn {
     let failed = FETCH_FAILED.load(Ordering::Relaxed);
-    if let Some((at, sign)) = STATE.lock().unwrap().get(&paths.db) {
+    if let Some((at, sign)) = STATE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&paths.db)
+    {
         if reuse_state(at.elapsed(), STATE_TTL, failed) {
             return sign.clone();
         }
     }
     let fresh = sign_in(paths, busy);
-    let mut state = STATE.lock().unwrap();
+    let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
     match (&fresh.access, fresh.db.how) {
         (Ok(_), _) => {
             state.insert(paths.db.clone(), (Instant::now(), fresh.clone()));
@@ -373,7 +427,10 @@ static LAST_ATTEMPT: Mutex<Option<CursorAttempt>> = Mutex::new(None);
 
 /// What the most recent attempt did (never the token).
 pub fn last_attempt() -> Option<CursorAttempt> {
-    LAST_ATTEMPT.lock().unwrap().clone()
+    LAST_ATTEMPT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
 }
 
 /// What an attempt's requests added to the record.
@@ -386,7 +443,7 @@ struct Trace {
 
 /// Keep the attempt, counting failures in a row; a new kind of failure is logged once.
 fn record(sign: &SignIn, trace: Trace, outcome: &str) {
-    let mut last = LAST_ATTEMPT.lock().unwrap();
+    let mut last = LAST_ATTEMPT.lock().unwrap_or_else(|e| e.into_inner());
     let at_ms = now_ms();
     let ok = outcome == "ok";
     let failed = !ok && outcome != "not-signed-in";
@@ -425,7 +482,7 @@ fn record(sign: &SignIn, trace: Trace, outcome: &str) {
 // ---- Open Cursor ----------------------------------------------------------------------------
 
 /// Start Cursor so it renews its own sign-in (the widget's "Open Cursor" button). Cursor.exe is
-/// looked for in its default per-user and per-machine folders, then in the uninstall entries.
+/// looked for in its default per-user and per-machine folders, then in verified uninstall entries.
 pub fn open_cursor() -> Result<(), String> {
     let env = |name: &str| std::env::var_os(name).map(PathBuf::from);
     let candidates = exe_candidates(
@@ -433,15 +490,18 @@ pub fn open_cursor() -> Result<(), String> {
         env("ProgramFiles").as_deref(),
         &crate::win::uninstall::uninstall_entries(),
     );
-    let Some(exe) = candidates.into_iter().find(|p| p.is_file()) else {
+    let Some(exe) = candidates
+        .into_iter()
+        .find(|p| is_safe_local_path(p) && p.is_file())
+    else {
         log::warn!("open cursor: Cursor.exe not found");
         return Err("Cursor is not installed".into());
     };
     std::process::Command::new(&exe).spawn().map_err(|e| {
-        log::warn!("open cursor: could not start {}: {e}", exe.display());
+        log::warn!("open cursor: could not start Cursor.exe ({:?})", e.kind());
         "Cursor could not be started".to_string()
     })?;
-    log::info!("open cursor: started {}", exe.display());
+    log::info!("open cursor: started Cursor.exe");
     Ok(())
 }
 
@@ -449,6 +509,38 @@ pub fn open_cursor() -> Result<(), String> {
 
 static CACHE: LazyLock<CachedProvider<CursorUsage>> =
     LazyLock::new(|| CachedProvider::new(SECTION, Duration::from_secs(30), None));
+
+/// Cached short-lived access token exchanged from a Cursor API key:
+/// `(api_key_hash, access_token, expires_at)`.
+static EXCHANGED_TOKEN: Mutex<Option<(String, String, Instant)>> = Mutex::new(None);
+
+/// Check `CURSOR_API_KEY` env var (outside tests) or the Credential Manager entry in `core.store`.
+fn configured_api_key(core: &Core) -> Option<String> {
+    if super::codex::real_sign_ins() {
+        if let Ok(env_key) = std::env::var("CURSOR_API_KEY") {
+            let trimmed = env_key.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    core.store.get_cursor_api_key()
+}
+
+/// Parse `{ "accessToken": "..." }` from `/auth/exchange_user_api_key`.
+pub fn parse_exchange_token(bytes: &[u8]) -> Result<String, ProviderError> {
+    let reply: Value = super::parse_reply(bytes)?;
+    reply
+        .get("accessToken")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            log::warn!("cursor exchange_user_api_key reply missing accessToken");
+            ProviderError::SchemaChanged
+        })
+}
 
 /// A Connect unary call to Cursor's DashboardService, sent the way current trackers send it:
 /// bearer token, JSON body, `Connect-Protocol-Version: 1`.
@@ -463,6 +555,15 @@ pub(crate) fn dashboard_post(
         .header("Connect-Protocol-Version", "1")
         .body("{}")
         .timeout(REQUEST_TIMEOUT)
+}
+
+/// DashboardService call authenticated with a token exchanged from `CURSOR_API_KEY`.
+fn cli_dashboard_post(
+    http: &reqwest::Client,
+    token: &str,
+    method: &str,
+) -> reqwest::RequestBuilder {
+    dashboard_post(http, token, method).header("x-cursor-client-type", "cli")
 }
 
 /// The request behind Cursor's web dashboard, with the session cookie made from the access token.
@@ -561,6 +662,128 @@ async fn call(
     send(dashboard_post(http, token, method), "POST", endpoint).await
 }
 
+async fn call_cli(
+    http: &reqwest::Client,
+    token: &str,
+    method: &'static str,
+) -> (Result<Vec<u8>, ProviderError>, HttpAttempt) {
+    let endpoint = format!("{API_HOST}/{API_PATH}/{method}");
+    send(cli_dashboard_post(http, token, method), "POST", endpoint).await
+}
+
+async fn exchange_api_key(
+    http: &reqwest::Client,
+    api_key: &str,
+    trace: &mut Trace,
+) -> Result<String, ProviderError> {
+    let endpoint = format!("{API_HOST}/{EXCHANGE_API_KEY_PATH}");
+    let req = http
+        .post(format!("https://{endpoint}"))
+        .bearer_auth(api_key)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body("{}")
+        .timeout(REQUEST_TIMEOUT);
+    let (reply, attempt) = send(req, "POST", endpoint).await;
+    trace.requests.push(attempt);
+    let body = reply?;
+    parse_exchange_token(&body)
+}
+
+fn cache_exchanged_token(key_hash: String, access_token: &str) {
+    let ttl = claims(access_token)
+        .and_then(|c| c.exp)
+        .and_then(|exp| {
+            let now = chrono::Utc::now().timestamp();
+            let remaining = exp.saturating_sub(now).saturating_sub(60);
+            (remaining > 0).then(|| Duration::from_secs(remaining as u64))
+        })
+        .unwrap_or(Duration::from_secs(300));
+    *EXCHANGED_TOKEN.lock().unwrap_or_else(|e| e.into_inner()) =
+        Some((key_hash, access_token.to_string(), Instant::now() + ttl));
+}
+
+async fn fetch_usage_via_api_key(
+    http: &reqwest::Client,
+    api_key: &str,
+    label: Option<String>,
+) -> (Result<CursorUsage, ProviderError>, Trace) {
+    let mut trace = Trace::default();
+    let key_hash = token_id(api_key);
+    let cached_token = {
+        let guard = EXCHANGED_TOKEN.lock().unwrap_or_else(|e| e.into_inner());
+        guard
+            .as_ref()
+            .filter(|(h, _, exp)| *h == key_hash && Instant::now() < *exp)
+            .map(|(_, tok, _)| tok.clone())
+    };
+    let from_cache = cached_token.is_some();
+    let mut token = match cached_token {
+        Some(tok) => tok,
+        None => match exchange_api_key(http, api_key, &mut trace).await {
+            Ok(tok) => {
+                cache_exchanged_token(key_hash.clone(), &tok);
+                tok
+            }
+            Err(err) => return (Err(err), trace),
+        },
+    };
+    let (mut usage, mut plan, mut hard_limit) = tokio::join!(
+        call_cli(http, &token, "GetCurrentPeriodUsage"),
+        call_cli(http, &token, "GetPlanInfo"),
+        call_cli(http, &token, "GetHardLimit")
+    );
+    trace.requests.push(usage.1);
+    trace.requests.push(plan.1);
+    trace.requests.push(hard_limit.1);
+
+    // If a cached short-lived token was rejected, exchange the API key once more.
+    if matches!(usage.0, Err(ProviderError::AuthRejected)) && from_cache {
+        *EXCHANGED_TOKEN.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        match exchange_api_key(http, api_key, &mut trace).await {
+            Ok(fresh) => {
+                cache_exchanged_token(key_hash, &fresh);
+                token = fresh;
+                let retried = tokio::join!(
+                    call_cli(http, &token, "GetCurrentPeriodUsage"),
+                    call_cli(http, &token, "GetPlanInfo"),
+                    call_cli(http, &token, "GetHardLimit")
+                );
+                usage = retried.0;
+                plan = retried.1;
+                hard_limit = retried.2;
+                trace.requests.push(usage.1);
+                trace.requests.push(plan.1);
+                trace.requests.push(hard_limit.1);
+            }
+            Err(err) => return (Err(err), trace),
+        }
+    }
+
+    let json = |reply: Result<Vec<u8>, ProviderError>| {
+        reply
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+    };
+    match usage.0 {
+        Ok(body) => {
+            let (plan, hard_limit) = (json(plan.0), json(hard_limit.0));
+            match usage_from_dashboard(&body, plan.as_ref(), hard_limit.as_ref(), label) {
+                Ok(usage) => {
+                    trace.auth_path = Some("api-key");
+                    trace.parse = Some("ok".into());
+                    (Ok(usage), trace)
+                }
+                Err(lacked) => {
+                    log::warn!("cursor GetCurrentPeriodUsage (api-key): {lacked}");
+                    trace.parse = Some(lacked);
+                    (Err(ProviderError::SchemaChanged), trace)
+                }
+            }
+        }
+        Err(err) => (Err(err), trace),
+    }
+}
+
 /// Every usage event of this cycle, page by page; each page sent is added to the trace. Err when
 /// they could not all be read: a partial sum would understate the spend.
 async fn cycle_events(
@@ -625,7 +848,7 @@ async fn api_spend_for(
     let who = token_id(token);
     let earlier = EVENTS
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .clone()
         .filter(|(id, start, _, _)| *id == who && *start == cycle.start_ms);
     if let Some((_, _, at, spend)) = &earlier {
@@ -638,7 +861,8 @@ async fn api_spend_for(
         Ok(events) => api_spend(&events, &cycle),
         Err(()) => earlier.and_then(|(_, _, _, spend)| spend),
     };
-    *EVENTS.lock().unwrap() = Some((who, cycle.start_ms, Instant::now(), spend.clone()));
+    *EVENTS.lock().unwrap_or_else(|e| e.into_inner()) =
+        Some((who, cycle.start_ms, Instant::now(), spend.clone()));
     spend
 }
 
@@ -731,13 +955,68 @@ pub async fn response(core: &Core) -> Value {
 }
 
 async fn accounts_from(core: &Core, paths: &Paths, busy: Duration) -> Vec<Value> {
+    if let Some(api_key) = configured_api_key(core) {
+        let id = "cursor-api-key".to_string();
+        let label = Some("Cursor API Key".to_string());
+        let key_hash = token_id(&api_key);
+        let sign = SignIn {
+            db: DbRead {
+                how: DbHow::Missing,
+                detail: Some("using configured Cursor API key".into()),
+                read_at_ms: now_ms(),
+                reused_earlier: false,
+            },
+            token: TokenInfo {
+                present: true,
+                form: Some("api-key".into()),
+                decrypt: None,
+                id: Some(key_hash.clone()),
+                expires_at_ms: None,
+            },
+            label: label.clone(),
+            access: Ok(Some(String::new())),
+        };
+        let mut last = LAST_TOKEN.lock().unwrap_or_else(|e| e.into_inner());
+        if last.as_deref() != Some(key_hash.as_str()) {
+            if last.is_some() {
+                CACHE.invalidate(Some(&id));
+            }
+            *last = Some(key_hash);
+        }
+        drop(last);
+        let key = id.clone();
+        let live = vec![LiveAccount {
+            id,
+            label: label.clone(),
+            active: true,
+            load: Box::pin(async move {
+                CACHE
+                    .get(&core.cache, &key, |_| async move {
+                        let (result, trace) =
+                            fetch_usage_via_api_key(&core.http, &api_key, label).await;
+                        FETCH_FAILED.store(result.is_err(), Ordering::Relaxed);
+                        let outcome = result.as_ref().map_or_else(|e| e.kind(), |_| "ok");
+                        record(&sign, trace, outcome);
+                        result.map_err(FetchError::from)
+                    })
+                    .await
+            }),
+            label_from: None,
+        }];
+        return collect_accounts(&core.seen, &core.cache, SECTION, SECTION, live)
+            .await
+            .into_iter()
+            .filter_map(|row| serde_json::to_value(row).ok())
+            .collect();
+    }
+
     let sign = current_sign_in_off_runtime(paths, busy).await;
     let label = sign.label.clone();
     let id = label.as_deref().unwrap_or("signed-in").to_lowercase();
     let live = match sign.access.clone() {
         Ok(Some(token)) => {
             // Cursor wrote another token: use it on this poll, not after the failure memo.
-            let mut last = LAST_TOKEN.lock().unwrap();
+            let mut last = LAST_TOKEN.lock().unwrap_or_else(|e| e.into_inner());
             if last.as_deref() != sign.token.id.as_deref() {
                 if last.is_some() {
                     CACHE.invalidate(Some(&id));
@@ -977,12 +1256,13 @@ mod tests {
         assert!(read.detail.is_some());
         assert_eq!(state.unwrap().token.as_deref(), Some("tok"));
         drop(holder);
-        let leftovers = std::fs::read_dir(std::env::temp_dir())
-            .unwrap()
+        let leftovers = std::fs::read_dir(private_temp_root())
+            .into_iter()
+            .flatten()
             .flatten()
             .filter(|e| {
                 let name = e.file_name().to_string_lossy().into_owned();
-                name.starts_with(&format!("usagedeck-cursor-state-{}-", std::process::id()))
+                name.starts_with(&format!("{TEMP_DIR_PREFIX}{}-", std::process::id()))
             })
             .count();
         assert_eq!(
@@ -1012,7 +1292,10 @@ mod tests {
                 }],
             )
             .await;
-        STATE.lock().unwrap().remove(&paths.db);
+        STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&paths.db);
         let rows = accounts_from(&core, &paths, SHORT).await;
         assert_eq!(rows.len(), 1, "card must not disappear");
         assert_eq!(rows[0]["id"], "user@example.com");
@@ -1036,7 +1319,11 @@ mod tests {
         FETCH_FAILED.store(false, Ordering::Relaxed);
         let first = current_sign_in(&paths, SHORT);
         assert!(!first.db.reused_earlier);
-        if let Some(entry) = STATE.lock().unwrap().get_mut(&paths.db) {
+        if let Some(entry) = STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_mut(&paths.db)
+        {
             entry.0 = Instant::now() - STATE_TTL * 2;
         }
         std::fs::write(
@@ -1049,6 +1336,78 @@ mod tests {
         assert!(served.db.reused_earlier);
         assert_eq!(served.db.how, DbHow::Failed);
         assert_eq!(served.db.read_at_ms, first.db.read_at_ms);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn sign_in_debug_redacts_access_token() {
+        let sign = SignIn {
+            db: DbRead {
+                how: DbHow::Opened,
+                detail: None,
+                read_at_ms: 0,
+                reused_earlier: false,
+            },
+            token: TokenInfo::default(),
+            label: Some("user@example.com".into()),
+            access: Ok(Some("super-secret-cursor-jwt".into())),
+        };
+        let dbg = format!("{sign:?}");
+        assert!(!dbg.contains("super-secret-cursor-jwt"));
+        assert!(dbg.contains("<redacted>"));
+    }
+
+    #[test]
+    fn sweep_stale_temp_dirs_removes_only_cursor_state_dirs() {
+        let root = temp_dir("sweep");
+        let stale = root.join("cursor-state-99999-123");
+        let other = root.join("keep-me");
+        std::fs::create_dir_all(&stale).unwrap();
+        std::fs::write(stale.join("state.vscdb"), b"secret").unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let plain_file = root.join("cursor-state-file");
+        std::fs::write(&plain_file, b"x").unwrap();
+
+        sweep_stale_temp_dirs_in(&root);
+        assert!(!stale.exists());
+        assert!(other.exists());
+        assert!(plain_file.exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn parse_exchange_token_extracts_access_token_and_rejects_bad_replies() {
+        assert_eq!(
+            parse_exchange_token(br#"{"accessToken":"  jwt.payload.sig  "}"#),
+            Ok("jwt.payload.sig".to_string())
+        );
+        assert_eq!(
+            parse_exchange_token(br#"{"accessToken":""}"#),
+            Err(ProviderError::SchemaChanged)
+        );
+        assert_eq!(
+            parse_exchange_token(br#"{}"#),
+            Err(ProviderError::SchemaChanged)
+        );
+        assert_eq!(
+            parse_exchange_token(b"not-json"),
+            Err(ProviderError::SchemaChanged)
+        );
+    }
+
+    #[test]
+    fn configured_api_key_reads_from_store_vault() {
+        let dir = temp_dir("api-key-store");
+        let store = Store::new(dir.clone(), Box::new(MemoryVault::default()));
+        let core = Core::new(store);
+        assert_eq!(configured_api_key(&core), None);
+        core.store
+            .set_cursor_api_key(Some("key_cursor_12345"))
+            .unwrap();
+        assert_eq!(
+            configured_api_key(&core).as_deref(),
+            Some("key_cursor_12345")
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

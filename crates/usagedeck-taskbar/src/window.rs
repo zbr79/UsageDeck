@@ -14,7 +14,8 @@
 
 use crate::clipboard;
 use crate::layout::{
-    compute_flyout_layout, compute_strip_layout, FlyoutAction, FlyoutLayout, StripLayout, StripMode,
+    compute_flyout_layout, compute_strip_layout, FlyoutAction, FlyoutLayout, PillStyle,
+    StripLayout, StripMode,
 };
 use crate::poller::{PollerCmd, SharedSnapshot, WM_APP_SNAPSHOT};
 use crate::render::Renderer;
@@ -656,13 +657,20 @@ fn sync_and_paint_strip_ui() {
             StripMode::Pills {
                 slots,
                 overflow_badge,
-            } => format!(
-                "pills({}{})",
-                slots.len(),
-                overflow_badge
-                    .map(|(_, n)| format!("+{n}"))
-                    .unwrap_or_default()
-            ),
+            } => {
+                let style_tag = match slots.first().map(|s| s.style) {
+                    Some(PillStyle::WideMeters) => "wide",
+                    Some(PillStyle::CompactStacked) => "compact",
+                    None => "pills",
+                };
+                format!(
+                    "{style_tag}({}{})",
+                    slots.len(),
+                    overflow_badge
+                        .map(|(_, n)| format!("+{n}"))
+                        .unwrap_or_default()
+                )
+            }
             StripMode::CompactSummary { .. } => "compact-summary".to_string(),
             StripMode::Empty { label, .. } => format!("empty({label})"),
             StripMode::Hidden => "hidden".to_string(),
@@ -670,7 +678,7 @@ fn sync_and_paint_strip_ui() {
         log_status_if_changed(
             state,
             format!(
-                "visible mode={mode_label} pos=({x},{y}) size=({width_px}x{height_px}) dpi={} avail={:.0}dip",
+                "visible mode={mode_label} theme={theme:?} pos=({x},{y}) size=({width_px}x{height_px}) dpi={} avail={:.0}dip",
                 metrics.dpi, metrics.available_width_dip
             ),
         );

@@ -3,11 +3,14 @@
 //! (Windows Credential Manager); the persisted last-good value lives in `UsageCache`.
 
 use super::{parse_reply, CachedProvider, FetchError, ProviderError};
+use crate::store::{Account, OPENCODE_KEY_PREFIXES};
 use crate::Core;
+use rusqlite::OpenFlags;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
@@ -85,6 +88,168 @@ pub fn diff_text(prev: &OpenCodeUsage, cur: &OpenCodeUsage) -> String {
         .join(", ")
 }
 
+// ---- read-only auto-discovery ---------------------------------------------------------------
+
+/// Whether a string looks like an OpenCode API key (`oc_sk_...` or `sk-...`).
+pub fn is_valid_opencode_key(key: &str) -> bool {
+    let trimmed = key.trim();
+    OPENCODE_KEY_PREFIXES
+        .iter()
+        .any(|prefix| trimmed.starts_with(prefix))
+        && trimmed.len() > 8
+}
+
+fn extract_key_from_value(value: &Value) -> Option<String> {
+    let candidate = value
+        .as_str()
+        .or_else(|| value.get("key").and_then(Value::as_str))
+        .or_else(|| value.get("apiKey").and_then(Value::as_str))
+        .or_else(|| value.get("api_key").and_then(Value::as_str))
+        .or_else(|| value.get("token").and_then(Value::as_str))
+        .map(str::trim)?;
+    is_valid_opencode_key(candidate).then(|| candidate.to_string())
+}
+
+/// Read-only discovery from an OpenCode `auth.json` file (`opencode-go.key` or `opencode.key`).
+pub fn discover_from_auth_json(path: &Path) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(json) = serde_json::from_str::<Value>(&text) else {
+        return Vec::new();
+    };
+    let mut keys = Vec::new();
+    for field in ["opencode-go", "opencode"] {
+        if let Some(key) = json.get(field).and_then(extract_key_from_value) {
+            if !keys.contains(&key) {
+                keys.push(key);
+            }
+        }
+    }
+    keys
+}
+
+/// Read-only discovery from OpenCode's SQLite database (`opencode.db`).
+pub fn discover_from_sqlite(path: &Path) -> Vec<String> {
+    if !path.is_file() {
+        return Vec::new();
+    }
+    let Ok(conn) = rusqlite::Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) else {
+        return Vec::new();
+    };
+    let _ = conn.busy_timeout(Duration::from_millis(500));
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT value FROM credential \
+         WHERE integration_id IN ('opencode','opencode-go') AND active IS NOT 0",
+    ) else {
+        return Vec::new();
+    };
+    let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) else {
+        return Vec::new();
+    };
+    let mut keys = Vec::new();
+    for raw in rows.flatten() {
+        let trimmed = raw.trim();
+        let extracted = if trimmed.starts_with('{') {
+            serde_json::from_str::<Value>(trimmed)
+                .ok()
+                .and_then(|v| extract_key_from_value(&v))
+        } else {
+            is_valid_opencode_key(trimmed).then(|| trimmed.to_string())
+        };
+        if let Some(key) = extracted {
+            if !keys.contains(&key) {
+                keys.push(key);
+            }
+        }
+    }
+    keys
+}
+
+/// Discover read-only local OpenCode keys from env, `auth.json`, and `opencode.db`.
+/// Never writes or mutates `accounts.json` or any external OpenCode file.
+fn discover_local_accounts() -> Vec<Account> {
+    if !super::codex::real_sign_ins() {
+        return Vec::new();
+    }
+    let mut found: Vec<Account> = Vec::new();
+
+    if let Ok(env_key) = std::env::var("OPENCODE_API_KEY") {
+        let trimmed = env_key.trim();
+        if is_valid_opencode_key(trimmed) {
+            found.push(Account {
+                email: "opencode-env".to_string(),
+                key: trimmed.to_string(),
+            });
+        }
+    }
+
+    let mut dirs = Vec::new();
+    if let Some(local) = std::env::var_os("LOCALAPPDATA").map(PathBuf::from) {
+        dirs.push(local.join("opencode"));
+    }
+    if let Some(home) = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+    {
+        dirs.push(home.join(".local").join("share").join("opencode"));
+    }
+
+    for dir in &dirs {
+        for key in discover_from_auth_json(&dir.join("auth.json")) {
+            found.push(Account {
+                email: "opencode-cli".to_string(),
+                key,
+            });
+        }
+    }
+
+    for dir in &dirs {
+        for key in discover_from_sqlite(&dir.join("opencode.db")) {
+            found.push(Account {
+                email: "opencode-db".to_string(),
+                key,
+            });
+        }
+    }
+
+    found
+}
+
+/// Merge Credential Manager accounts with read-only discovered keys, deduplicating by key and
+/// guaranteeing unique synthetic labels without ever mutating `accounts.json`.
+pub fn merge_discovered_accounts(stored: Vec<Account>, discovered: Vec<Account>) -> Vec<Account> {
+    let mut seen_keys: HashSet<String> = stored
+        .iter()
+        .map(|a| a.key.trim().to_string())
+        .filter(|k| !k.is_empty())
+        .collect();
+    let mut seen_ids: HashSet<String> = stored.iter().map(|a| a.email.to_lowercase()).collect();
+    let mut merged = stored;
+
+    for mut acc in discovered {
+        let trimmed_key = acc.key.trim().to_string();
+        if !is_valid_opencode_key(&trimmed_key) || !seen_keys.insert(trimmed_key.clone()) {
+            continue;
+        }
+        acc.key = trimmed_key;
+        let base = acc.email.clone();
+        let mut candidate = base.clone();
+        let mut suffix = 2u32;
+        while !seen_ids.insert(candidate.to_lowercase()) {
+            candidate = format!("{base}-{suffix}");
+            suffix += 1;
+        }
+        acc.email = candidate;
+        merged.push(acc);
+    }
+
+    merged
+}
+
 // ---- per-account state, keyed by email (as in lib/opencode.ts) ------------------------------
 
 #[derive(Default)]
@@ -110,7 +275,7 @@ static CACHE: LazyLock<CachedProvider<OpenCodeUsage>> = LazyLock::new(|| {
 });
 
 fn with_state<R>(email: &str, f: impl FnOnce(&mut AccountState) -> R) -> R {
-    let mut map = STATE.lock().unwrap();
+    let mut map = STATE.lock().unwrap_or_else(|e| e.into_inner());
     f(map.entry(email.to_string()).or_default())
 }
 
@@ -205,9 +370,14 @@ fn row(email: &str, enabled: bool, result: super::ProviderResult<OpenCodeUsage>)
 }
 
 /// Rows for the `accounts` array of the old route's JSON body (`OpenCodeAccountUsage` each).
-/// Accounts load one after another; the old route ran them in parallel.
+/// Combines Windows Credential Manager accounts with read-only local discovery (`OPENCODE_API_KEY`,
+/// `auth.json`, and read-only `opencode.db`), deduplicated by key.
 pub async fn accounts(core: &Core) -> Vec<Value> {
-    let accounts = core.store.get_accounts().await;
+    let stored = core.store.get_accounts().await;
+    let discovered = tokio::task::spawn_blocking(discover_local_accounts)
+        .await
+        .unwrap_or_default();
+    let accounts = merge_discovered_accounts(stored, discovered);
     let disabled = core.store.get_settings().disabled_accounts;
     let mut rows = Vec::with_capacity(accounts.len());
     for acc in accounts {
@@ -340,6 +510,82 @@ mod tests {
         assert_eq!(prev.unwrap().rolling.percent, 12.5);
         assert_eq!(change.unwrap().1, "rolling 12.5% → 20%");
         assert_eq!(with_state(email, |s| s.subscription), Some(true));
+    }
+
+    #[test]
+    fn opencode_discovers_auth_json_sqlite_and_deduplicates() {
+        let dir = std::env::temp_dir().join(format!(
+            "usagedeck-opencode-discover-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // auth.json discovery
+        let auth = dir.join("auth.json");
+        std::fs::write(
+            &auth,
+            serde_json::json!({
+                "opencode-go": { "type": "api", "key": "oc_sk_from_go_1234" },
+                "opencode": { "type": "api", "key": "sk-legacy_key_5678" },
+                "other": { "key": "bad_prefix_9999" }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            discover_from_auth_json(&auth),
+            vec!["oc_sk_from_go_1234", "sk-legacy_key_5678"]
+        );
+
+        // read-only SQLite opencode.db discovery
+        let db = dir.join("opencode.db");
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE credential (integration_id TEXT, value TEXT, active INTEGER);
+             INSERT INTO credential VALUES ('opencode-go', 'oc_sk_from_db_1111', 1);
+             INSERT INTO credential VALUES ('opencode', '{\"key\":\"sk-from_db_json_2222\"}', NULL);
+             INSERT INTO credential VALUES ('opencode-go', 'oc_sk_inactive_3333', 0);
+             INSERT INTO credential VALUES ('other', 'oc_sk_other_4444', 1);",
+        )
+        .unwrap();
+        drop(conn);
+        assert_eq!(
+            discover_from_sqlite(&db),
+            vec!["oc_sk_from_db_1111", "sk-from_db_json_2222"]
+        );
+
+        // deduplication against Credential Manager accounts
+        let stored = vec![Account {
+            email: "me@example.com".into(),
+            key: "oc_sk_from_go_1234".into(),
+        }];
+        let discovered = vec![
+            Account {
+                email: "opencode-cli".into(),
+                key: "oc_sk_from_go_1234".into(),
+            },
+            Account {
+                email: "opencode-cli".into(),
+                key: "sk-legacy_key_5678".into(),
+            },
+            Account {
+                email: "opencode-cli".into(),
+                key: "oc_sk_from_db_1111".into(),
+            },
+            Account {
+                email: "opencode-bad".into(),
+                key: "not-a-key".into(),
+            },
+        ];
+        let merged = merge_discovered_accounts(stored, discovered);
+        assert_eq!(merged.len(), 3);
+        assert_eq!(merged[0].email, "me@example.com");
+        assert_eq!(merged[1].email, "opencode-cli");
+        assert_eq!(merged[1].key, "sk-legacy_key_5678");
+        assert_eq!(merged[2].email, "opencode-cli-2");
+        assert_eq!(merged[2].key, "oc_sk_from_db_1111");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Live: uses the keys stored in Credential Manager and prints only the parsed summary.

@@ -1316,6 +1316,7 @@ impl SettingsRenderer {
             ProviderKind::Codex => ("◎", rgba(161, 161, 170, 0.22), pal.text),
             ProviderKind::Grok => ("G", rgba(168, 85, 247, 0.22), rgba(168, 85, 247, 1.0)),
             ProviderKind::OpenCode => ("O", rgba(16, 185, 129, 0.22), pal.accent),
+            ProviderKind::Antigravity => ("A", rgba(96, 165, 250, 0.22), rgba(96, 165, 250, 1.0)),
         };
         let _ = self.fill_rounded(rt, rect, 4.0, bg);
         let _ = self.draw_text(rt, glyph, &self.fmt_badge, rect, fg);

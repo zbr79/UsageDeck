@@ -21,6 +21,7 @@ pub const USAGE_CACHE_FILE: &str = "usage-cache.json";
 pub const SEEN_ACCOUNTS_FILE: &str = "seen-accounts.json";
 pub const WINDOW_POS_FILE: &str = "window-pos.json";
 pub const KEYRING_SERVICE: &str = "UsageDeck";
+pub const CURSOR_API_KEY_USER: &str = "cursor:api-key";
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -132,9 +133,12 @@ fn set_aside_corrupt(file: &Path) {
 
 // ---- key vault ------------------------------------------------------------------------------
 
-/// Where OpenCode API keys live. Production: Windows Credential Manager.
+/// Where OpenCode and Cursor API keys live. Production: Windows Credential Manager.
 pub trait KeyVault: Send + Sync {
     fn get(&self, user: &str) -> Option<String>;
+    fn get_checked(&self, user: &str) -> Result<Option<String>, StoreError> {
+        Ok(self.get(user))
+    }
     fn set(&self, user: &str, key: &str) -> Result<(), StoreError>;
     fn delete(&self, user: &str) -> Result<(), StoreError>;
 }
@@ -144,10 +148,16 @@ pub struct CredentialVault;
 
 impl KeyVault for CredentialVault {
     fn get(&self, user: &str) -> Option<String> {
-        keyring::Entry::new(KEYRING_SERVICE, user)
-            .ok()?
-            .get_password()
-            .ok()
+        self.get_checked(user).ok().flatten()
+    }
+    fn get_checked(&self, user: &str) -> Result<Option<String>, StoreError> {
+        let entry = keyring::Entry::new(KEYRING_SERVICE, user)
+            .map_err(|e| StoreError::Vault(e.to_string()))?;
+        match entry.get_password() {
+            Ok(pw) => Ok(Some(pw)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(StoreError::Vault(e.to_string())),
+        }
     }
     fn set(&self, user: &str, key: &str) -> Result<(), StoreError> {
         keyring::Entry::new(KEYRING_SERVICE, user)
@@ -168,17 +178,27 @@ pub struct MemoryVault(Mutex<HashMap<String, String>>);
 
 impl KeyVault for MemoryVault {
     fn get(&self, user: &str) -> Option<String> {
-        self.0.lock().unwrap().get(user).cloned()
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(user)
+            .cloned()
+    }
+    fn get_checked(&self, user: &str) -> Result<Option<String>, StoreError> {
+        Ok(self.get(user))
     }
     fn set(&self, user: &str, key: &str) -> Result<(), StoreError> {
         self.0
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .insert(user.to_string(), key.to_string());
         Ok(())
     }
     fn delete(&self, user: &str) -> Result<(), StoreError> {
-        self.0.lock().unwrap().remove(user);
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(user);
         Ok(())
     }
 }
@@ -213,7 +233,7 @@ impl Store {
     /// Hold the returned guard across a read-modify-write of `name`.
     pub async fn lock(&self, name: &str) -> OwnedMutexGuard<()> {
         let m = {
-            let mut map = self.locks.lock().unwrap();
+            let mut map = self.locks.lock().unwrap_or_else(|e| e.into_inner());
             map.entry(name.to_string()).or_default().clone()
         };
         m.lock_owned().await
@@ -260,6 +280,24 @@ impl Store {
         .await
     }
 
+    // -- Cursor API key (Windows Credential Manager) --
+
+    /// Optional Cursor API key stored in Windows Credential Manager (never in a file).
+    pub fn get_cursor_api_key(&self) -> Option<String> {
+        self.vault
+            .get(CURSOR_API_KEY_USER)
+            .map(|k| k.trim().to_string())
+            .filter(|k| !k.is_empty())
+    }
+
+    /// Store or remove the Cursor API key in Windows Credential Manager.
+    pub fn set_cursor_api_key(&self, key: Option<&str>) -> Result<(), StoreError> {
+        match key.map(str::trim).filter(|k| !k.is_empty()) {
+            Some(k) => self.vault.set(CURSOR_API_KEY_USER, k),
+            None => self.vault.delete(CURSOR_API_KEY_USER),
+        }
+    }
+
     // -- OpenCode accounts (lib/opencode.ts getAccounts / updateAccounts) --
 
     fn stored_emails(&self) -> Vec<String> {
@@ -279,13 +317,23 @@ impl Store {
         self.stored_emails()
             .into_iter()
             .map(|email| {
-                let key = self.vault.get(&email.to_lowercase()).unwrap_or_else(|| {
-                    log::info!(
-                        "opencode [{}]: no key in Credential Manager",
-                        crate::providers::log_id(&email)
-                    );
-                    String::new()
-                });
+                let key = match self.vault.get_checked(&email.to_lowercase()) {
+                    Ok(Some(k)) => k,
+                    Ok(None) => {
+                        log::info!(
+                            "opencode [{}]: no key in Credential Manager",
+                            crate::providers::log_id(&email)
+                        );
+                        String::new()
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "opencode [{}]: Credential Manager read failed: {e}",
+                            crate::providers::log_id(&email)
+                        );
+                        String::new()
+                    }
+                };
                 Account { email, key }
             })
             .collect()
@@ -303,10 +351,17 @@ impl Store {
         let _guard = self.lock(ACCOUNTS_FILE).await;
         let before = self.load_accounts();
         let next = change(before.clone());
-        // an empty key is one that could not be read: leave the vault entry as it is
+        let before_keys: HashMap<String, &str> = before
+            .iter()
+            .map(|a| (a.email.to_lowercase(), a.key.as_str()))
+            .collect();
+        // an empty key is one that could not be read: leave the vault entry as it is;
+        // only write keys that were added or actually changed.
         for account in next.iter().filter(|a| !a.key.is_empty()) {
-            self.vault
-                .set(&account.email.to_lowercase(), &account.key)?;
+            let lower = account.email.to_lowercase();
+            if before_keys.get(&lower).copied() != Some(account.key.as_str()) {
+                self.vault.set(&lower, &account.key)?;
+            }
         }
         let kept: HashSet<String> = next.iter().map(|a| a.email.to_lowercase()).collect();
         for old in &before {
@@ -324,10 +379,19 @@ impl Store {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Account {
     pub email: String,
     pub key: String,
+}
+
+impl std::fmt::Debug for Account {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Account")
+            .field("email", &self.email)
+            .field("key", &"<redacted>")
+            .finish()
+    }
 }
 
 /// OpenCode API key prefixes: the current `oc_sk_` format and the older `sk-` one.
@@ -379,6 +443,7 @@ pub enum WidgetProvider {
     Grok,
     Codex,
     Claude,
+    Antigravity,
 }
 
 impl WidgetProvider {
@@ -389,6 +454,7 @@ impl WidgetProvider {
             "grok" => Self::Grok,
             "codex" => Self::Codex,
             "claude" => Self::Claude,
+            "antigravity" => Self::Antigravity,
             _ => return None,
         })
     }
@@ -401,17 +467,23 @@ impl WidgetProvider {
             Self::Grok => &["weekly"],
             Self::Codex => &["fiveHour", "weekly"],
             Self::Claude => &["fiveHour", "weekly", "scoped"],
+            Self::Antigravity => &["fiveHour", "weekly"],
         }
     }
 }
 
-pub const DEFAULT_PROVIDER_ORDER: [WidgetProvider; 5] = [
+pub const DEFAULT_PROVIDER_ORDER: [WidgetProvider; 6] = [
     WidgetProvider::Opencode,
     WidgetProvider::Cursor,
     WidgetProvider::Grok,
     WidgetProvider::Codex,
     WidgetProvider::Claude,
+    WidgetProvider::Antigravity,
 ];
+
+fn default_true() -> bool {
+    true
+}
 
 pub const MAX_NICKNAME_LENGTH: usize = 64;
 const MAX_KEY_LENGTH: usize = 320;
@@ -427,6 +499,8 @@ pub struct Settings {
     pub grok_enabled: bool,
     pub codex_enabled: bool,
     pub claude_enabled: bool,
+    #[serde(default = "default_true")]
+    pub antigravity_enabled: bool,
     pub deepseek_peak_hour_warning: bool,
     /// hide the widget while a full-screen app is in front on its monitor
     pub hide_in_fullscreen: bool,
@@ -458,6 +532,7 @@ impl Default for Settings {
             grok_enabled: true,
             codex_enabled: true,
             claude_enabled: true,
+            antigravity_enabled: true,
             deepseek_peak_hour_warning: true,
             hide_in_fullscreen: true,
             show_provider_names: false,
@@ -650,12 +725,13 @@ pub fn apply_settings_patch_at(current: &Settings, patch: &Value, now_ms: u64) -
     };
     let mut next = current.clone();
     {
-        let bools: [(&str, &mut bool); 10] = [
+        let bools: [(&str, &mut bool); 11] = [
             ("opencodeEnabled", &mut next.opencode_enabled),
             ("cursorEnabled", &mut next.cursor_enabled),
             ("grokEnabled", &mut next.grok_enabled),
             ("codexEnabled", &mut next.codex_enabled),
             ("claudeEnabled", &mut next.claude_enabled),
+            ("antigravityEnabled", &mut next.antigravity_enabled),
             (
                 "deepseekPeakHourWarning",
                 &mut next.deepseek_peak_hour_warning,
@@ -1028,7 +1104,7 @@ mod tests {
         use WidgetProvider::*;
         assert_eq!(
             next.provider_order,
-            vec![Claude, Grok, Opencode, Cursor, Codex]
+            vec![Claude, Grok, Opencode, Cursor, Codex, Antigravity]
         );
         let out = serde_json::to_value(&next).unwrap();
         assert_eq!(out["themeMode"], json!("light"));
@@ -1198,5 +1274,117 @@ mod tests {
         assert_eq!(key_hint(""), "•••");
         // anything else (e.g. an imported key of unknown shape) shows no head at all
         assert_eq!(key_hint("zzzzzzzzzz5678"), "…5678");
+    }
+
+    #[test]
+    fn account_debug_redacts_key() {
+        let acc = Account {
+            email: "u@example.com".into(),
+            key: "oc_sk_very_secret_key_value".into(),
+        };
+        let dbg = format!("{acc:?}");
+        assert!(!dbg.contains("oc_sk_very_secret_key_value"));
+        assert!(dbg.contains("<redacted>"));
+        assert!(dbg.contains("u@example.com"));
+    }
+
+    #[test]
+    fn antigravity_settings_and_v2_migration() {
+        assert!(Settings::default().antigravity_enabled);
+        let off = apply_settings_patch(
+            &Settings::default(),
+            &json!({ "antigravityEnabled": false, "hiddenBars": { "antigravity": ["weekly"] } }),
+        );
+        assert!(!off.antigravity_enabled);
+        assert_eq!(
+            off.hidden_bars.get(&WidgetProvider::Antigravity),
+            Some(&vec!["weekly".to_string()])
+        );
+        // Existing v1/v2 settings.json without antigravityEnabled loads cleanly as true.
+        let mut legacy = serde_json::to_value(Settings::default()).unwrap();
+        legacy.as_object_mut().unwrap().remove("antigravityEnabled");
+        let parsed: Settings = serde_json::from_value(legacy).unwrap();
+        assert!(parsed.antigravity_enabled);
+    }
+
+    #[test]
+    fn cursor_api_key_round_trip() {
+        let dir = temp_dir("cursor-key");
+        let store = Store::new(dir.clone(), Box::new(MemoryVault::default()));
+        assert_eq!(store.get_cursor_api_key(), None);
+        store.set_cursor_api_key(Some("  key_abc123  ")).unwrap();
+        assert_eq!(store.get_cursor_api_key().as_deref(), Some("key_abc123"));
+        store.set_cursor_api_key(Some("   ")).unwrap();
+        assert_eq!(store.get_cursor_api_key(), None);
+        store.set_cursor_api_key(Some("key_xyz")).unwrap();
+        store.set_cursor_api_key(None).unwrap();
+        assert_eq!(store.get_cursor_api_key(), None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn update_accounts_only_writes_changed_or_added_keys() {
+        struct CountingVault {
+            inner: MemoryVault,
+            writes: Arc<Mutex<Vec<String>>>,
+        }
+        impl KeyVault for CountingVault {
+            fn get(&self, user: &str) -> Option<String> {
+                self.inner.get(user)
+            }
+            fn get_checked(&self, user: &str) -> Result<Option<String>, StoreError> {
+                self.inner.get_checked(user)
+            }
+            fn set(&self, user: &str, key: &str) -> Result<(), StoreError> {
+                self.writes
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(user.to_string());
+                self.inner.set(user, key)
+            }
+            fn delete(&self, user: &str) -> Result<(), StoreError> {
+                self.inner.delete(user)
+            }
+        }
+
+        let dir = temp_dir("diff-vault");
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let vault = CountingVault {
+            inner: MemoryVault::default(),
+            writes: Arc::clone(&writes),
+        };
+        let store = Store::new(dir.clone(), Box::new(vault));
+        store
+            .update_accounts(|mut list| {
+                list.push(Account {
+                    email: "a@x.com".into(),
+                    key: "oc_sk_one".into(),
+                });
+                list
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            *writes.lock().unwrap_or_else(|e| e.into_inner()),
+            vec!["a@x.com"]
+        );
+
+        // Adding b@x.com without changing a@x.com must NOT rewrite a@x.com.
+        writes.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        store
+            .update_accounts(|mut list| {
+                list.push(Account {
+                    email: "b@x.com".into(),
+                    key: "oc_sk_two".into(),
+                });
+                list
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            *writes.lock().unwrap_or_else(|e| e.into_inner()),
+            vec!["b@x.com"]
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
