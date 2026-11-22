@@ -976,14 +976,15 @@ async fn accounts_from(core: &Core, paths: &Paths, busy: Duration) -> Vec<Value>
             label: label.clone(),
             access: Ok(Some(String::new())),
         };
-        let mut last = LAST_TOKEN.lock().unwrap_or_else(|e| e.into_inner());
-        if last.as_deref() != Some(key_hash.as_str()) {
-            if last.is_some() {
-                CACHE.invalidate(Some(&id));
+        {
+            let mut last = LAST_TOKEN.lock().unwrap_or_else(|e| e.into_inner());
+            if last.as_deref() != Some(key_hash.as_str()) {
+                if last.is_some() {
+                    CACHE.invalidate(Some(&id));
+                }
+                *last = Some(key_hash);
             }
-            *last = Some(key_hash);
         }
-        drop(last);
         let key = id.clone();
         let live = vec![LiveAccount {
             id,
