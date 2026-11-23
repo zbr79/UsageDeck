@@ -99,6 +99,10 @@ fn main() {
             let text = format_update_status(status);
             settings_dialog::set_update_status_text(&text);
             let ready_ver = match &status.phase {
+                updater::Phase::Downloading { version } => {
+                    window::post_toast_from_any_thread(format!("Updating to v{version}…"));
+                    None
+                }
                 updater::Phase::Ready { version, .. } => Some(version.as_str()),
                 _ => None,
             };
@@ -129,10 +133,10 @@ fn main() {
 fn format_update_status(status: &updater::UpdateStatus) -> String {
     match &status.phase {
         updater::Phase::Idle => format!("Version {}", status.current_version),
-        updater::Phase::Checking => "Checking for updates...".to_string(),
-        updater::Phase::Downloading { version } => format!("Downloading v{version}..."),
+        updater::Phase::Checking => "Checking for updates…".to_string(),
+        updater::Phase::Downloading { version } => format!("Downloading v{version}…"),
         updater::Phase::Ready { version, .. } => {
-            format!("Update v{version} ready — will install automatically")
+            format!("Update v{version} ready — click Install or close Settings")
         }
         updater::Phase::UpToDate => format!("Up to date (v{})", status.current_version),
         updater::Phase::Failed { message } => format!("Update check failed: {message}"),

@@ -502,13 +502,13 @@ pub fn model_label(id: &str) -> String {
     }
 }
 
-/// Whole points, or one decimal under 1 (`"54 pts"`, `"0.4 pts"`).
-fn format_pts(v: f64) -> String {
+/// Whole percent, or one decimal under 1 (`"54%"`, `"0.4%"`).
+fn format_pct_share(v: f64) -> String {
     let abs = v.abs();
     if abs > 0.0 && abs < 1.0 {
-        format!("{v:.1} pts")
+        format!("{v:.1}%")
     } else {
-        format!("{:.0} pts", v.round())
+        format!("{:.0}%", v.round())
     }
 }
 
@@ -532,8 +532,8 @@ fn claude_five_hour_tooltip_lines(pct: f64, by_model: &[ModelUsd]) -> Vec<String
         .iter()
         .filter(|m| m.usd > 0.0)
         .map(|m| {
-            let share_pts = (pct * m.usd) / total;
-            format!("{} ≈{}", model_label(&m.model), format_pts(share_pts))
+            let share_pct = (pct * m.usd) / total;
+            format!("{} ≈{}", model_label(&m.model), format_pct_share(share_pct))
         })
         .collect()
 }
@@ -550,8 +550,8 @@ fn claude_weekly_tooltip_lines(pct: f64, scoped: Option<&ClaudeScopedWindow>) ->
     };
     let own = share.min(pct);
     vec![
-        format!("{} {}", scoped.label, format_pts(own)),
-        format!("Other models {}", format_pts(pct - own)),
+        format!("{} {}", scoped.label, format_pct_share(own)),
+        format!("Other models {}", format_pct_share(pct - own)),
     ]
 }
 
@@ -1104,7 +1104,7 @@ where
                         .filter(|v| v.is_finite() && *v >= 0.0)
                     {
                         Some(share) => format!(
-                            "{} pts of {}% weekly allowance",
+                            "{}% of {}% weekly allowance",
                             share.round() as i64,
                             allowance.round() as i64
                         ),
@@ -3125,10 +3125,7 @@ pub fn demo_snapshot(now_ms: i64) -> TaskbarSnapshot {
 
     let mut claude_5h = BarView::new("fiveHour", "5h", Some(64.0), iso_in(134), now_ms, false);
     claude_5h.fable_segment_pct = Some(16.0);
-    claude_5h.tooltip_lines = vec![
-        "Opus 5.5 ≈48 pts".to_string(),
-        "Fable 5.2 ≈16 pts".to_string(),
-    ];
+    claude_5h.tooltip_lines = vec!["Opus 5.5 ≈48%".to_string(), "Fable 5.2 ≈16%".to_string()];
     let mut claude_weekly = BarView::new(
         "weekly",
         "Weekly",
@@ -3138,10 +3135,7 @@ pub fn demo_snapshot(now_ms: i64) -> TaskbarSnapshot {
         false,
     );
     claude_weekly.fable_segment_pct = Some(21.0);
-    claude_weekly.tooltip_lines = vec![
-        "Fable 21 pts".to_string(),
-        "Other models 62 pts".to_string(),
-    ];
+    claude_weekly.tooltip_lines = vec!["Fable 21%".to_string(), "Other models 62%".to_string()];
     let claude_bars = vec![
         claude_5h,
         claude_weekly,
@@ -3725,11 +3719,11 @@ mod tests {
         assert_eq!(item.flyout_bars[0].fable_segment_pct, Some(23.0));
         assert_eq!(
             item.flyout_bars[0].tooltip_lines,
-            vec!["Fable 23 pts", "Other models 59 pts"]
+            vec!["Fable 23%", "Other models 59%"]
         );
         assert!(item
             .tooltip
-            .contains("Weekly: Fable 23 pts · Other models 59 pts"));
+            .contains("Weekly: Fable 23% · Other models 59%"));
 
         // Now with all bars visible: check 5h Fable shade & per-model tooltip lines.
         let (items_all, _) =
@@ -3756,7 +3750,7 @@ mod tests {
         assert_eq!(bar_5h.fable_segment_pct, Some(20.0)); // 80% * (25/100)
         assert_eq!(
             bar_5h.tooltip_lines,
-            vec!["Opus 5.5 ≈48 pts", "Fable 5.2 ≈32 pts"]
+            vec!["Opus 5.5 ≈48%", "Fable 5.2 ≈32%"]
         );
 
         // When fable_shade is disabled, segment_pct must be None.

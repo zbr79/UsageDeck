@@ -956,7 +956,11 @@ fn execute_action(hwnd: HWND, action: Action) {
         }
         Action::CheckUpdates => {
             if let Some(cb) = state.on_check_updates.clone() {
-                state.update_status_text = "Checking for updates…".to_string();
+                state.update_status_text = if state.update_ready_version.is_some() {
+                    "Installing update…".to_string()
+                } else {
+                    "Checking for updates…".to_string()
+                };
                 state.update_checking = state.update_ready_version.is_none();
                 state.rebuild_layout();
                 state.invalidate();
