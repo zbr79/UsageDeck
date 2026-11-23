@@ -19,7 +19,7 @@
 mod layout;
 mod modals;
 mod render;
-mod theme;
+pub(crate) mod theme;
 
 use crate::autostart;
 use crate::clipboard;
