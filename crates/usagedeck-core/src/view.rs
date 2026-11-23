@@ -1086,18 +1086,43 @@ where
 
         let mut raw_bars = vec![five_bar, weekly_bar];
         for scoped in &u.weekly_scoped {
-            raw_bars.push(BarView::new(
+            let mut bar = BarView::new(
                 "scoped",
                 scoped.label.clone(),
                 scoped.percent,
                 scoped.resets_at.clone(),
                 now_ms,
                 auth_expired,
-            ));
+            );
+            if !auth_expired {
+                if let Some(allowance) = scoped
+                    .allowance_pct_of_weekly
+                    .filter(|v| v.is_finite() && *v > 0.0)
+                {
+                    let line = match scoped
+                        .share_pct_of_weekly
+                        .filter(|v| v.is_finite() && *v >= 0.0)
+                    {
+                        Some(share) => format!(
+                            "{} pts of {}% weekly allowance",
+                            share.round() as i64,
+                            allowance.round() as i64
+                        ),
+                        None => format!("{}% weekly allowance", allowance.round() as i64),
+                    };
+                    bar.tooltip_lines.push(line);
+                }
+            }
+            raw_bars.push(bar);
         }
 
         let mut hover_raw = raw_bars.clone();
-        if u.weekly_scoped.is_empty() {
+        let has_scoped_label = |needle: &str| {
+            u.weekly_scoped
+                .iter()
+                .any(|s| s.label.trim().eq_ignore_ascii_case(needle))
+        };
+        if !has_scoped_label("Opus") {
             if let Some(ref opus) = u.weekly_opus {
                 if opus.percent.is_some() || opus.resets_at.is_some() {
                     hover_raw.push(BarView::new(
@@ -1110,6 +1135,8 @@ where
                     ));
                 }
             }
+        }
+        if !has_scoped_label("Sonnet") {
             if let Some(ref sonnet) = u.weekly_sonnet {
                 if sonnet.percent.is_some() || sonnet.resets_at.is_some() {
                     hover_raw.push(BarView::new(
@@ -1157,6 +1184,9 @@ where
         if is_primary {
             if let Some(ref summary) = spend_info.summary {
                 hover_details.push(("Spend".to_string(), summary.clone()));
+            }
+            if let Some(target) = settings.claude_hourly_target {
+                hover_details.push(("Target".to_string(), format!("${target}/h")));
             }
         }
         if let Some(resets_text) = claude_resets_detail_text(u.resets.as_ref()) {

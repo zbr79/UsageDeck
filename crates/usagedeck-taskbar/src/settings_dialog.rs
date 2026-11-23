@@ -218,25 +218,48 @@ fn post_update_status(text: String, still_checking: bool) {
     }
 }
 
-/// Open the native Direct2D UsageDeck Settings window (or bring the existing one to front).
+/// Open the native Direct2D UsageDeck Settings window on a specific provider page (or General
+/// when `provider` is `None`), bringing any existing window to front and switching to that page.
 ///
 /// `on_changed` is invoked whenever settings, provider toggles/order, bar visibility,
 /// or OpenCode accounts are saved. When `on_check_updates` is `None`, the dialog performs
 /// a built-in GitHub latest-release check in a background thread.
-pub fn open_settings_dialog_with_updater(
+pub fn open_settings_dialog_on_page(
     owner: HWND,
+    provider: Option<ProviderKind>,
     on_changed: Box<dyn Fn() + Send + Sync>,
     on_check_updates: Option<Box<dyn Fn(HWND) + Send + Sync>>,
 ) {
-    // Single-instance behavior: bring the open Settings window to front.
+    let target_page = provider.map_or(PageId::General, PageId::Provider);
+
+    // Single-instance behavior: bring the open Settings window to front (and switch page if requested).
     let existing = SETTINGS_HWND.load(Ordering::Acquire);
     if existing != 0 {
         let hwnd = HWND(existing as *mut std::ffi::c_void);
-        // SAFETY: restores and focuses our own live Settings window.
+        let mut new_title: Option<String> = None;
+        if provider.is_some() {
+            try_with_state(|state| {
+                if state.page != target_page {
+                    state.page = target_page;
+                    state.scroll_y = 0.0;
+                    state.hovered_action = None;
+                    state.rebuild_layout();
+                    state.invalidate();
+                    new_title = Some(target_page.window_title());
+                }
+            });
+        }
+        // SAFETY: updates caption, restores, and focuses our own live Settings window outside borrow.
         unsafe {
+            if let Some(title) = new_title {
+                let w = wide(&title);
+                let _ = SetWindowTextW(hwnd, PCWSTR(w.as_ptr()));
+            }
             let _ = ShowWindow(hwnd, SW_RESTORE);
             let _ = SetForegroundWindow(hwnd);
         }
+        crate::window::ensure_strip_above_tray_now();
+        crate::window::post_ensure_zorder();
         return;
     }
 
@@ -256,7 +279,7 @@ pub fn open_settings_dialog_with_updater(
     let settings = store.as_ref().map(Store::get_settings).unwrap_or_default();
     let is_dark = resolve_is_dark(settings.panel_theme);
 
-    let initial_page = PageId::General;
+    let initial_page = target_page;
     let initial_title = wide(&initial_page.window_title());
 
     // SAFETY: Win32 window class registration & creation on the UI thread.

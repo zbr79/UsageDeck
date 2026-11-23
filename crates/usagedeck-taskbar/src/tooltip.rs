@@ -13,6 +13,7 @@
 use crate::icons::IconAtlas;
 use crate::layout::DipRect;
 use crate::taskbar::{TaskbarMetrics, TaskbarTheme};
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use usagedeck_core::view::{BarSeverity, BarView, ProviderItem, ProviderKind};
 use windows::core::{w, Result, PCWSTR};
@@ -42,17 +43,50 @@ use windows::Win32::Graphics::Gdi::{
     HGDIOBJ,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, RegisterClassExW, SetWindowPos, ShowWindow,
-    UpdateLayeredWindow, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
-    SW_HIDE, SW_SHOWNOACTIVATE, ULW_ALPHA, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, LoadCursorW, PostMessageW, RegisterClassExW,
+    SetCursor, SetWindowPos, ShowWindow, UpdateLayeredWindow, HWND_TOPMOST, IDC_ARROW, IDC_HAND,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE, ULW_ALPHA,
+    WM_APP, WM_LBUTTONUP, WM_MOUSEMOVE, WM_RBUTTONUP, WM_SETCURSOR, WNDCLASSEXW, WS_EX_LAYERED,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 const WM_NCHITTEST: u32 = 0x0084;
 const WM_MOUSEACTIVATE: u32 = 0x0021;
+const WM_MOUSELEAVE: u32 = 0x02A3;
+const HTCLIENT: isize = 1;
 const HTTRANSPARENT: isize = -1;
 const MA_NOACTIVATE: isize = 3;
+
+/// Posted to the strip window whenever the cursor moves inside an interactive hover card.
+pub const WM_APP_HOVER_CARD_MOVE: u32 = WM_APP + 5;
+/// Posted to the strip window when the cursor leaves an interactive hover card.
+pub const WM_APP_HOVER_CARD_LEAVE: u32 = WM_APP + 6;
+/// Posted to the strip window on left-click release inside an interactive hover card.
+pub const WM_APP_HOVER_CARD_CLICK: u32 = WM_APP + 7;
+/// Posted to the strip window on right-click release inside an interactive hover card.
+pub const WM_APP_HOVER_CARD_RCLICK: u32 = WM_APP + 8;
+
+static TOOLTIP_INTERACTIVE: AtomicBool = AtomicBool::new(false);
+static TOOLTIP_OVER_BUTTON: AtomicBool = AtomicBool::new(false);
+static TOOLTIP_TRACKING_LEAVE: AtomicBool = AtomicBool::new(false);
+static TOOLTIP_OWNER_RAW: AtomicIsize = AtomicIsize::new(0);
+
+/// Clickable action embedded in the rich provider hover card footer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HoverCardAction {
+    OpenSettings(ProviderKind),
+    Refresh,
+    HideUntilReset {
+        provider: ProviderKind,
+        account_id: String,
+        title: String,
+        until_ms: u64,
+    },
+    CopyOpenCodeKey(String),
+    OpenCursor,
+}
 
 // Compact toast / micro-tooltip layout constants.
 const TOOLTIP_MAX_TEXT_WIDTH_DIP: f32 = 340.0;
@@ -63,8 +97,8 @@ const TOOLTIP_GAP_DIP: f32 = 6.0;
 const TOOLTIP_MARGIN_DIP: f32 = 8.0;
 
 // Rich Fluent Hover Detail Card layout constants.
-const CARD_WIDTH_DIP: f32 = 336.0;
-const CARD_MIN_WIDTH_DIP: f32 = 200.0;
+const CARD_WIDTH_DIP: f32 = 352.0;
+const CARD_MIN_WIDTH_DIP: f32 = 220.0;
 const CARD_PAD_X_DIP: f32 = 14.0;
 const CARD_PAD_Y_DIP: f32 = 12.0;
 const CARD_BOTTOM_PAD_DIP: f32 = 10.0;
@@ -105,8 +139,12 @@ const WELL_COL_GAP_DIP: f32 = 8.0;
 const WELL_ROW_GAP_DIP: f32 = 4.0;
 const WELL_MIN_ROW_H_DIP: f32 = 14.0;
 
-const FOOTER_DIVIDER_GAP_DIP: f32 = 6.0;
-const FOOTER_MIN_H_DIP: f32 = 18.0;
+const FOOTER_DIVIDER_GAP_DIP: f32 = 7.0;
+const FOOTER_MIN_H_DIP: f32 = 24.0;
+const FOOTER_BTN_H_DIP: f32 = 24.0;
+const FOOTER_BTN_PAD_X_DIP: f32 = 9.0;
+const FOOTER_BTN_GAP_DIP: f32 = 6.0;
+const FOOTER_BTN_RADIUS_DIP: f32 = 6.0;
 
 #[derive(Clone, Copy)]
 struct HoverPalette {
@@ -409,16 +447,10 @@ fn resolve_footer(
     }
 
     if item.exhausted && item.exhausted_until_ms.is_some() {
-        return (
-            "Limit full · Click × or right-click to hide until reset".to_string(),
-            FooterStyle::Exhausted,
-        );
+        return ("Limit full".to_string(), FooterStyle::Exhausted);
     }
 
-    let text = match format_updated_ago(updated_at_ms, now_ms) {
-        Some(ago) => format!("{ago} · Click for panel · Right-click for menu"),
-        None => "Click for panel · Right-click for menu".to_string(),
-    };
+    let text = format_updated_ago(updated_at_ms, now_ms).unwrap_or_default();
     (text, FooterStyle::Muted)
 }
 
@@ -531,9 +563,74 @@ unsafe extern "system" fn tooltip_wnd_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    let interactive = TOOLTIP_INTERACTIVE.load(Ordering::Acquire);
     match msg {
-        WM_NCHITTEST => LRESULT(HTTRANSPARENT),
+        WM_NCHITTEST => LRESULT(if interactive { HTCLIENT } else { HTTRANSPARENT }),
         WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE),
+        WM_SETCURSOR if interactive && (lparam.0 & 0xffff) == HTCLIENT => {
+            let cursor_id = if TOOLTIP_OVER_BUTTON.load(Ordering::Acquire) {
+                IDC_HAND
+            } else {
+                IDC_ARROW
+            };
+            if let Ok(cur) = LoadCursorW(None, cursor_id) {
+                SetCursor(Some(cur));
+            }
+            LRESULT(1)
+        }
+        WM_MOUSEMOVE if interactive => {
+            if !TOOLTIP_TRACKING_LEAVE.swap(true, Ordering::AcqRel) {
+                let mut tme = TRACKMOUSEEVENT {
+                    cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                    dwFlags: TME_LEAVE,
+                    hwndTrack: hwnd,
+                    dwHoverTime: 0,
+                };
+                let _ = TrackMouseEvent(&mut tme);
+            }
+            let owner = TOOLTIP_OWNER_RAW.load(Ordering::Acquire);
+            if owner != 0 {
+                let owner_hwnd = HWND(owner as *mut std::ffi::c_void);
+                let _ = PostMessageW(Some(owner_hwnd), WM_APP_HOVER_CARD_MOVE, WPARAM(0), lparam);
+            }
+            LRESULT(0)
+        }
+        WM_MOUSELEAVE => {
+            TOOLTIP_TRACKING_LEAVE.store(false, Ordering::Release);
+            TOOLTIP_OVER_BUTTON.store(false, Ordering::Release);
+            let owner = TOOLTIP_OWNER_RAW.load(Ordering::Acquire);
+            if owner != 0 {
+                let owner_hwnd = HWND(owner as *mut std::ffi::c_void);
+                let _ = PostMessageW(
+                    Some(owner_hwnd),
+                    WM_APP_HOVER_CARD_LEAVE,
+                    WPARAM(0),
+                    LPARAM(0),
+                );
+            }
+            LRESULT(0)
+        }
+        WM_LBUTTONUP if interactive => {
+            let owner = TOOLTIP_OWNER_RAW.load(Ordering::Acquire);
+            if owner != 0 {
+                let owner_hwnd = HWND(owner as *mut std::ffi::c_void);
+                let _ = PostMessageW(Some(owner_hwnd), WM_APP_HOVER_CARD_CLICK, WPARAM(0), lparam);
+            }
+            LRESULT(0)
+        }
+        WM_RBUTTONUP if interactive => {
+            let owner = TOOLTIP_OWNER_RAW.load(Ordering::Acquire);
+            if owner != 0 {
+                let owner_hwnd = HWND(owner as *mut std::ffi::c_void);
+                let _ = PostMessageW(
+                    Some(owner_hwnd),
+                    WM_APP_HOVER_CARD_RCLICK,
+                    WPARAM(0),
+                    lparam,
+                );
+            }
+            LRESULT(0)
+        }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
 }
@@ -555,6 +652,7 @@ enum TooltipCacheKey {
         theme: TaskbarTheme,
         footer_text: String,
         footer_style: FooterStyle,
+        hovered_button: Option<HoverCardAction>,
     },
 }
 
@@ -571,6 +669,22 @@ struct HeaderBadge {
     bg: D2D1_COLOR_F,
     border: D2D1_COLOR_F,
     fg: D2D1_COLOR_F,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HoverButtonTone {
+    Accent,
+    Neutral,
+    Danger,
+    Warn,
+}
+
+#[derive(Clone)]
+struct HoverCardButton {
+    label: String,
+    rect: DipRect,
+    action: HoverCardAction,
+    tone: HoverButtonTone,
 }
 
 struct MeasuredBar<'a> {
@@ -606,6 +720,7 @@ struct CardLayout<'a> {
     footer_text: String,
     footer_style: FooterStyle,
     footer_rect: DipRect,
+    buttons: Vec<HoverCardButton>,
 }
 
 /// Native Win32/Direct2D hover popup anchored above taskbar pills and flyout bars.
@@ -626,8 +741,13 @@ pub struct TooltipWindow {
     fmt_detail_val: IDWriteTextFormat,
     fmt_footer: IDWriteTextFormat,
     fmt_footer_bold: IDWriteTextFormat,
+    fmt_button: IDWriteTextFormat,
     visible: bool,
     last_key: Option<TooltipCacheKey>,
+    card_rect_px: Option<RECT>,
+    card_scale: f32,
+    card_buttons: Vec<HoverCardButton>,
+    hovered_button: Option<HoverCardAction>,
 }
 
 impl TooltipWindow {
@@ -743,7 +863,7 @@ impl TooltipWindow {
                 DWRITE_FONT_WEIGHT_NORMAL,
                 10.0,
                 DWRITE_TEXT_ALIGNMENT_LEADING,
-                true,
+                false,
                 false,
             )?;
             let fmt_footer_bold = make_text_format(
@@ -752,7 +872,16 @@ impl TooltipWindow {
                 DWRITE_FONT_WEIGHT_SEMI_BOLD,
                 10.0,
                 DWRITE_TEXT_ALIGNMENT_LEADING,
-                true,
+                false,
+                false,
+            )?;
+            let fmt_button = make_text_format(
+                &dwrite,
+                w!("Segoe UI"),
+                DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                10.5,
+                DWRITE_TEXT_ALIGNMENT_CENTER,
+                false,
                 false,
             )?;
 
@@ -768,11 +897,7 @@ impl TooltipWindow {
             RegisterClassExW(&wc);
 
             let hwnd = CreateWindowExW(
-                WS_EX_LAYERED
-                    | WS_EX_TOOLWINDOW
-                    | WS_EX_NOACTIVATE
-                    | WS_EX_TOPMOST
-                    | WS_EX_TRANSPARENT,
+                WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST,
                 class_name,
                 w!("UsageDeck Tooltip"),
                 WS_POPUP,
@@ -803,9 +928,50 @@ impl TooltipWindow {
                 fmt_detail_val,
                 fmt_footer,
                 fmt_footer_bold,
+                fmt_button,
                 visible: false,
                 last_key: None,
+                card_rect_px: None,
+                card_scale: 1.0,
+                card_buttons: Vec::new(),
+                hovered_button: None,
             })
+        }
+    }
+
+    /// Bind the taskbar strip HWND that receives interactive hover card mouse/click events.
+    pub fn set_owner_hwnd(&self, owner: HWND) {
+        TOOLTIP_OWNER_RAW.store(owner.0 as isize, Ordering::Release);
+    }
+
+    /// Current screen-pixel bounding box when displaying an interactive provider hover card.
+    pub fn card_screen_rect_px(&self) -> Option<RECT> {
+        if self.visible && TOOLTIP_INTERACTIVE.load(Ordering::Acquire) {
+            self.card_rect_px
+        } else {
+            None
+        }
+    }
+
+    /// Hit-test interactive footer buttons using client physical coordinates from `WM_MOUSEMOVE`/`WM_LBUTTONUP`.
+    pub fn hit_test_button_px(&self, x_px: f32, y_px: f32) -> Option<HoverCardAction> {
+        let scale = self.card_scale.max(0.5);
+        let dx = x_px / scale;
+        let dy = y_px / scale;
+        self.card_buttons
+            .iter()
+            .find(|btn| btn.rect.contains(dx, dy))
+            .map(|btn| btn.action.clone())
+    }
+
+    /// Update hovered footer button state. Returns `true` if visual hover state changed.
+    pub fn set_hovered_button(&mut self, next: Option<HoverCardAction>) -> bool {
+        TOOLTIP_OVER_BUTTON.store(next.is_some(), Ordering::Release);
+        if self.hovered_button != next {
+            self.hovered_button = next;
+            true
+        } else {
+            false
         }
     }
 
@@ -823,6 +989,12 @@ impl TooltipWindow {
             self.hide();
             return;
         }
+
+        TOOLTIP_INTERACTIVE.store(false, Ordering::Release);
+        TOOLTIP_OVER_BUTTON.store(false, Ordering::Release);
+        self.card_rect_px = None;
+        self.card_buttons.clear();
+        self.hovered_button = None;
 
         let anchor_cx = (anchor_rect_px.left + anchor_rect_px.right) / 2;
         let anchor_top = anchor_rect_px.top.min(metrics.tray_rect.top);
@@ -845,7 +1017,7 @@ impl TooltipWindow {
         self.reveal_topmost();
     }
 
-    /// Show or update the rich Windows 11 Fluent Hover Detail Card for `item` anchored cleanly
+    /// Show or update the interactive Windows 11 Fluent Hover Detail Card for `item` anchored cleanly
     /// above `anchor_rect_px` (physical screen pixels) in the active `theme`.
     #[allow(clippy::too_many_arguments)]
     pub fn show_provider_card(
@@ -871,8 +1043,12 @@ impl TooltipWindow {
             theme,
             footer_text: footer_text.clone(),
             footer_style,
+            hovered_button: self.hovered_button.clone(),
         };
-        if self.visible && self.last_key.as_ref() == Some(&key) {
+        if self.visible
+            && TOOLTIP_INTERACTIVE.load(Ordering::Acquire)
+            && self.last_key.as_ref() == Some(&key)
+        {
             return;
         }
 
@@ -886,18 +1062,39 @@ impl TooltipWindow {
             }
         };
 
-        if let Err(e) = self.paint_card(
-            item, icons, &layout, anchor_cx, anchor_top, metrics, theme, &pal,
+        let card_rect_px = match self.paint_card(
+            item,
+            icons,
+            &layout,
+            anchor_cx,
+            anchor_top,
+            metrics,
+            theme,
+            &pal,
+            self.hovered_button.as_ref(),
         ) {
-            log::warn!("hover card render failed: {e}");
-            return;
-        }
+            Ok(r) => r,
+            Err(e) => {
+                log::warn!("hover card render failed: {e}");
+                return;
+            }
+        };
+        TOOLTIP_INTERACTIVE.store(true, Ordering::Release);
+        self.card_rect_px = Some(card_rect_px);
+        self.card_scale = metrics.scale;
+        self.card_buttons = layout.buttons;
         self.last_key = Some(key);
         self.reveal_topmost();
     }
 
     /// Hide the tooltip or hover card if currently visible.
     pub fn hide(&mut self) {
+        TOOLTIP_INTERACTIVE.store(false, Ordering::Release);
+        TOOLTIP_OVER_BUTTON.store(false, Ordering::Release);
+        TOOLTIP_TRACKING_LEAVE.store(false, Ordering::Release);
+        self.card_rect_px = None;
+        self.card_buttons.clear();
+        self.hovered_button = None;
         if self.visible {
             // SAFETY: hides our own tooltip HWND.
             unsafe {
@@ -1460,21 +1657,90 @@ impl TooltipWindow {
             cursor_y = well_top + well_h;
         }
 
-        // Footer Row (1px divider hairline + 18+ DIP footer text).
+        // Footer Row (1px divider hairline + left status caption + right-aligned action buttons).
         cursor_y += SECTION_GAP_DIP;
         let divider_y = cursor_y;
         cursor_y += 1.0 + FOOTER_DIVIDER_GAP_DIP;
+        let footer_h = FOOTER_MIN_H_DIP.max(FOOTER_BTN_H_DIP);
+
+        let mut btn_specs: Vec<(String, HoverCardAction, HoverButtonTone)> = Vec::with_capacity(3);
+        if item.exhausted {
+            if let Some(until_ms) = item.exhausted_until_ms {
+                btn_specs.push((
+                    "Hide".to_string(),
+                    HoverCardAction::HideUntilReset {
+                        provider: item.provider,
+                        account_id: item.account_id.clone(),
+                        title: item.title.clone(),
+                        until_ms,
+                    },
+                    HoverButtonTone::Danger,
+                ));
+            }
+        } else if item.provider == ProviderKind::OpenCode {
+            btn_specs.push((
+                "Copy key".to_string(),
+                HoverCardAction::CopyOpenCodeKey(item.account_id.clone()),
+                HoverButtonTone::Neutral,
+            ));
+        } else if item.provider == ProviderKind::Cursor && item.can_open_cursor {
+            btn_specs.push((
+                "Sign in".to_string(),
+                HoverCardAction::OpenCursor,
+                HoverButtonTone::Warn,
+            ));
+        }
+        btn_specs.push((
+            "Refresh".to_string(),
+            HoverCardAction::Refresh,
+            HoverButtonTone::Neutral,
+        ));
+        btn_specs.push((
+            "Settings".to_string(),
+            HoverCardAction::OpenSettings(item.provider),
+            HoverButtonTone::Accent,
+        ));
+
+        let mut buttons: Vec<HoverCardButton> = Vec::with_capacity(btn_specs.len());
+        let mut btn_right = content_x + content_w;
+        let btn_y = cursor_y + (footer_h - FOOTER_BTN_H_DIP) * 0.5;
+        for (label, action, tone) in btn_specs.into_iter().rev() {
+            let (tw, _) = self.measure_text(&label, &self.fmt_button, 120.0, FOOTER_BTN_H_DIP)?;
+            let bw = (tw.ceil() + FOOTER_BTN_PAD_X_DIP * 2.0).max(46.0);
+            let bx = btn_right - bw;
+            if bx < content_x + 4.0 && !buttons.is_empty() {
+                continue;
+            }
+            buttons.push(HoverCardButton {
+                label,
+                rect: DipRect {
+                    x: bx,
+                    y: btn_y,
+                    w: bw,
+                    h: FOOTER_BTN_H_DIP,
+                },
+                action,
+                tone,
+            });
+            btn_right = bx - FOOTER_BTN_GAP_DIP;
+        }
+        buttons.reverse();
+
+        let footer_avail_w = (btn_right - content_x).max(0.0);
         let footer_fmt = if footer_style == FooterStyle::Muted {
             &self.fmt_footer
         } else {
             &self.fmt_footer_bold
         };
-        let (_, fh) = self.measure_text(&footer_text, footer_fmt, content_w, 48.0)?;
-        let footer_h = fh.ceil().max(FOOTER_MIN_H_DIP);
+        let footer_text = if footer_avail_w >= 28.0 && !footer_text.is_empty() {
+            self.truncate_to_width(&footer_text, footer_fmt, footer_avail_w)
+        } else {
+            String::new()
+        };
         let footer_rect = DipRect {
             x: content_x,
             y: cursor_y,
-            w: content_w,
+            w: footer_avail_w,
             h: footer_h,
         };
         cursor_y += footer_h;
@@ -1498,6 +1764,7 @@ impl TooltipWindow {
             footer_text,
             footer_style,
             footer_rect,
+            buttons,
         })
     }
 
@@ -1512,11 +1779,12 @@ impl TooltipWindow {
         metrics: &TaskbarMetrics,
         theme: TaskbarTheme,
         pal: &HoverPalette,
-    ) -> Result<()> {
+        hovered_button: Option<&HoverCardAction>,
+    ) -> Result<RECT> {
         let width_px = (layout.card_w_dip * metrics.scale).ceil() as i32;
         let height_px = (layout.card_h_dip * metrics.scale).ceil() as i32;
         if width_px <= 0 || height_px <= 0 {
-            return Ok(());
+            return Ok(RECT::default());
         }
 
         let margin_px = (CARD_MARGIN_DIP * metrics.scale).round() as i32;
@@ -1715,7 +1983,7 @@ impl TooltipWindow {
                 }
             }
 
-            // 4. Footer Row: 1px horizontal divider hairline + footer hint or status caption.
+            // 4. Footer Row: 1px horizontal divider hairline + left status + clickable buttons.
             fill_rounded(
                 rt,
                 DipRect {
@@ -1728,20 +1996,110 @@ impl TooltipWindow {
                 pal.divider,
             )?;
 
-            let (footer_fmt, footer_color) = match layout.footer_style {
-                FooterStyle::HintAccent => (&self.fmt_footer_bold, pal.accent),
-                FooterStyle::HintOk => (&self.fmt_footer_bold, pal.ok),
-                FooterStyle::HintDanger => (&self.fmt_footer_bold, pal.danger),
-                FooterStyle::Exhausted => (&self.fmt_footer_bold, with_alpha(pal.danger, 0.92)),
-                FooterStyle::Muted => (&self.fmt_footer, pal.text_caption),
-            };
-            draw_text(
-                rt,
-                &layout.footer_text,
-                footer_fmt,
-                layout.footer_rect,
-                footer_color,
-            )
+            if !layout.footer_text.is_empty() && layout.footer_rect.w >= 28.0 {
+                let (footer_fmt, footer_color) = match layout.footer_style {
+                    FooterStyle::HintAccent => (&self.fmt_footer_bold, pal.accent),
+                    FooterStyle::HintOk => (&self.fmt_footer_bold, pal.ok),
+                    FooterStyle::HintDanger => (&self.fmt_footer_bold, pal.danger),
+                    FooterStyle::Exhausted => (&self.fmt_footer_bold, with_alpha(pal.danger, 0.92)),
+                    FooterStyle::Muted => (&self.fmt_footer, pal.text_caption),
+                };
+                draw_text(
+                    rt,
+                    &layout.footer_text,
+                    footer_fmt,
+                    layout.footer_rect,
+                    footer_color,
+                )?;
+            }
+
+            let dark = theme == TaskbarTheme::Dark;
+            for btn in &layout.buttons {
+                let is_hovered = hovered_button == Some(&btn.action);
+                let (bg, border, fg) = match btn.tone {
+                    HoverButtonTone::Accent => (
+                        with_alpha(
+                            pal.accent,
+                            if is_hovered {
+                                if dark {
+                                    0.32
+                                } else {
+                                    0.22
+                                }
+                            } else if dark {
+                                0.18
+                            } else {
+                                0.12
+                            },
+                        ),
+                        with_alpha(
+                            pal.accent,
+                            if is_hovered {
+                                0.78
+                            } else if dark {
+                                0.44
+                            } else {
+                                0.34
+                            },
+                        ),
+                        if is_hovered && dark {
+                            pal.text_primary
+                        } else {
+                            pal.accent
+                        },
+                    ),
+                    HoverButtonTone::Neutral => (
+                        if is_hovered {
+                            if dark {
+                                rgba(255, 255, 255, 0.16)
+                            } else {
+                                rgba(0, 0, 0, 0.10)
+                            }
+                        } else {
+                            pal.badge_neutral_bg
+                        },
+                        if is_hovered {
+                            if dark {
+                                rgba(255, 255, 255, 0.28)
+                            } else {
+                                rgba(0, 0, 0, 0.22)
+                            }
+                        } else {
+                            pal.badge_neutral_border
+                        },
+                        pal.text_primary,
+                    ),
+                    HoverButtonTone::Danger => (
+                        with_alpha(pal.danger, if is_hovered { 0.28 } else { 0.16 }),
+                        with_alpha(pal.danger, if is_hovered { 0.70 } else { 0.38 }),
+                        if is_hovered && dark {
+                            pal.text_primary
+                        } else {
+                            pal.danger
+                        },
+                    ),
+                    HoverButtonTone::Warn => (
+                        with_alpha(pal.warn, if is_hovered { 0.28 } else { 0.16 }),
+                        with_alpha(pal.warn, if is_hovered { 0.70 } else { 0.38 }),
+                        if is_hovered && dark {
+                            pal.text_primary
+                        } else {
+                            pal.warn
+                        },
+                    ),
+                };
+                fill_rounded(rt, btn.rect, FOOTER_BTN_RADIUS_DIP, bg)?;
+                stroke_rounded(rt, btn.rect, FOOTER_BTN_RADIUS_DIP, 1.0, border)?;
+                draw_text(rt, &btn.label, &self.fmt_button, btn.rect, fg)?;
+            }
+            Ok(())
+        })?;
+
+        Ok(RECT {
+            left: x,
+            top: y,
+            right: x + width_px,
+            bottom: y + height_px,
         })
     }
 }

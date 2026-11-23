@@ -21,7 +21,10 @@ use crate::poller::{PollerCmd, SharedSnapshot, WM_APP_SNAPSHOT};
 use crate::render::Renderer;
 use crate::settings_dialog;
 use crate::taskbar::{query_taskbar, TaskbarMetrics, TaskbarTheme};
-use crate::tooltip::{pill_screen_rect_px, TooltipWindow};
+use crate::tooltip::{
+    pill_screen_rect_px, HoverCardAction, TooltipWindow, WM_APP_HOVER_CARD_CLICK,
+    WM_APP_HOVER_CARD_LEAVE, WM_APP_HOVER_CARD_MOVE, WM_APP_HOVER_CARD_RCLICK,
+};
 use crate::updater::UpdaterHandle;
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
@@ -45,7 +48,7 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconFromResourceEx, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
     DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW,
-    GetWindow, LoadCursorW, LoadIconW, PostMessageW, PostQuitMessage, RegisterClassExW,
+    GetWindow, KillTimer, LoadCursorW, LoadIconW, PostMessageW, PostQuitMessage, RegisterClassExW,
     RegisterWindowMessageW, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow,
     TrackPopupMenu, TranslateMessage, GW_HWNDPREV, HICON, HWND_TOPMOST, IDC_HAND, IDI_APPLICATION,
     LR_DEFAULTCOLOR, MF_SEPARATOR, MF_STRING, MSG, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
@@ -67,6 +70,9 @@ const TIMER_SYNC_ID: usize = 1;
 const TIMER_SYNC_MS: u32 = 300;
 const TIMER_ZORDER_ID: usize = 2;
 const TIMER_ZORDER_MS: u32 = 60;
+const TIMER_HOVER_CLOSE_ID: usize = 3;
+const TIMER_HOVER_CLOSE_MS: u32 = 80;
+const HOVER_DISMISS_GRACE: Duration = Duration::from_millis(260);
 const TOAST_DURATION: Duration = Duration::from_millis(2200);
 
 const MENU_TOGGLE_FLYOUT: usize = 1001;
@@ -121,6 +127,9 @@ struct AppState {
     strip_hovered_icon_pill: Option<usize>,
     strip_hovered_hide_pill: Option<usize>,
     strip_tracking_leave: bool,
+    active_hover_pill: Option<usize>,
+    hover_card_hovered: bool,
+    hover_dismiss_at: Option<Instant>,
     flyout_visible: bool,
     flyout_hovered_action: Option<FlyoutAction>,
     flyout_hovered_bar: Option<(usize, usize)>,
@@ -268,9 +277,13 @@ fn log_status_if_changed(state: &mut AppState, summary: String) {
 }
 
 fn open_settings_ui() {
+    open_settings_on_page_ui(None);
+}
+
+fn open_settings_on_page_ui(provider: Option<ProviderKind>) {
     hide_flyout_ui();
     let Some((strip_hwnd, poller_tx, updater_for_btn)) = try_with_state(|state| {
-        hide_tooltip(state);
+        clear_hover_card_state(state);
         state.updater.set_pause_auto_install(true);
         (
             state.strip_hwnd,
@@ -281,8 +294,9 @@ fn open_settings_ui() {
         return;
     };
 
-    settings_dialog::open_settings_dialog_with_updater(
+    settings_dialog::open_settings_dialog_on_page(
         strip_hwnd,
+        provider,
         Box::new(move || {
             if let Some(ref tx) = poller_tx {
                 let _ = tx.send(PollerCmd::RefreshNow);
@@ -296,7 +310,7 @@ fn open_settings_ui() {
 
 fn show_context_menu_ui(target: Option<HideTarget>) {
     let Some((strip_hwnd, flyout_visible, snoozed_count)) = try_with_state(|state| {
-        hide_tooltip(state);
+        clear_hover_card_state(state);
         let (snap, _) = state.shared.get();
         (state.strip_hwnd, state.flyout_visible, snap.snoozed_count)
     }) else {
@@ -531,9 +545,33 @@ fn hide_tooltip(state: &mut AppState) {
     }
 }
 
+fn clear_hover_card_state(state: &mut AppState) {
+    state.active_hover_pill = None;
+    state.hover_card_hovered = false;
+    state.hover_dismiss_at = None;
+    hide_tooltip(state);
+}
+
+fn point_in_rect(pt: POINT, r: RECT, pad: i32) -> bool {
+    pt.x >= r.left - pad && pt.x <= r.right + pad && pt.y >= r.top - pad && pt.y <= r.bottom + pad
+}
+
+/// True while the cursor is on the interactive hover card, on its anchored taskbar pill, or
+/// crossing the vertical bridge gap between them.
+fn cursor_in_hover_bridge(pt: POINT, card: RECT, pill: RECT) -> bool {
+    if point_in_rect(pt, card, 4) || point_in_rect(pt, pill, 4) {
+        return true;
+    }
+    let bridge_left = card.left.min(pill.left) - 8;
+    let bridge_right = card.right.max(pill.right) + 8;
+    let bridge_top = card.bottom - 2;
+    let bridge_bottom = pill.top + 2;
+    pt.x >= bridge_left && pt.x <= bridge_right && pt.y >= bridge_top && pt.y <= bridge_bottom
+}
+
 fn update_active_tooltip(state: &mut AppState) {
     let Some(metrics) = state.metrics else {
-        hide_tooltip(state);
+        clear_hover_card_state(state);
         return;
     };
     let (snapshot, _) = state.shared.get();
@@ -559,6 +597,9 @@ fn update_active_tooltip(state: &mut AppState) {
 
     // 2. Flyout per-bar hover tooltip (per-model breakdown lines from v1.5.15).
     if state.flyout_visible {
+        state.active_hover_pill = None;
+        state.hover_card_hovered = false;
+        state.hover_dismiss_at = None;
         if let (Some(layout), Some((item_idx, bar_idx))) =
             (state.flyout_layout.as_ref(), state.flyout_hovered_bar)
         {
@@ -586,34 +627,38 @@ fn update_active_tooltip(state: &mut AppState) {
         return;
     }
 
-    // 3. Taskbar strip pill hover: rich Windows 11 Fluent Detail Card in the active theme.
-    if !state.strip_hovered || !state.strip_visible {
-        hide_tooltip(state);
+    // 3. Taskbar strip pill hover: interactive Windows 11 Fluent Detail Card in the active theme.
+    if !state.strip_visible {
+        clear_hover_card_state(state);
         return;
     }
-    let (Some(layout), Some(pill_idx)) = (state.strip_layout.as_ref(), state.strip_hovered_pill)
-    else {
-        hide_tooltip(state);
+    let pill_idx = state.strip_hovered_pill.or(state.active_hover_pill);
+    let (Some(layout), Some(pill_idx)) = (state.strip_layout.as_ref(), pill_idx) else {
+        clear_hover_card_state(state);
         return;
     };
     let (Some(item), Some(pill_rect)) = (snapshot.items.get(pill_idx), layout.pill_rect(pill_idx))
     else {
-        hide_tooltip(state);
+        clear_hover_card_state(state);
         return;
     };
     let (sx, sy, _, _) = state.strip_pos;
     let anchor = pill_screen_rect_px(sx, sy, pill_rect, metrics.scale);
-    let footer_hint: Option<String> = if state.strip_hovered_hide_pill == Some(pill_idx) {
-        Some("Click × to temporarily hide until usage resets".to_string())
-    } else if state.strip_hovered_icon_pill == Some(pill_idx)
-        && item.provider == ProviderKind::OpenCode
-    {
-        Some(format!("Click icon to copy API key ({})", item.account_id))
-    } else if state.strip_hovered_icon_pill == Some(pill_idx)
-        && item.provider == ProviderKind::Cursor
-        && item.can_open_cursor
-    {
-        Some("Click icon to open Cursor and renew sign-in".to_string())
+    let footer_hint: Option<String> = if !state.hover_card_hovered {
+        if state.strip_hovered_hide_pill == Some(pill_idx) {
+            Some("Click × to hide until reset".to_string())
+        } else if state.strip_hovered_icon_pill == Some(pill_idx)
+            && item.provider == ProviderKind::OpenCode
+        {
+            Some("Click icon to copy API key".to_string())
+        } else if state.strip_hovered_icon_pill == Some(pill_idx)
+            && item.provider == ProviderKind::Cursor
+            && item.can_open_cursor
+        {
+            Some("Click icon to sign in".to_string())
+        } else {
+            None
+        }
     } else {
         None
     };
@@ -645,7 +690,7 @@ fn sync_and_paint_strip_ui() {
 
         let Some(metrics) = query_taskbar() else {
             log_status_if_changed(state, "hidden (Shell_TrayWnd unavailable)".to_string());
-            hide_tooltip(state);
+            clear_hover_card_state(state);
             if state.strip_visible {
                 state.strip_visible = false;
                 return StripWindowOp::Hide(state.strip_hwnd);
@@ -677,7 +722,7 @@ fn sync_and_paint_strip_ui() {
                 "fullscreen app active"
             };
             log_status_if_changed(state, format!("hidden ({reason})"));
-            hide_tooltip(state);
+            clear_hover_card_state(state);
             if state.strip_visible {
                 state.strip_visible = false;
                 return StripWindowOp::Hide(state.strip_hwnd);
@@ -700,7 +745,7 @@ fn sync_and_paint_strip_ui() {
                 ),
             );
             state.strip_layout = Some(layout);
-            hide_tooltip(state);
+            clear_hover_card_state(state);
             if state.strip_visible {
                 state.strip_visible = false;
                 return StripWindowOp::Hide(state.strip_hwnd);
@@ -743,6 +788,7 @@ fn sync_and_paint_strip_ui() {
             ),
         );
 
+        let effective_hovered_pill = state.strip_hovered_pill.or(state.active_hover_pill);
         if let Err(e) = state.renderer.render_strip(
             state.strip_hwnd,
             x,
@@ -751,8 +797,8 @@ fn sync_and_paint_strip_ui() {
             theme,
             &snapshot,
             &layout,
-            state.strip_hovered,
-            state.strip_hovered_pill,
+            state.strip_hovered || state.hover_card_hovered,
+            effective_hovered_pill,
             state.strip_hovered_icon_pill,
             state.strip_hovered_hide_pill,
             forced_contrast_backdrop,
@@ -883,7 +929,7 @@ fn toggle_flyout_ui() {
 
 fn show_flyout_ui() {
     let Some(flyout_hwnd) = try_with_state(|state| {
-        hide_tooltip(state);
+        clear_hover_card_state(state);
         state.flyout_visible = true;
         state.flyout_hovered_action = None;
         state.flyout_hovered_bar = None;
@@ -1080,6 +1126,58 @@ unsafe extern "system" fn strip_wnd_proc(
             ensure_strip_above_tray_now();
             LRESULT(0)
         }
+        WM_TIMER if wparam.0 == TIMER_HOVER_CLOSE_ID => {
+            let mut pt = POINT::default();
+            let have_cursor = GetCursorPos(&mut pt).is_ok();
+            let (kill_timer, needs_repaint) = try_with_state(|s| {
+                if s.active_hover_pill.is_none()
+                    || s.hover_card_hovered
+                    || s.strip_hovered_pill.is_some()
+                {
+                    s.hover_dismiss_at = None;
+                    return (true, false);
+                }
+                if have_cursor {
+                    let in_bridge = match (
+                        s.tooltip
+                            .as_ref()
+                            .and_then(TooltipWindow::card_screen_rect_px),
+                        s.active_hover_pill.and_then(|idx| {
+                            let scale = s.metrics.map_or(1.0, |m| m.scale);
+                            let (sx, sy, _, _) = s.strip_pos;
+                            s.strip_layout
+                                .as_ref()
+                                .and_then(|l| l.pill_rect(idx))
+                                .map(|r| pill_screen_rect_px(sx, sy, r, scale))
+                        }),
+                    ) {
+                        (Some(card_rc), Some(pill_rc)) => {
+                            cursor_in_hover_bridge(pt, card_rc, pill_rc)
+                        }
+                        (Some(card_rc), None) => point_in_rect(pt, card_rc, 4),
+                        _ => false,
+                    };
+                    if in_bridge {
+                        s.hover_dismiss_at = Some(Instant::now() + HOVER_DISMISS_GRACE);
+                        return (false, false);
+                    }
+                }
+                if s.hover_dismiss_at.is_none_or(|t| Instant::now() >= t) {
+                    clear_hover_card_state(s);
+                    (true, true)
+                } else {
+                    (false, false)
+                }
+            })
+            .unwrap_or((true, false));
+            if kill_timer {
+                let _ = KillTimer(Some(hwnd), TIMER_HOVER_CLOSE_ID);
+            }
+            if needs_repaint {
+                sync_and_paint_strip_ui();
+            }
+            LRESULT(0)
+        }
         WM_APP_ENSURE_ZORDER => {
             ensure_strip_above_tray_now();
             LRESULT(0)
@@ -1108,8 +1206,113 @@ unsafe extern "system" fn strip_wnd_proc(
             }
             LRESULT(0)
         }
+        WM_APP_HOVER_CARD_MOVE => {
+            let x_px = (lparam.0 & 0xffff) as i16 as f32;
+            let y_px = ((lparam.0 >> 16) & 0xffff) as i16 as f32;
+            let _ = KillTimer(Some(hwnd), TIMER_HOVER_CLOSE_ID);
+            try_with_state(|s| {
+                let was_hovered = s.hover_card_hovered;
+                s.hover_card_hovered = true;
+                s.hover_dismiss_at = None;
+                let hit = s
+                    .tooltip
+                    .as_ref()
+                    .and_then(|t| t.hit_test_button_px(x_px, y_px));
+                let btn_changed = s
+                    .tooltip
+                    .as_mut()
+                    .is_some_and(|t| t.set_hovered_button(hit));
+                if !was_hovered || btn_changed {
+                    update_active_tooltip(s);
+                }
+            });
+            LRESULT(0)
+        }
+        WM_APP_HOVER_CARD_LEAVE => {
+            let arm_timer = try_with_state(|s| {
+                s.hover_card_hovered = false;
+                let btn_changed = s
+                    .tooltip
+                    .as_mut()
+                    .is_some_and(|t| t.set_hovered_button(None));
+                if btn_changed {
+                    update_active_tooltip(s);
+                }
+                if s.active_hover_pill.is_some() && s.strip_hovered_pill.is_none() {
+                    s.hover_dismiss_at = Some(Instant::now() + HOVER_DISMISS_GRACE);
+                    true
+                } else {
+                    false
+                }
+            })
+            .unwrap_or(false);
+            if arm_timer {
+                SetTimer(Some(hwnd), TIMER_HOVER_CLOSE_ID, TIMER_HOVER_CLOSE_MS, None);
+            }
+            LRESULT(0)
+        }
+        WM_APP_HOVER_CARD_CLICK => {
+            let x_px = (lparam.0 & 0xffff) as i16 as f32;
+            let y_px = ((lparam.0 >> 16) & 0xffff) as i16 as f32;
+            let hit = try_with_state(|s| {
+                let action = s
+                    .tooltip
+                    .as_ref()
+                    .and_then(|t| t.hit_test_button_px(x_px, y_px));
+                let anchor = s.active_hover_pill.and_then(|idx| {
+                    let scale = s.metrics.map_or(1.0, |m| m.scale);
+                    let (sx, sy, _, _) = s.strip_pos;
+                    s.strip_layout
+                        .as_ref()
+                        .and_then(|l| l.pill_rect(idx))
+                        .map(|r| pill_screen_rect_px(sx, sy, r, scale))
+                });
+                (action, anchor)
+            });
+            if let Some((Some(action), anchor)) = hit {
+                match action {
+                    HoverCardAction::OpenSettings(provider) => {
+                        let _ = KillTimer(Some(hwnd), TIMER_HOVER_CLOSE_ID);
+                        open_settings_on_page_ui(Some(provider));
+                        sync_and_paint_strip_ui();
+                    }
+                    HoverCardAction::Refresh => {
+                        request_refresh_ui();
+                    }
+                    HoverCardAction::HideUntilReset {
+                        provider,
+                        account_id,
+                        title,
+                        until_ms,
+                    } => {
+                        let _ = KillTimer(Some(hwnd), TIMER_HOVER_CLOSE_ID);
+                        try_with_state(clear_hover_card_state);
+                        hide_target_with_toast((provider, account_id, title, until_ms), anchor);
+                        sync_and_paint_strip_ui();
+                    }
+                    HoverCardAction::CopyOpenCodeKey(email) => {
+                        copy_opencode_key(email, anchor);
+                    }
+                    HoverCardAction::OpenCursor => {
+                        let _ = KillTimer(Some(hwnd), TIMER_HOVER_CLOSE_ID);
+                        try_with_state(clear_hover_card_state);
+                        open_cursor_and_watch_ui();
+                        sync_and_paint_strip_ui();
+                    }
+                }
+            }
+            LRESULT(0)
+        }
+        WM_APP_HOVER_CARD_RCLICK => {
+            let _ = KillTimer(Some(hwnd), TIMER_HOVER_CLOSE_ID);
+            let target =
+                try_with_state(|s| s.active_hover_pill.and_then(|idx| hide_target_for(s, idx)))
+                    .flatten();
+            show_context_menu_ui(target);
+            LRESULT(0)
+        }
         WM_MOUSEMOVE => {
-            let needs_repaint = try_with_state(|s| {
+            let (needs_repaint, arm_close_timer, cancel_close_timer) = try_with_state(|s| {
                 if !s.strip_tracking_leave {
                     track_mouse_leave(hwnd);
                     s.strip_tracking_leave = true;
@@ -1120,29 +1323,58 @@ unsafe extern "system" fn strip_wnd_proc(
                 let hit_pill = layout.and_then(|l| l.hit_test_pill(dx, dy));
                 let hit_icon = layout.and_then(|l| l.hit_test_pill_icon(dx, dy));
                 let hit_hide = layout.and_then(|l| l.hit_test_pill_hide(dx, dy));
-                if !s.strip_hovered
+
+                let mut arm_timer = false;
+                let mut cancel_timer = false;
+                let prev_active = s.active_hover_pill;
+                if let Some(idx) = hit_pill {
+                    if prev_active != Some(idx) {
+                        if let Some(ref mut tip) = s.tooltip {
+                            let _ = tip.set_hovered_button(None);
+                        }
+                    }
+                    s.active_hover_pill = Some(idx);
+                    s.hover_card_hovered = false;
+                    s.hover_dismiss_at = None;
+                    cancel_timer = true;
+                } else if s.active_hover_pill.is_some() && !s.hover_card_hovered {
+                    s.hover_dismiss_at = Some(Instant::now() + HOVER_DISMISS_GRACE);
+                    arm_timer = true;
+                }
+
+                let changed = !s.strip_hovered
                     || hit_pill != s.strip_hovered_pill
                     || hit_icon != s.strip_hovered_icon_pill
                     || hit_hide != s.strip_hovered_hide_pill
-                {
+                    || prev_active != s.active_hover_pill;
+                if changed {
                     s.strip_hovered = true;
                     s.strip_hovered_pill = hit_pill;
                     s.strip_hovered_icon_pill = hit_icon;
                     s.strip_hovered_hide_pill = hit_hide;
-                    true
-                } else {
-                    false
                 }
+                (changed, arm_timer, cancel_timer)
             })
-            .unwrap_or(false);
+            .unwrap_or((false, false, false));
+            if cancel_close_timer {
+                let _ = KillTimer(Some(hwnd), TIMER_HOVER_CLOSE_ID);
+            } else if arm_close_timer {
+                SetTimer(Some(hwnd), TIMER_HOVER_CLOSE_ID, TIMER_HOVER_CLOSE_MS, None);
+            }
             if needs_repaint {
                 sync_and_paint_strip_ui();
             }
             LRESULT(0)
         }
         WM_MOUSELEAVE => {
-            let needs_repaint = try_with_state(|s| {
+            let (needs_repaint, arm_close_timer) = try_with_state(|s| {
                 s.strip_tracking_leave = false;
+                let arm_timer = if s.active_hover_pill.is_some() && !s.hover_card_hovered {
+                    s.hover_dismiss_at = Some(Instant::now() + HOVER_DISMISS_GRACE);
+                    true
+                } else {
+                    false
+                };
                 if s.strip_hovered
                     || s.strip_hovered_pill.is_some()
                     || s.strip_hovered_icon_pill.is_some()
@@ -1153,12 +1385,15 @@ unsafe extern "system" fn strip_wnd_proc(
                     s.strip_hovered_icon_pill = None;
                     s.strip_hovered_hide_pill = None;
                     update_active_tooltip(s);
-                    true
+                    (true, arm_timer)
                 } else {
-                    false
+                    (false, arm_timer)
                 }
             })
-            .unwrap_or(false);
+            .unwrap_or((false, false));
+            if arm_close_timer {
+                SetTimer(Some(hwnd), TIMER_HOVER_CLOSE_ID, TIMER_HOVER_CLOSE_MS, None);
+            }
             if needs_repaint {
                 sync_and_paint_strip_ui();
             }
@@ -1436,6 +1671,9 @@ pub fn run_ui(
         TASKBAR_CREATED_MSG.store(taskbar_created_msg, Ordering::Relaxed);
         add_tray_icon(strip_hwnd, tray_icon);
         STRIP_HWND_RAW.store(strip_hwnd.0 as isize, Ordering::Release);
+        if let Some(ref tip) = tooltip {
+            tip.set_owner_hwnd(strip_hwnd);
+        }
 
         let poller_tx = crate::poller::start_poller(strip_hwnd.0 as isize, shared.clone(), demo);
 
@@ -1459,6 +1697,9 @@ pub fn run_ui(
                 strip_hovered_icon_pill: None,
                 strip_hovered_hide_pill: None,
                 strip_tracking_leave: false,
+                active_hover_pill: None,
+                hover_card_hovered: false,
+                hover_dismiss_at: None,
                 flyout_visible: false,
                 flyout_hovered_action: None,
                 flyout_hovered_bar: None,
@@ -1522,4 +1763,49 @@ pub fn run_ui(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hover_bridge_keeps_card_open_across_gap_and_closes_outside() {
+        let card = RECT {
+            left: 100,
+            top: 600,
+            right: 452,
+            bottom: 980,
+        };
+        let pill = RECT {
+            left: 160,
+            top: 992,
+            right: 390,
+            bottom: 1036,
+        };
+
+        // Inside the card.
+        assert!(cursor_in_hover_bridge(POINT { x: 250, y: 800 }, card, pill));
+        // Inside the taskbar pill.
+        assert!(cursor_in_hover_bridge(
+            POINT { x: 250, y: 1015 },
+            card,
+            pill
+        ));
+        // Inside the 12px vertical gap between card bottom and pill top.
+        assert!(cursor_in_hover_bridge(POINT { x: 250, y: 986 }, card, pill));
+        // Diagonal travel between pill and wider card edge inside bridge.
+        assert!(cursor_in_hover_bridge(POINT { x: 110, y: 986 }, card, pill));
+        // Far away to the right or above the card.
+        assert!(!cursor_in_hover_bridge(
+            POINT { x: 600, y: 800 },
+            card,
+            pill
+        ));
+        assert!(!cursor_in_hover_bridge(
+            POINT { x: 250, y: 500 },
+            card,
+            pill
+        ));
+    }
 }
