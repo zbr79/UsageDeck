@@ -1037,10 +1037,10 @@ fn draw_card(state: &UiState, rt: &ID2D1DCRenderTarget) -> Result<()> {
     let r = &state.renderer;
     let inner_w = WINDOW_W_DIP - CARD_PAD_DIP * 2.0;
 
-    // Palette matching UsageDeck's dark native design.
-    let bg = rgba(24, 24, 27, 0.985);
-    let surface = rgba(39, 39, 42, 0.95);
-    let surface_hover = rgba(52, 52, 58, 0.98);
+    // Palette matching UsageDeck's Obsidian & Emerald Glass native design.
+    let bg = rgba(22, 24, 28, 0.985);
+    let surface = rgba(30, 33, 39, 0.96);
+    let surface_hover = rgba(42, 46, 56, 0.98);
     let border = rgba(255, 255, 255, 0.13);
     let text = rgba(244, 244, 245, 0.98);
     let text_sec = rgba(212, 212, 216, 0.86);

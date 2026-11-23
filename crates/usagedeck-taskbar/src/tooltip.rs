@@ -155,42 +155,42 @@ impl HoverPalette {
     fn for_theme(theme: TaskbarTheme) -> Self {
         match theme {
             TaskbarTheme::Dark => Self {
-                card_bg: rgba(24, 25, 30, 0.97),
-                card_border: rgba(255, 255, 255, 0.14),
-                top_highlight: rgba(255, 255, 255, 0.06),
+                card_bg: rgba(22, 24, 28, 0.975),
+                card_border: rgba(255, 255, 255, 0.13),
+                top_highlight: rgba(0, 212, 146, 0.52),
                 text_primary: rgba(244, 244, 246, 0.98),
-                text_muted: rgba(161, 161, 170, 0.92),
-                text_caption: rgba(113, 113, 122, 0.95),
+                text_muted: rgba(154, 160, 172, 0.92),
+                text_caption: rgba(113, 118, 130, 0.95),
                 track_bg: rgba(255, 255, 255, 0.12),
                 pace_tick: rgba(255, 255, 255, 0.65),
-                ok: rgba(16, 185, 129, 1.0),
+                ok: rgba(0, 212, 146, 1.0),
                 warn: rgba(245, 158, 11, 1.0),
                 danger: rgba(239, 68, 68, 1.0),
                 purple: rgba(192, 132, 252, 1.0),
-                muted: rgba(113, 113, 122, 1.0),
-                accent: rgba(96, 165, 250, 1.0),
-                divider: rgba(255, 255, 255, 0.09),
-                badge_neutral_bg: rgba(255, 255, 255, 0.08),
+                muted: rgba(113, 118, 130, 1.0),
+                accent: rgba(0, 212, 146, 1.0),
+                divider: rgba(255, 255, 255, 0.085),
+                badge_neutral_bg: rgba(255, 255, 255, 0.075),
                 badge_neutral_border: rgba(255, 255, 255, 0.12),
             },
             TaskbarTheme::Light => Self {
-                card_bg: rgba(250, 251, 253, 0.98),
-                card_border: rgba(0, 0, 0, 0.12),
-                top_highlight: rgba(255, 255, 255, 0.85),
-                text_primary: rgba(20, 20, 24, 0.96),
-                text_muted: rgba(82, 82, 91, 0.90),
-                text_caption: rgba(113, 113, 122, 0.95),
-                track_bg: rgba(24, 24, 28, 0.12),
-                pace_tick: rgba(24, 24, 28, 0.55),
-                ok: rgba(5, 150, 105, 1.0),
+                card_bg: rgba(252, 253, 254, 0.985),
+                card_border: rgba(15, 23, 42, 0.11),
+                top_highlight: rgba(0, 153, 102, 0.42),
+                text_primary: rgba(22, 24, 28, 0.96),
+                text_muted: rgba(82, 88, 102, 0.90),
+                text_caption: rgba(113, 120, 133, 0.95),
+                track_bg: rgba(15, 23, 42, 0.12),
+                pace_tick: rgba(22, 24, 28, 0.55),
+                ok: rgba(0, 153, 102, 1.0),
                 warn: rgba(217, 119, 6, 1.0),
                 danger: rgba(220, 38, 38, 1.0),
                 purple: rgba(126, 34, 206, 1.0),
-                muted: rgba(113, 113, 122, 1.0),
-                accent: rgba(37, 99, 235, 1.0),
-                divider: rgba(0, 0, 0, 0.09),
-                badge_neutral_bg: rgba(0, 0, 0, 0.055),
-                badge_neutral_border: rgba(0, 0, 0, 0.10),
+                muted: rgba(113, 120, 133, 1.0),
+                accent: rgba(0, 153, 102, 1.0),
+                divider: rgba(15, 23, 42, 0.09),
+                badge_neutral_bg: rgba(15, 23, 42, 0.05),
+                badge_neutral_border: rgba(15, 23, 42, 0.10),
             },
         }
     }
@@ -1709,7 +1709,7 @@ impl TooltipWindow {
         let y = (anchor_top - gap_px - height_px).clamp(min_y, max_y);
 
         self.commit_layered((x, y), (width_px, height_px), metrics.dpi, |rt| {
-            // Card outer surface + top inner specular highlight + outer border.
+            // Card outer surface + 2px top emerald/status accent glow strip + outer border.
             let outer = DipRect {
                 x: 0.5,
                 y: 0.5,
@@ -1717,16 +1717,23 @@ impl TooltipWindow {
                 h: layout.card_h_dip - 1.0,
             };
             fill_rounded(rt, outer, CARD_RADIUS_DIP, pal.card_bg)?;
+            let top_glow = if item.exhausted {
+                with_alpha(pal.danger, 0.58)
+            } else if item.auth_expired {
+                with_alpha(pal.warn, 0.55)
+            } else {
+                pal.top_highlight
+            };
             fill_rounded(
                 rt,
                 DipRect {
-                    x: CARD_RADIUS_DIP,
+                    x: CARD_RADIUS_DIP + 4.0,
                     y: 1.0,
-                    w: (layout.card_w_dip - CARD_RADIUS_DIP * 2.0).max(0.0),
-                    h: 1.0,
+                    w: (layout.card_w_dip - (CARD_RADIUS_DIP + 4.0) * 2.0).max(0.0),
+                    h: 2.0,
                 },
-                0.5,
-                pal.top_highlight,
+                1.0,
+                top_glow,
             )?;
             stroke_rounded(rt, outer, CARD_RADIUS_DIP, 1.0, pal.card_border)?;
 
@@ -1860,12 +1867,12 @@ impl TooltipWindow {
                             pal.accent,
                             if is_hovered {
                                 if dark {
-                                    0.32
+                                    0.28
                                 } else {
                                     0.22
                                 }
                             } else if dark {
-                                0.18
+                                0.16
                             } else {
                                 0.12
                             },
@@ -1875,15 +1882,17 @@ impl TooltipWindow {
                             if is_hovered {
                                 0.78
                             } else if dark {
-                                0.44
+                                0.48
                             } else {
-                                0.34
+                                0.40
                             },
                         ),
                         if is_hovered && dark {
                             pal.text_primary
+                        } else if dark {
+                            rgba(94, 233, 181, 1.0)
                         } else {
-                            pal.accent
+                            rgba(0, 122, 85, 1.0)
                         },
                     ),
                     HoverButtonTone::Neutral => (
@@ -2073,7 +2082,7 @@ impl TooltipWindow {
         let dark = theme == TaskbarTheme::Dark;
 
         self.commit_layered((x, y), (width_px, height_px), metrics.dpi, |rt| {
-            // Card surface + top inner highlight + border.
+            // Card surface + 2px top emerald accent glow strip + border.
             let outer = DipRect {
                 x: 0.5,
                 y: 0.5,
@@ -2084,12 +2093,12 @@ impl TooltipWindow {
             fill_rounded(
                 rt,
                 DipRect {
-                    x: CARD_RADIUS_DIP,
+                    x: CARD_RADIUS_DIP + 4.0,
                     y: 1.0,
-                    w: (card_w_dip - CARD_RADIUS_DIP * 2.0).max(0.0),
-                    h: 1.0,
+                    w: (card_w_dip - (CARD_RADIUS_DIP + 4.0) * 2.0).max(0.0),
+                    h: 2.0,
                 },
-                0.5,
+                1.0,
                 pal.top_highlight,
             )?;
             stroke_rounded(rt, outer, CARD_RADIUS_DIP, 1.0, pal.card_border)?;
