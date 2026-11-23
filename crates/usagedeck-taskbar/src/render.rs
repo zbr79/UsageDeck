@@ -13,6 +13,7 @@ use crate::layout::{
 };
 use crate::taskbar::TaskbarTheme;
 use usagedeck_core::store::TaskbarMeterStyle;
+use usagedeck_core::sysmon::SystemSnapshot;
 use usagedeck_core::view::{
     parse_iso_ms, BarSeverity, BarView, ProviderItem, ProviderKind, TaskbarSnapshot,
 };
@@ -112,6 +113,7 @@ pub struct Renderer {
     fmt_label_left: IDWriteTextFormat,
     fmt_reset_sub: IDWriteTextFormat,
     fmt_chip: IDWriteTextFormat,
+    fmt_sys_tag: IDWriteTextFormat,
     fmt_flash: IDWriteTextFormat,
     fmt_flash_compact: IDWriteTextFormat,
     fmt_sub: IDWriteTextFormat,
@@ -483,6 +485,13 @@ impl Renderer {
                 8.5,
                 DWRITE_TEXT_ALIGNMENT_CENTER,
             )?;
+            let fmt_sys_tag = make_text_format(
+                &dwrite,
+                w!("Segoe UI"),
+                DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                8.5,
+                DWRITE_TEXT_ALIGNMENT_LEADING,
+            )?;
             let fmt_flash = make_text_format(
                 &dwrite,
                 w!("Segoe UI"),
@@ -532,6 +541,7 @@ impl Renderer {
                 fmt_label_left,
                 fmt_reset_sub,
                 fmt_chip,
+                fmt_sys_tag,
                 fmt_flash,
                 fmt_flash_compact,
                 fmt_sub,
@@ -884,6 +894,7 @@ impl Renderer {
         hovered_pill: Option<usize>,
         hovered_icon_pill: Option<usize>,
         hovered_hide_pill: Option<usize>,
+        hovered_system: bool,
         forced_contrast_backdrop: bool,
         update_flash: Option<UpdateFlashFrame>,
     ) -> Result<()> {
@@ -965,6 +976,7 @@ impl Renderer {
                 StripMode::Pills {
                     slots,
                     overflow_badge,
+                    system_slot,
                 } => {
                     for (slot_pos, slot) in slots.iter().enumerate() {
                         if let Some(item) = snapshot.items.get(slot.item_index) {
@@ -1024,8 +1036,8 @@ impl Renderer {
                             }
                         }
                     }
+                    let badge_hovered = hovered && hovered_pill.is_none() && !hovered_system;
                     if let Some((rect, count)) = overflow_badge {
-                        let badge_hovered = hovered && hovered_pill.is_none();
                         self.draw_slot_plate(
                             rt,
                             *rect,
@@ -1037,10 +1049,138 @@ impl Renderer {
                         let label = format!("+{count}");
                         self.draw_text(rt, &label, &self.fmt_btn, *rect, pal.muted)?;
                     }
+                    if let (Some(sys_rect), Some(sys)) = (system_slot, snapshot.system.as_ref()) {
+                        // Subtle hairline divider separating AI provider pills from the System pill.
+                        if !forced_contrast_backdrop && !hovered_system {
+                            let left_neighbor =
+                                overflow_badge.map(|(r, _)| (r, badge_hovered)).or_else(|| {
+                                    slots
+                                        .last()
+                                        .map(|s| (s.rect, hovered_pill == Some(s.item_index)))
+                                });
+                            if let Some((left_rect, left_hovered)) = left_neighbor {
+                                if !left_hovered {
+                                    let sep_x =
+                                        (left_rect.x + left_rect.w + sys_rect.x) * 0.5 - 0.5;
+                                    let sep_h = 18.0;
+                                    let sep_y = (layout.height_dip - sep_h) * 0.5;
+                                    self.fill_rounded(
+                                        rt,
+                                        DipRect {
+                                            x: sep_x,
+                                            y: sep_y,
+                                            w: 1.0,
+                                            h: sep_h,
+                                        },
+                                        0.5,
+                                        pal.sep,
+                                    )?;
+                                }
+                            }
+                        }
+                        self.draw_system_pill(
+                            rt,
+                            sys,
+                            *sys_rect,
+                            theme,
+                            &pal,
+                            hovered_system,
+                            forced_contrast_backdrop,
+                        )?;
+                        if slots.is_empty() {
+                            if let Some(flash) = update_flash {
+                                self.draw_update_complete_card(rt, *sys_rect, theme, flash)?;
+                            }
+                        }
+                    }
                 }
             }
             Ok(())
         })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_system_pill(
+        &self,
+        rt: &ID2D1DCRenderTarget,
+        sys: &SystemSnapshot,
+        r: DipRect,
+        theme: TaskbarTheme,
+        pal: &Palette,
+        hovered: bool,
+        forced_contrast_backdrop: bool,
+    ) -> Result<()> {
+        self.draw_slot_plate(rt, r, pal, theme, hovered, forced_contrast_backdrop)?;
+
+        let severity_for = |pct: f64| -> BarSeverity {
+            if pct >= 90.0 {
+                BarSeverity::Danger
+            } else if pct >= 70.0 {
+                BarSeverity::Warn
+            } else {
+                BarSeverity::Ok
+            }
+        };
+
+        let draw_row = |tag: &str, pct: f64, row_y: f32| -> Result<()> {
+            let clamped = pct.clamp(0.0, 100.0);
+            let sev = severity_for(clamped);
+            self.draw_text(
+                rt,
+                tag,
+                &self.fmt_sys_tag,
+                DipRect {
+                    x: r.x + 6.0,
+                    y: row_y - 0.5,
+                    w: 24.0,
+                    h: 12.5,
+                },
+                pal.muted,
+            )?;
+            let track = DipRect {
+                x: r.x + 31.0,
+                y: row_y + 4.0,
+                w: 44.0,
+                h: 4.0,
+            };
+            self.fill_rounded(rt, track, 2.0, pal.track)?;
+            let fill_w = (track.w * (clamped as f32 / 100.0)).clamp(0.0, track.w);
+            if fill_w > 0.5 {
+                self.fill_rounded(
+                    rt,
+                    DipRect {
+                        x: track.x,
+                        y: track.y,
+                        w: fill_w,
+                        h: track.h,
+                    },
+                    2.0f32.min(fill_w * 0.5),
+                    bar_color(sev, pal),
+                )?;
+            }
+            let pct_color = match sev {
+                BarSeverity::Danger => pal.danger,
+                BarSeverity::Warn => pal.warn,
+                _ => pal.text,
+            };
+            let pct_str = format!("{:.0}%", clamped.round());
+            self.draw_text(
+                rt,
+                &pct_str,
+                &self.fmt_rate,
+                DipRect {
+                    x: r.x + 77.0,
+                    y: row_y - 0.5,
+                    w: 27.0,
+                    h: 12.5,
+                },
+                pct_color,
+            )
+        };
+
+        draw_row("CPU", sys.cpu_percent, r.y + 4.5)?;
+        draw_row("MEM", sys.memory_percent, r.y + 17.5)?;
+        Ok(())
     }
 
     fn draw_slot_plate(

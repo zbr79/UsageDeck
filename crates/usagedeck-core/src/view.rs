@@ -227,6 +227,16 @@ pub struct TaskbarSnapshot {
     pub snoozed_count: usize,
     /// Selected taskbar meter layout & reset-time style.
     pub taskbar_meter_style: TaskbarMeterStyle,
+    /// Whether the local CPU & Memory taskbar monitor is enabled in Settings.
+    #[serde(default = "default_true_snap")]
+    pub system_monitor_enabled: bool,
+    /// Latest live CPU & Memory telemetry + parent-app breakdown when enabled.
+    #[serde(default)]
+    pub system: Option<crate::sysmon::SystemSnapshot>,
+}
+
+fn default_true_snap() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -928,6 +938,8 @@ pub async fn poll_snapshot(core: &Core) -> TaskbarSnapshot {
         theme_mode: settings.theme_mode,
         snoozed_count,
         taskbar_meter_style: settings.taskbar_meter_style,
+        system_monitor_enabled: settings.system_monitor_enabled,
+        system: None,
     }
 }
 
@@ -3295,6 +3307,8 @@ pub fn demo_snapshot(now_ms: i64) -> TaskbarSnapshot {
         theme_mode: ThemeMode::Auto,
         snoozed_count: 0,
         taskbar_meter_style: TaskbarMeterStyle::default(),
+        system_monitor_enabled: true,
+        system: Some(crate::sysmon::demo_system_snapshot()),
     }
 }
 

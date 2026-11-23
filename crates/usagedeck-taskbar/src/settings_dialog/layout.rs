@@ -102,6 +102,7 @@ pub enum Action {
     ToggleSnoozedExpand(WidgetProvider),
     UnhideSnoozed(String),
     ToggleShowProviderNames,
+    ToggleSystemMonitor,
     RefreshData,
     OpenAccountMenu {
         provider: ProviderKind,
@@ -1342,6 +1343,14 @@ fn build_widget_page(b: &mut ContentBuilder, input: &LayoutInput<'_>) {
         None,
         input.settings.show_provider_names,
         Action::ToggleShowProviderNames,
+    );
+
+    b.add_section_heading("System", 26.0);
+    b.add_toggle_row(
+        "CPU & Memory monitor",
+        Some("Show live CPU and memory usage on the taskbar with parent-app breakdown on hover"),
+        input.settings.system_monitor_enabled,
+        Action::ToggleSystemMonitor,
     );
 }
 

@@ -7,6 +7,7 @@ pub mod history;
 pub mod pricing;
 pub mod providers;
 pub mod store;
+pub mod sysmon;
 pub mod updater;
 pub mod view;
 pub mod win;

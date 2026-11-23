@@ -22,6 +22,7 @@ pub const WIDE_METER_COL_DIP: f32 = 82.0;
 pub const WIDE_SINGLE_METER_COL_DIP: f32 = 88.0;
 pub const WIDE_METER_GAP_DIP: f32 = 8.0;
 pub const OVERFLOW_BADGE_WIDTH_DIP: f32 = 28.0;
+pub const SYSTEM_PILL_WIDTH_DIP: f32 = 110.0;
 pub const COMPACT_SUMMARY_WIDTH_DIP: f32 = 62.0;
 pub const MIN_VISIBLE_WIDTH_DIP: f32 = 64.0;
 
@@ -81,10 +82,11 @@ pub enum StripMode {
         peak_percent: Option<f64>,
         severity: BarSeverity,
     },
-    /// One or more provider slots side by side, plus optional `+N` overflow badge.
+    /// One or more provider slots side by side, plus optional `+N` overflow badge and System CPU/MEM pill.
     Pills {
         slots: Vec<PillSlot>,
         overflow_badge: Option<(DipRect, usize)>,
+        system_slot: Option<DipRect>,
     },
     /// Empty / loading placeholder pill so the user immediately sees the strip is alive.
     Empty { rect: DipRect, label: &'static str },
@@ -140,6 +142,22 @@ impl StripLayout {
                 .iter()
                 .find(|slot| slot.item_index == item_index)
                 .map(|slot| slot.rect),
+            StripMode::Hidden | StripMode::CompactSummary { .. } | StripMode::Empty { .. } => None,
+        }
+    }
+
+    /// True if `(px, py)` hits the stacked CPU & Memory system monitor slot.
+    pub fn hit_test_system(&self, px: f32, py: f32) -> bool {
+        match &self.mode {
+            StripMode::Pills { system_slot, .. } => system_slot.is_some_and(|r| r.contains(px, py)),
+            StripMode::Hidden | StripMode::CompactSummary { .. } | StripMode::Empty { .. } => false,
+        }
+    }
+
+    /// Return the strip-relative DIP rectangle for the stacked CPU & Memory system monitor slot.
+    pub fn system_rect(&self) -> Option<DipRect> {
+        match &self.mode {
+            StripMode::Pills { system_slot, .. } => *system_slot,
             StripMode::Hidden | StripMode::CompactSummary { .. } | StripMode::Empty { .. } => None,
         }
     }
@@ -279,7 +297,26 @@ pub fn compute_strip_layout(
         .filter(|(_, item)| !item.secondary)
         .collect();
 
+    let usable = max_width_dip - STRIP_PAD_X_DIP * 2.0;
+    let want_system = snapshot.system_monitor_enabled && snapshot.system.is_some();
+
     if primary_items.is_empty() {
+        if want_system && usable >= SYSTEM_PILL_WIDTH_DIP {
+            return StripLayout {
+                width_dip: SYSTEM_PILL_WIDTH_DIP + STRIP_PAD_X_DIP * 2.0,
+                height_dip: STRIP_HEIGHT_DIP,
+                mode: StripMode::Pills {
+                    slots: Vec::new(),
+                    overflow_badge: None,
+                    system_slot: Some(DipRect {
+                        x: STRIP_PAD_X_DIP,
+                        y: pill_y,
+                        w: SYSTEM_PILL_WIDTH_DIP,
+                        h: PILL_HEIGHT_DIP,
+                    }),
+                },
+            };
+        }
         let w = 96.0f32.min(max_width_dip);
         return StripLayout {
             width_dip: w,
@@ -296,7 +333,13 @@ pub fn compute_strip_layout(
         };
     }
 
-    let usable = max_width_dip - STRIP_PAD_X_DIP * 2.0;
+    let include_system =
+        want_system && usable >= SYSTEM_PILL_WIDTH_DIP + PILL_GAP_DIP + STANDARD_PILL_WIDTH_DIP;
+    let provider_usable = if include_system {
+        (usable - SYSTEM_PILL_WIDTH_DIP - PILL_GAP_DIP).max(0.0)
+    } else {
+        usable
+    };
     let total = primary_items.len();
 
     // Progressive collapse strategy:
@@ -304,13 +347,13 @@ pub fn compute_strip_layout(
     // 2. If not all fit in `WideMeters`, still use `WideMeters` if at least 2 fit (or total == 1).
     // 3. Otherwise switch to `PillStyle::CompactStacked` (with `+N` overflow if needed).
     // 4. If `< 1` pill fits even in compact mode, fall back to `CompactSummary`.
-    let wide_chosen = pack_wide(&primary_items, usable);
+    let wide_chosen = pack_wide(&primary_items, provider_usable);
     let (style, chosen) = if wide_chosen.len() == total || wide_chosen.len() >= 2 {
         (PillStyle::WideMeters, wide_chosen)
     } else {
         (
             PillStyle::CompactStacked,
-            pack_compact(&primary_items, usable),
+            pack_compact(&primary_items, provider_usable),
         )
     };
 
@@ -426,6 +469,19 @@ pub fn compute_strip_layout(
         None
     };
 
+    let system_slot = if include_system {
+        let rect = DipRect {
+            x,
+            y: pill_y,
+            w: SYSTEM_PILL_WIDTH_DIP,
+            h: PILL_HEIGHT_DIP,
+        };
+        x += SYSTEM_PILL_WIDTH_DIP + PILL_GAP_DIP;
+        Some(rect)
+    } else {
+        None
+    };
+
     let width_dip = (x - PILL_GAP_DIP + STRIP_PAD_X_DIP).max(0.0);
 
     StripLayout {
@@ -434,6 +490,7 @@ pub fn compute_strip_layout(
         mode: StripMode::Pills {
             slots,
             overflow_badge,
+            system_slot,
         },
     }
 }
@@ -766,16 +823,19 @@ mod tests {
 
     #[test]
     fn packs_all_four_demo_providers_in_wide_meters_when_space_allows() {
-        let snap = demo_snapshot(1_700_000_000_000);
+        let mut snap = demo_snapshot(1_700_000_000_000);
+        snap.system = None;
         // Claude (228) + 3 * 212 + 3 * 9 gap + 6 pad = 897 DIP
         let layout = compute_strip_layout(&snap, 920.0, false);
         match layout.mode {
             StripMode::Pills {
                 slots,
                 overflow_badge,
+                system_slot,
             } => {
                 assert_eq!(slots.len(), 4);
                 assert!(overflow_badge.is_none());
+                assert!(system_slot.is_none());
                 assert!(slots.iter().all(|s| s.style == PillStyle::WideMeters));
                 assert!(slots[0].extended);
                 assert_eq!(slots[0].rect.w, 228.0);
@@ -793,9 +853,47 @@ mod tests {
     }
 
     #[test]
+    fn packs_system_pill_alongside_providers_and_alone() {
+        let mut snap = demo_snapshot(1_700_000_000_000);
+        let layout = compute_strip_layout(&snap, 980.0, false);
+        match layout.mode {
+            StripMode::Pills {
+                ref slots,
+                system_slot,
+                ..
+            } => {
+                assert!(!slots.is_empty());
+                let sys = system_slot.expect("system_slot should be placed");
+                assert_eq!(sys.w, SYSTEM_PILL_WIDTH_DIP);
+                assert!(layout.hit_test_system(sys.x + 10.0, sys.y + 10.0));
+                assert_eq!(layout.system_rect(), Some(sys));
+                assert!(layout.width_dip <= 980.0);
+            }
+            ref other => panic!("expected Pills, got {other:?}"),
+        }
+
+        // Standalone System pill when all AI providers are hidden/empty.
+        snap.items.clear();
+        let solo = compute_strip_layout(&snap, 300.0, false);
+        match solo.mode {
+            StripMode::Pills {
+                slots,
+                overflow_badge,
+                system_slot,
+            } => {
+                assert!(slots.is_empty());
+                assert!(overflow_badge.is_none());
+                assert_eq!(system_slot.map(|r| r.w), Some(SYSTEM_PILL_WIDTH_DIP));
+            }
+            other => panic!("expected standalone System pill, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn single_bar_provider_uses_128_dip_wide_meter_slot() {
         let now = 1_700_000_000_000i64;
         let mut snap = demo_snapshot(now);
+        snap.system = None;
         let grok = ProviderItem {
             provider: ProviderKind::Grok,
             account_id: "grok".into(),
@@ -824,6 +922,7 @@ mod tests {
             StripMode::Pills {
                 slots,
                 overflow_badge,
+                ..
             } => {
                 assert_eq!(slots.len(), 1);
                 assert!(overflow_badge.is_none());
@@ -838,13 +937,15 @@ mod tests {
 
     #[test]
     fn keeps_wide_meters_with_overflow_when_at_least_two_fit() {
-        let snap = demo_snapshot(1_700_000_000_000);
+        let mut snap = demo_snapshot(1_700_000_000_000);
+        snap.system = None;
         // At 860 DIP cap, 3 demo providers (228 + 212 + 212 + 3*9 + 28 + 6 = 713 DIP) fit in WideMeters + `+1`.
         let layout = compute_strip_layout(&snap, 860.0, false);
         match layout.mode {
             StripMode::Pills {
                 slots,
                 overflow_badge,
+                ..
             } => {
                 assert_eq!(slots.len(), 3);
                 assert_eq!(overflow_badge.map(|(_, n)| n), Some(1));
@@ -857,7 +958,8 @@ mod tests {
 
     #[test]
     fn falls_back_to_compact_stacked_when_fewer_than_two_wide_fit() {
-        let snap = demo_snapshot(1_700_000_000_000);
+        let mut snap = demo_snapshot(1_700_000_000_000);
+        snap.system = None;
         // At 320 DIP, only 1 wide pill would fit (< 2), so we collapse to CompactStacked:
         // Claude (156) + 9 + Cursor (108) + 9 + badge (28) + 6 pad = 316 DIP <= 320.
         let layout = compute_strip_layout(&snap, 320.0, false);
@@ -865,6 +967,7 @@ mod tests {
             StripMode::Pills {
                 slots,
                 overflow_badge,
+                ..
             } => {
                 assert_eq!(slots.len(), 2);
                 assert_eq!(overflow_badge.map(|(_, n)| n), Some(2));
@@ -904,7 +1007,7 @@ mod tests {
     #[test]
     fn strip_hit_tests_individual_pills_and_gaps() {
         let snap = demo_snapshot(1_700_000_000_000);
-        let layout = compute_strip_layout(&snap, 920.0, false);
+        let layout = compute_strip_layout(&snap, 1040.0, false);
         for idx in 0..4 {
             let rect = layout.pill_rect(idx).expect("pill rect exists");
             assert_eq!(
@@ -912,6 +1015,14 @@ mod tests {
                 Some(idx)
             );
         }
+        let sys_rect = layout.system_rect().expect("system rect exists");
+        assert!(
+            layout.hit_test_system(sys_rect.x + sys_rect.w * 0.5, sys_rect.y + sys_rect.h * 0.5)
+        );
+        assert_eq!(
+            layout.hit_test_pill(sys_rect.x + sys_rect.w * 0.5, sys_rect.y + sys_rect.h * 0.5),
+            None
+        );
         // Gap between pill 0 and pill 1 should return None.
         let p0 = layout.pill_rect(0).unwrap();
         let p1 = layout.pill_rect(1).unwrap();
@@ -1081,6 +1192,7 @@ mod tests {
     fn strip_filters_secondary_items_while_flyout_keeps_all() {
         let now = 1_700_000_000_000i64;
         let mut snap = demo_snapshot(now);
+        snap.system = None;
         let mut extra = snap.items[3].clone();
         extra.account_id = "second@opencode.ai".into();
         extra.secondary = true;
@@ -1092,6 +1204,7 @@ mod tests {
             StripMode::Pills {
                 slots,
                 overflow_badge,
+                ..
             } => {
                 // Only the 4 primary items appear on the taskbar strip; no +1 overflow.
                 assert_eq!(slots.len(), 4);
@@ -1150,7 +1263,7 @@ mod tests {
     fn strip_hit_tests_exhausted_pill_hide_chip() {
         let now = 1_700_000_000_000i64;
         let snap = demo_snapshot(now);
-        let layout = compute_strip_layout(&snap, 920.0, false);
+        let layout = compute_strip_layout(&snap, 1040.0, false);
         let StripMode::Pills { ref slots, .. } = layout.mode else {
             panic!("expected Pills mode");
         };

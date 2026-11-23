@@ -105,8 +105,10 @@ struct AppState {
     strip_hovered_pill: Option<usize>,
     strip_hovered_icon_pill: Option<usize>,
     strip_hovered_hide_pill: Option<usize>,
+    strip_hovered_system: bool,
     strip_tracking_leave: bool,
     active_hover_pill: Option<usize>,
+    active_hover_system: bool,
     hover_card_hovered: bool,
     hover_dismiss_at: Option<Instant>,
     fullscreen_debounce: fullscreen::Debounce,
@@ -305,6 +307,39 @@ fn open_settings_on_page_ui(provider: Option<ProviderKind>) {
     );
 }
 
+fn open_settings_on_widget_ui() {
+    let Some((strip_hwnd, poller_tx, updater_for_btn)) = try_with_state(|state| {
+        clear_hover_card_state(state);
+        state.updater.set_pause_auto_install(true);
+        (
+            state.strip_hwnd,
+            state.poller_tx.clone(),
+            state.updater.clone(),
+        )
+    }) else {
+        return;
+    };
+
+    settings_dialog::open_settings_dialog_on_widget(
+        strip_hwnd,
+        Box::new(move || {
+            if let Some(ref tx) = poller_tx {
+                let _ = tx.send(PollerCmd::RefreshNow);
+            }
+        }),
+        Some(Box::new(move |_hwnd| {
+            if updater_for_btn.ready_version().is_some() {
+                if let Err(e) = updater_for_btn.install_now() {
+                    log::warn!("install_now failed: {e}");
+                    let _ = updater_for_btn.check_now();
+                }
+            } else {
+                let _ = updater_for_btn.check_now();
+            }
+        })),
+    );
+}
+
 fn open_cursor_and_watch_ui() {
     let strip_hwnd_raw = try_with_state(|s| s.strip_hwnd.0 as isize).unwrap_or(0);
     match usagedeck_core::providers::cursor::open_cursor() {
@@ -415,6 +450,7 @@ fn hide_tooltip(state: &mut AppState) {
 
 fn clear_hover_card_state(state: &mut AppState) {
     state.active_hover_pill = None;
+    state.active_hover_system = false;
     state.hover_card_hovered = false;
     state.hover_dismiss_at = None;
     hide_tooltip(state);
@@ -463,51 +499,67 @@ fn update_active_tooltip(state: &mut AppState) {
         state.toast = None;
     }
 
-    // 2. Taskbar strip pill hover: interactive Windows 11 Fluent Detail Card in the active theme.
+    // 2. Taskbar strip hover: interactive Fluent Detail Card for either a provider pill or System.
     if !state.strip_visible {
         clear_hover_card_state(state);
         return;
     }
-    let pill_idx = state.strip_hovered_pill.or(state.active_hover_pill);
-    let (Some(layout), Some(pill_idx)) = (state.strip_layout.as_ref(), pill_idx) else {
-        clear_hover_card_state(state);
-        return;
-    };
-    let (Some(item), Some(pill_rect)) = (snapshot.items.get(pill_idx), layout.pill_rect(pill_idx))
-    else {
+    let Some(layout) = state.strip_layout.as_ref() else {
         clear_hover_card_state(state);
         return;
     };
     let (sx, sy, _, _) = state.strip_pos;
-    let anchor = pill_screen_rect_px(sx, sy, pill_rect, metrics.scale);
-    let footer_hint: Option<String> = if !state.hover_card_hovered {
-        if state.strip_hovered_hide_pill == Some(pill_idx) {
-            Some("Click × to hide until reset".to_string())
-        } else if state.strip_hovered_icon_pill == Some(pill_idx)
-            && item.provider == ProviderKind::OpenCode
-        {
-            Some("Click icon to copy API key".to_string())
-        } else if state.strip_hovered_icon_pill == Some(pill_idx)
-            && item.provider == ProviderKind::Cursor
-            && item.can_open_cursor
-        {
-            Some("Click icon to sign in".to_string())
+
+    if let Some(pill_idx) = state.strip_hovered_pill.or(state.active_hover_pill) {
+        let (Some(item), Some(pill_rect)) =
+            (snapshot.items.get(pill_idx), layout.pill_rect(pill_idx))
+        else {
+            clear_hover_card_state(state);
+            return;
+        };
+        let anchor = pill_screen_rect_px(sx, sy, pill_rect, metrics.scale);
+        let footer_hint: Option<String> = if !state.hover_card_hovered {
+            if state.strip_hovered_hide_pill == Some(pill_idx) {
+                Some("Click × to hide until reset".to_string())
+            } else if state.strip_hovered_icon_pill == Some(pill_idx)
+                && item.provider == ProviderKind::OpenCode
+            {
+                Some("Click icon to copy API key".to_string())
+            } else if state.strip_hovered_icon_pill == Some(pill_idx)
+                && item.provider == ProviderKind::Cursor
+                && item.can_open_cursor
+            {
+                Some("Click icon to sign in".to_string())
+            } else {
+                None
+            }
         } else {
             None
+        };
+        if let Some(ref mut tip) = state.tooltip {
+            tip.show_provider_card(
+                item,
+                state.renderer.icons(),
+                anchor,
+                &metrics,
+                theme,
+                footer_hint.as_deref(),
+            );
         }
-    } else {
-        None
-    };
-    if let Some(ref mut tip) = state.tooltip {
-        tip.show_provider_card(
-            item,
-            state.renderer.icons(),
-            anchor,
-            &metrics,
-            theme,
-            footer_hint.as_deref(),
-        );
+        return;
     }
+
+    if state.strip_hovered_system || state.active_hover_system {
+        if let (Some(sys), Some(sys_rect)) = (snapshot.system.as_ref(), layout.system_rect()) {
+            let anchor = pill_screen_rect_px(sx, sy, sys_rect, metrics.scale);
+            if let Some(ref mut tip) = state.tooltip {
+                tip.show_system_card(sys, anchor, &metrics, theme);
+            }
+            return;
+        }
+    }
+
+    clear_hover_card_state(state);
 }
 
 enum AnimTimerOp {
@@ -608,6 +660,7 @@ fn sync_and_paint_strip_ui() {
             StripMode::Pills {
                 slots,
                 overflow_badge,
+                system_slot,
             } => {
                 let style_tag = match slots.first().map(|s| s.style) {
                     Some(PillStyle::WideMeters) => "wide",
@@ -615,11 +668,12 @@ fn sync_and_paint_strip_ui() {
                     None => "pills",
                 };
                 format!(
-                    "{style_tag}({}{})",
+                    "{style_tag}({}{}{})",
                     slots.len(),
                     overflow_badge
                         .map(|(_, n)| format!("+{n}"))
-                        .unwrap_or_default()
+                        .unwrap_or_default(),
+                    if system_slot.is_some() { "+sys" } else { "" },
                 )
             }
             StripMode::CompactSummary { .. } => "compact-summary".to_string(),
@@ -637,7 +691,14 @@ fn sync_and_paint_strip_ui() {
         // Start the one-shot first-card "Update complete" animation as soon as the first real card
         // is visible on the taskbar, and stop the 60fps animation timer the instant it completes.
         let mut anim_timer = AnimTimerOp::None;
-        let has_first_card = matches!(&layout.mode, StripMode::Pills { slots, .. } if !slots.is_empty());
+        let has_first_card = matches!(
+            &layout.mode,
+            StripMode::Pills {
+                slots,
+                system_slot,
+                ..
+            } if !slots.is_empty() || system_slot.is_some()
+        );
         if state.update_flash_pending && has_first_card {
             state.update_flash_pending = false;
             state.update_flash_started_at = Some(Instant::now());
@@ -658,6 +719,7 @@ fn sync_and_paint_strip_ui() {
         };
 
         let effective_hovered_pill = state.strip_hovered_pill.or(state.active_hover_pill);
+        let effective_hovered_system = state.strip_hovered_system || state.active_hover_system;
         if let Err(e) = state.renderer.render_strip(
             state.strip_hwnd,
             x,
@@ -670,6 +732,7 @@ fn sync_and_paint_strip_ui() {
             effective_hovered_pill,
             state.strip_hovered_icon_pill,
             state.strip_hovered_hide_pill,
+            effective_hovered_system,
             forced_contrast_backdrop,
             update_flash,
         ) {
@@ -931,26 +994,35 @@ unsafe extern "system" fn strip_wnd_proc(
             let mut pt = POINT::default();
             let have_cursor = GetCursorPos(&mut pt).is_ok();
             let (kill_timer, needs_repaint) = try_with_state(|s| {
-                if s.active_hover_pill.is_none()
-                    || s.hover_card_hovered
-                    || s.strip_hovered_pill.is_some()
-                {
+                let has_active_hover = s.active_hover_pill.is_some() || s.active_hover_system;
+                let strip_over_target = s.strip_hovered_pill.is_some() || s.strip_hovered_system;
+                if !has_active_hover || s.hover_card_hovered || strip_over_target {
                     s.hover_dismiss_at = None;
                     return (true, false);
                 }
                 if have_cursor {
-                    let in_bridge = match (
-                        s.tooltip
-                            .as_ref()
-                            .and_then(TooltipWindow::card_screen_rect_px),
-                        s.active_hover_pill.and_then(|idx| {
-                            let scale = s.metrics.map_or(1.0, |m| m.scale);
-                            let (sx, sy, _, _) = s.strip_pos;
+                    let target_rect = {
+                        let scale = s.metrics.map_or(1.0, |m| m.scale);
+                        let (sx, sy, _, _) = s.strip_pos;
+                        if let Some(idx) = s.active_hover_pill {
                             s.strip_layout
                                 .as_ref()
                                 .and_then(|l| l.pill_rect(idx))
                                 .map(|r| pill_screen_rect_px(sx, sy, r, scale))
-                        }),
+                        } else if s.active_hover_system {
+                            s.strip_layout
+                                .as_ref()
+                                .and_then(StripLayout::system_rect)
+                                .map(|r| pill_screen_rect_px(sx, sy, r, scale))
+                        } else {
+                            None
+                        }
+                    };
+                    let in_bridge = match (
+                        s.tooltip
+                            .as_ref()
+                            .and_then(TooltipWindow::card_screen_rect_px),
+                        target_rect,
                     ) {
                         (Some(card_rc), Some(pill_rc)) => {
                             cursor_in_hover_bridge(pt, card_rc, pill_rc)
@@ -1039,7 +1111,9 @@ unsafe extern "system" fn strip_wnd_proc(
                 if btn_changed {
                     update_active_tooltip(s);
                 }
-                if s.active_hover_pill.is_some() && s.strip_hovered_pill.is_none() {
+                let has_active = s.active_hover_pill.is_some() || s.active_hover_system;
+                let over_strip = s.strip_hovered_pill.is_some() || s.strip_hovered_system;
+                if has_active && !over_strip {
                     s.hover_dismiss_at = Some(Instant::now() + HOVER_DISMISS_GRACE);
                     true
                 } else {
@@ -1075,6 +1149,11 @@ unsafe extern "system" fn strip_wnd_proc(
                     HoverCardAction::OpenSettings(provider) => {
                         let _ = KillTimer(Some(hwnd), TIMER_HOVER_CLOSE_ID);
                         open_settings_on_page_ui(Some(provider));
+                        sync_and_paint_strip_ui();
+                    }
+                    HoverCardAction::OpenWidgetSettings => {
+                        let _ = KillTimer(Some(hwnd), TIMER_HOVER_CLOSE_ID);
+                        open_settings_on_widget_ui();
                         sync_and_paint_strip_ui();
                     }
                     HoverCardAction::HideUntilReset {
@@ -1117,21 +1196,37 @@ unsafe extern "system" fn strip_wnd_proc(
                 let hit_pill = layout.and_then(|l| l.hit_test_pill(dx, dy));
                 let hit_icon = layout.and_then(|l| l.hit_test_pill_icon(dx, dy));
                 let hit_hide = layout.and_then(|l| l.hit_test_pill_hide(dx, dy));
+                let hit_system = layout.is_some_and(|l| l.hit_test_system(dx, dy));
 
                 let mut arm_timer = false;
                 let mut cancel_timer = false;
                 let prev_active = s.active_hover_pill;
+                let prev_active_sys = s.active_hover_system;
                 if let Some(idx) = hit_pill {
-                    if prev_active != Some(idx) {
+                    if prev_active != Some(idx) || prev_active_sys {
                         if let Some(ref mut tip) = s.tooltip {
                             let _ = tip.set_hovered_button(None);
                         }
                     }
                     s.active_hover_pill = Some(idx);
+                    s.active_hover_system = false;
                     s.hover_card_hovered = false;
                     s.hover_dismiss_at = None;
                     cancel_timer = true;
-                } else if s.active_hover_pill.is_some() && !s.hover_card_hovered {
+                } else if hit_system {
+                    if !prev_active_sys || prev_active.is_some() {
+                        if let Some(ref mut tip) = s.tooltip {
+                            let _ = tip.set_hovered_button(None);
+                        }
+                    }
+                    s.active_hover_pill = None;
+                    s.active_hover_system = true;
+                    s.hover_card_hovered = false;
+                    s.hover_dismiss_at = None;
+                    cancel_timer = true;
+                } else if (s.active_hover_pill.is_some() || s.active_hover_system)
+                    && !s.hover_card_hovered
+                {
                     s.hover_dismiss_at = Some(Instant::now() + HOVER_DISMISS_GRACE);
                     arm_timer = true;
                 }
@@ -1140,12 +1235,15 @@ unsafe extern "system" fn strip_wnd_proc(
                     || hit_pill != s.strip_hovered_pill
                     || hit_icon != s.strip_hovered_icon_pill
                     || hit_hide != s.strip_hovered_hide_pill
-                    || prev_active != s.active_hover_pill;
+                    || hit_system != s.strip_hovered_system
+                    || prev_active != s.active_hover_pill
+                    || prev_active_sys != s.active_hover_system;
                 if changed {
                     s.strip_hovered = true;
                     s.strip_hovered_pill = hit_pill;
                     s.strip_hovered_icon_pill = hit_icon;
                     s.strip_hovered_hide_pill = hit_hide;
+                    s.strip_hovered_system = hit_system;
                 }
                 (changed, arm_timer, cancel_timer)
             })
@@ -1163,7 +1261,9 @@ unsafe extern "system" fn strip_wnd_proc(
         WM_MOUSELEAVE => {
             let (needs_repaint, arm_close_timer) = try_with_state(|s| {
                 s.strip_tracking_leave = false;
-                let arm_timer = if s.active_hover_pill.is_some() && !s.hover_card_hovered {
+                let arm_timer = if (s.active_hover_pill.is_some() || s.active_hover_system)
+                    && !s.hover_card_hovered
+                {
                     s.hover_dismiss_at = Some(Instant::now() + HOVER_DISMISS_GRACE);
                     true
                 } else {
@@ -1173,11 +1273,13 @@ unsafe extern "system" fn strip_wnd_proc(
                     || s.strip_hovered_pill.is_some()
                     || s.strip_hovered_icon_pill.is_some()
                     || s.strip_hovered_hide_pill.is_some()
+                    || s.strip_hovered_system
                 {
                     s.strip_hovered = false;
                     s.strip_hovered_pill = None;
                     s.strip_hovered_icon_pill = None;
                     s.strip_hovered_hide_pill = None;
+                    s.strip_hovered_system = false;
                     update_active_tooltip(s);
                     (true, arm_timer)
                 } else {
@@ -1352,8 +1454,10 @@ pub fn run_ui(
                 strip_hovered_pill: None,
                 strip_hovered_icon_pill: None,
                 strip_hovered_hide_pill: None,
+                strip_hovered_system: false,
                 strip_tracking_leave: false,
                 active_hover_pill: None,
+                active_hover_system: false,
                 hover_card_hovered: false,
                 hover_dismiss_at: None,
                 fullscreen_debounce: fullscreen::Debounce::default(),
