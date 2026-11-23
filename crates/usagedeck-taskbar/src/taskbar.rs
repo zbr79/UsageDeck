@@ -81,7 +81,7 @@ impl StableStripAnchor {
         }
 
         let raw_avail_px = (self.anchor_right_px - metrics.left_bound_px).max(0);
-        let mut avail_dip = (raw_avail_px as f32 / metrics.scale).min(860.0);
+        let mut avail_dip = (raw_avail_px as f32 / metrics.scale).min(980.0);
         let total_left_dip =
             (self.anchor_right_px - metrics.tray_rect.left).max(0) as f32 / metrics.scale;
         if avail_dip < 72.0 && total_left_dip >= 140.0 {

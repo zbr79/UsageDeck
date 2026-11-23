@@ -543,6 +543,9 @@ pub struct Settings {
     /// taskbar meter layout & reset-time presentation style
     #[serde(rename = "taskbarMeterStyle", default)]
     pub taskbar_meter_style: TaskbarMeterStyle,
+    /// show live local CPU & Memory monitor pill on the taskbar
+    #[serde(rename = "systemMonitorEnabled", default = "default_true")]
+    pub system_monitor_enabled: bool,
 }
 
 impl Default for Settings {
@@ -569,6 +572,7 @@ impl Default for Settings {
             hidden_bars: BTreeMap::new(),
             auto_hide_exhausted: false,
             taskbar_meter_style: TaskbarMeterStyle::default(),
+            system_monitor_enabled: true,
         }
     }
 }
@@ -748,7 +752,7 @@ pub fn apply_settings_patch_at(current: &Settings, patch: &Value, now_ms: u64) -
     };
     let mut next = current.clone();
     {
-        let bools: [(&str, &mut bool); 12] = [
+        let bools: [(&str, &mut bool); 13] = [
             ("opencodeEnabled", &mut next.opencode_enabled),
             ("cursorEnabled", &mut next.cursor_enabled),
             ("grokEnabled", &mut next.grok_enabled),
@@ -764,6 +768,7 @@ pub fn apply_settings_patch_at(current: &Settings, patch: &Value, now_ms: u64) -
             ("fableShade", &mut next.fable_shade),
             ("startAtLogin", &mut next.start_at_login),
             ("autoHideExhausted", &mut next.auto_hide_exhausted),
+            ("systemMonitorEnabled", &mut next.system_monitor_enabled),
         ];
         for (key, slot) in bools {
             if let Some(Value::Bool(b)) = obj.get(key) {

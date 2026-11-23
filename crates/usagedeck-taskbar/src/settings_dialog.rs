@@ -231,13 +231,38 @@ pub fn open_settings_dialog_on_page(
     on_check_updates: Option<Box<dyn Fn(HWND) + Send + Sync>>,
 ) {
     let target_page = provider.map_or(PageId::General, PageId::Provider);
+    open_settings_dialog_on_target_page(
+        owner,
+        target_page,
+        provider.is_some(),
+        on_changed,
+        on_check_updates,
+    );
+}
 
+/// Open the native Direct2D UsageDeck Settings window directly on the **Widget** page
+/// (used by the System CPU/Memory hover card's Settings button).
+pub fn open_settings_dialog_on_widget(
+    owner: HWND,
+    on_changed: Box<dyn Fn() + Send + Sync>,
+    on_check_updates: Option<Box<dyn Fn(HWND) + Send + Sync>>,
+) {
+    open_settings_dialog_on_target_page(owner, PageId::Widget, true, on_changed, on_check_updates);
+}
+
+fn open_settings_dialog_on_target_page(
+    owner: HWND,
+    target_page: PageId,
+    switch_existing_page: bool,
+    on_changed: Box<dyn Fn() + Send + Sync>,
+    on_check_updates: Option<Box<dyn Fn(HWND) + Send + Sync>>,
+) {
     // Single-instance behavior: bring the open Settings window to front (and switch page if requested).
     let existing = SETTINGS_HWND.load(Ordering::Acquire);
     if existing != 0 {
         let hwnd = HWND(existing as *mut std::ffi::c_void);
         let mut new_title: Option<String> = None;
-        if provider.is_some() {
+        if switch_existing_page {
             try_with_state(|state| {
                 if state.page != target_page {
                     state.page = target_page;
@@ -1206,6 +1231,23 @@ fn execute_action(hwnd: HWND, action: Action) {
                     "Cards show provider names"
                 } else {
                     "Cards show nicknames"
+                });
+                deferred = DeferredAction::NotifyChanged(state.on_changed.clone());
+            }
+        }
+        Action::ToggleSystemMonitor => {
+            let next_val = !state.settings.system_monitor_enabled;
+            if state
+                .save_settings(|mut s| {
+                    s.system_monitor_enabled = next_val;
+                    s
+                })
+                .is_ok()
+            {
+                state.show_toast(if next_val {
+                    "System monitor shown on taskbar"
+                } else {
+                    "System monitor hidden from taskbar"
                 });
                 deferred = DeferredAction::NotifyChanged(state.on_changed.clone());
             }

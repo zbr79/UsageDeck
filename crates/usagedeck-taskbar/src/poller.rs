@@ -1,11 +1,13 @@
 //! Background Tokio polling engine that refreshes all enabled providers and
 //! Claude Code spend without blocking the Win32 UI thread.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use usagedeck_core::claude_logs;
 use usagedeck_core::store::{CredentialVault, Store, ThemeMode};
+use usagedeck_core::sysmon::{SystemMonitor, SystemSnapshot};
 use usagedeck_core::view::{demo_snapshot, poll_snapshot, ProviderKind, TaskbarSnapshot};
 use usagedeck_core::{default_data_dir, Core};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
@@ -17,6 +19,7 @@ pub const WM_APP_SNAPSHOT: u32 = WM_APP + 1;
 const POLL_INTERVAL: Duration = Duration::from_secs(60);
 const CURSOR_BURST_INTERVAL: Duration = Duration::from_secs(10);
 const CURSOR_BURST_WINDOW: Duration = Duration::from_secs(120);
+const SYSTEM_SAMPLE_INTERVAL: Duration = Duration::from_secs(2);
 
 pub enum PollerCmd {
     RefreshNow,
@@ -43,6 +46,8 @@ impl SharedSnapshot {
                 theme_mode: ThemeMode::Auto,
                 snoozed_count: 0,
                 taskbar_meter_style: usagedeck_core::store::TaskbarMeterStyle::default(),
+                system_monitor_enabled: true,
+                system: None,
             }
         };
         Arc::new(Self {
@@ -57,9 +62,35 @@ impl SharedSnapshot {
         (snap, loading)
     }
 
-    pub fn set(&self, snap: TaskbarSnapshot) {
-        *self.inner.lock().unwrap() = snap;
+    pub fn set(&self, mut snap: TaskbarSnapshot) {
+        let mut guard = self.inner.lock().unwrap();
+        if snap.system_monitor_enabled && snap.system.is_none() {
+            snap.system = guard.system.clone();
+        } else if !snap.system_monitor_enabled {
+            snap.system = None;
+        }
+        *guard = snap;
+        drop(guard);
         *self.loading.lock().unwrap() = false;
+    }
+
+    pub fn set_system(&self, system: Option<SystemSnapshot>) -> bool {
+        let mut guard = self.inner.lock().unwrap();
+        let next = if guard.system_monitor_enabled {
+            system
+        } else {
+            None
+        };
+        if guard.system != next {
+            guard.system = next;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn system_monitor_enabled(&self) -> bool {
+        self.inner.lock().unwrap().system_monitor_enabled
     }
 }
 
@@ -71,6 +102,33 @@ pub fn start_poller(
     demo: bool,
 ) -> Sender<PollerCmd> {
     let (tx, rx) = mpsc::channel::<PollerCmd>();
+    let stop_flag = Arc::new(AtomicBool::new(false));
+
+    if !demo {
+        let sys_shared = shared.clone();
+        let sys_stop = stop_flag.clone();
+        let _ = std::thread::Builder::new()
+            .name("usagedeck-sysmon".into())
+            .spawn(move || {
+                let mut monitor = SystemMonitor::new();
+                while !sys_stop.load(Ordering::Acquire) {
+                    if sys_shared.system_monitor_enabled() {
+                        if let Some(sample) = monitor.sample() {
+                            if sys_shared.set_system(Some(sample)) {
+                                post_snapshot_ready(target_hwnd);
+                            }
+                        }
+                    } else if sys_shared.set_system(None) {
+                        post_snapshot_ready(target_hwnd);
+                    }
+                    // Sleep in short slices so shutdown exits promptly.
+                    let deadline = Instant::now() + SYSTEM_SAMPLE_INTERVAL;
+                    while Instant::now() < deadline && !sys_stop.load(Ordering::Acquire) {
+                        std::thread::sleep(Duration::from_millis(200));
+                    }
+                }
+            });
+    }
 
     let _ = std::thread::Builder::new()
         .name("usagedeck-poller".into())
@@ -98,11 +156,13 @@ pub fn start_poller(
                         PollerCmd::Stop => break,
                     }
                 }
+                stop_flag.store(true, Ordering::Release);
                 return;
             }
 
             let Some(data_dir) = default_data_dir() else {
                 log::error!("APPDATA is not set; cannot load UsageDeck store");
+                stop_flag.store(true, Ordering::Release);
                 return;
             };
             let core = Core::new(Store::new(data_dir, Box::new(CredentialVault)));
@@ -145,6 +205,7 @@ pub fn start_poller(
                     }
                 }
             }
+            stop_flag.store(true, Ordering::Release);
         });
 
     tx
