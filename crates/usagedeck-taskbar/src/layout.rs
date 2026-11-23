@@ -1007,7 +1007,7 @@ mod tests {
     #[test]
     fn strip_hit_tests_individual_pills_and_gaps() {
         let snap = demo_snapshot(1_700_000_000_000);
-        let layout = compute_strip_layout(&snap, 920.0, false);
+        let layout = compute_strip_layout(&snap, 1040.0, false);
         for idx in 0..4 {
             let rect = layout.pill_rect(idx).expect("pill rect exists");
             assert_eq!(
@@ -1015,6 +1015,14 @@ mod tests {
                 Some(idx)
             );
         }
+        let sys_rect = layout.system_rect().expect("system rect exists");
+        assert!(
+            layout.hit_test_system(sys_rect.x + sys_rect.w * 0.5, sys_rect.y + sys_rect.h * 0.5)
+        );
+        assert_eq!(
+            layout.hit_test_pill(sys_rect.x + sys_rect.w * 0.5, sys_rect.y + sys_rect.h * 0.5),
+            None
+        );
         // Gap between pill 0 and pill 1 should return None.
         let p0 = layout.pill_rect(0).unwrap();
         let p1 = layout.pill_rect(1).unwrap();
@@ -1255,7 +1263,7 @@ mod tests {
     fn strip_hit_tests_exhausted_pill_hide_chip() {
         let now = 1_700_000_000_000i64;
         let snap = demo_snapshot(now);
-        let layout = compute_strip_layout(&snap, 920.0, false);
+        let layout = compute_strip_layout(&snap, 1040.0, false);
         let StripMode::Pills { ref slots, .. } = layout.mode else {
             panic!("expected Pills mode");
         };
