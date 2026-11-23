@@ -1085,27 +1085,49 @@ fn draw_card(state: &UiState, rt: &ID2D1DCRenderTarget) -> Result<()> {
         )?;
     }
 
-    // Brand header: crisp vector emblem (three stacked usage bars) + title + version pill.
+    // Brand header: crisp Gemini Gem vector emblem (three stacked usage bars + ✦ gem spark).
     let badge = DipRect::new(CARD_PAD_DIP, 28.0, 48.0, 48.0);
-    r.fill_rounded(rt, badge, 12.0, rgba(32, 34, 38, 1.0))?;
-    r.stroke_rounded(rt, badge, 12.0, 1.0, rgba(0, 212, 146, 0.42))?;
+    r.fill_rounded(rt, badge, 12.0, rgba(22, 26, 32, 1.0))?;
+    r.stroke_rounded(rt, badge, 12.0, 1.25, rgba(0, 212, 146, 0.55))?;
+    // Top bar + Gemini Gem sparkle
     r.fill_rounded(
         rt,
-        DipRect::new(CARD_PAD_DIP + 10.0, 40.0, 28.0, 5.5),
+        DipRect::new(CARD_PAD_DIP + 9.0, 39.0, 17.0, 5.5),
         2.75,
         accent,
     )?;
+    r.draw_text(
+        rt,
+        "✦",
+        &r.fmt_version,
+        DipRect::new(CARD_PAD_DIP + 27.0, 32.0, 14.0, 16.0),
+        rgba(110, 250, 202, 1.0),
+    )?;
+    // Middle bar + dark track
     r.fill_rounded(
         rt,
-        DipRect::new(CARD_PAD_DIP + 10.0, 49.5, 20.0, 5.5),
+        DipRect::new(CARD_PAD_DIP + 9.0, 49.0, 30.0, 5.5),
         2.75,
-        rgba(56, 189, 248, 0.95),
+        rgba(38, 45, 56, 0.95),
     )?;
     r.fill_rounded(
         rt,
-        DipRect::new(CARD_PAD_DIP + 10.0, 59.0, 13.0, 5.5),
+        DipRect::new(CARD_PAD_DIP + 9.0, 49.0, 23.0, 5.5),
         2.75,
-        rgba(167, 139, 250, 0.95),
+        rgba(45, 232, 180, 0.96),
+    )?;
+    // Bottom bar + dark track
+    r.fill_rounded(
+        rt,
+        DipRect::new(CARD_PAD_DIP + 9.0, 59.0, 30.0, 5.5),
+        2.75,
+        rgba(38, 45, 56, 0.95),
+    )?;
+    r.fill_rounded(
+        rt,
+        DipRect::new(CARD_PAD_DIP + 9.0, 59.0, 15.0, 5.5),
+        2.75,
+        rgba(56, 189, 248, 0.95),
     )?;
 
     let title_x = CARD_PAD_DIP + 62.0;

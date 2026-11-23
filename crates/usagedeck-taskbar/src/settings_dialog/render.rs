@@ -463,37 +463,37 @@ impl SettingsRenderer {
 
         if let Some((ref rect, ref label)) = layout.nav_update_btn {
             let is_hover = hovered == Some(&Action::CheckUpdates);
-            self.fill_rounded(
-                rt,
-                *rect,
-                5.0,
+            let bg = if pal.is_gemini_gem {
                 if is_hover {
                     pal.primary_hover
                 } else {
                     pal.primary_bg
-                },
-            )?;
-            self.stroke_rounded(
-                rt,
-                *rect,
-                5.0,
-                1.0,
+                }
+            } else if is_hover {
+                pal.nav_active
+            } else {
+                pal.nav_hover
+            };
+            let border = if pal.is_gemini_gem {
                 if is_hover {
                     with_alpha(pal.accent, 0.72)
                 } else {
                     pal.primary_border
-                },
-            )?;
+                }
+            } else {
+                with_alpha(pal.accent, 0.45)
+            };
+            self.fill_rounded(rt, *rect, 5.0, bg)?;
+            self.stroke_rounded(rt, *rect, 5.0, 1.0, border)?;
             let arrow_rect = DipRect::new(rect.x + 10.0, rect.y, 16.0, rect.h);
             self.draw_text(rt, "↓", &self.fmt_nav_active, arrow_rect, pal.accent)?;
             let lbl_rect = DipRect::new(rect.x + 28.0, rect.y, (rect.w - 36.0).max(20.0), rect.h);
-            self.draw_text(
-                rt,
-                label,
-                &self.fmt_nav_active,
-                lbl_rect,
-                if is_hover { pal.text } else { pal.accent_text },
-            )?;
+            let lbl_fg = if pal.is_gemini_gem && !is_hover {
+                pal.accent_text
+            } else {
+                pal.text
+            };
+            self.draw_text(rt, label, &self.fmt_nav_active, lbl_rect, lbl_fg)?;
         }
 
         // ---- Right Content Pane (clipped & vertically scrolled) ----
@@ -545,8 +545,10 @@ impl SettingsRenderer {
         if let Some((ref rect, ref msg)) = layout.toast {
             self.fill_rounded(rt, *rect, 6.0, pal.toast_bg)?;
             self.stroke_rounded(rt, *rect, 6.0, 1.0, pal.toast_border)?;
-            let bar = DipRect::new(rect.x + 1.0, rect.y + 6.0, 2.5, (rect.h - 12.0).max(8.0));
-            self.fill_rounded(rt, bar, 1.25, pal.accent)?;
+            if pal.is_gemini_gem {
+                let bar = DipRect::new(rect.x + 1.0, rect.y + 6.0, 2.5, (rect.h - 12.0).max(8.0));
+                self.fill_rounded(rt, bar, 1.25, pal.accent)?;
+            }
             let dot = DipRect::new(rect.x + 13.0, rect.y + (rect.h - 7.0) * 0.5, 7.0, 7.0);
             self.fill_rounded(rt, dot, 3.5, pal.accent)?;
             let text_rect = DipRect::new(rect.x + 27.0, rect.y, (rect.w - 37.0).max(20.0), rect.h);
@@ -732,7 +734,9 @@ impl SettingsRenderer {
                     let is_hover = hovered == Some(&opt.action);
                     if opt.selected {
                         self.fill_rounded(rt, or, 4.0, pal.primary_bg)?;
-                        self.stroke_rounded(rt, or, 4.0, 1.0, pal.primary_border)?;
+                        if pal.is_gemini_gem {
+                            self.stroke_rounded(rt, or, 4.0, 1.0, pal.primary_border)?;
+                        }
                         self.draw_text(rt, opt.label, &self.fmt_btn, or, pal.primary_fg)?;
                     } else {
                         if is_hover {
@@ -756,18 +760,26 @@ impl SettingsRenderer {
                     }
                     let is_hover = !chip.disabled && hovered == Some(&chip.action);
                     let alpha = if chip.disabled { 0.55 } else { 1.0 };
-                    let bg = if chip.checked {
-                        if is_hover {
-                            pal.primary_hover
+                    let bg = if pal.is_gemini_gem {
+                        if chip.checked {
+                            if is_hover {
+                                pal.primary_hover
+                            } else {
+                                with_alpha(pal.accent, if pal.is_light { 0.10 } else { 0.12 })
+                            }
+                        } else if is_hover {
+                            pal.surface_hover
                         } else {
-                            with_alpha(pal.accent, if pal.is_light { 0.10 } else { 0.12 })
+                            rgba(0, 0, 0, 0.0)
                         }
                     } else if is_hover {
                         pal.surface_hover
+                    } else if chip.checked {
+                        pal.surface
                     } else {
                         rgba(0, 0, 0, 0.0)
                     };
-                    let border = if chip.checked {
+                    let border = if pal.is_gemini_gem && chip.checked {
                         with_alpha(
                             pal.accent,
                             if is_hover {
@@ -776,7 +788,7 @@ impl SettingsRenderer {
                                 (if pal.is_light { 0.36 } else { 0.42 }) * alpha
                             },
                         )
-                    } else if is_hover {
+                    } else if chip.checked || is_hover {
                         with_alpha(pal.border, alpha)
                     } else {
                         with_alpha(pal.card_border, alpha)
@@ -1509,18 +1521,20 @@ impl SettingsRenderer {
                 } else {
                     pal.primary_bg
                 };
-                let border = if hovered {
-                    with_alpha(pal.accent, 0.75 * alpha)
-                } else {
-                    with_alpha(pal.primary_border, alpha)
-                };
-                let fg = if hovered && !pal.is_light {
+                self.fill_rounded(rt, rect, 5.0, with_alpha(bg, alpha))?;
+                if pal.is_gemini_gem {
+                    let border = if hovered {
+                        with_alpha(pal.accent, 0.75 * alpha)
+                    } else {
+                        with_alpha(pal.primary_border, alpha)
+                    };
+                    self.stroke_rounded(rt, rect, 5.0, 1.0, border)?;
+                }
+                let fg = if pal.is_gemini_gem && hovered && !pal.is_light {
                     with_alpha(pal.text, alpha)
                 } else {
                     with_alpha(pal.primary_fg, alpha)
                 };
-                self.fill_rounded(rt, rect, 5.0, with_alpha(bg, alpha))?;
-                self.stroke_rounded(rt, rect, 5.0, 1.0, border)?;
                 self.draw_text(rt, label, &self.fmt_btn, rect, fg)?;
             }
             ButtonStyle::Secondary => {
@@ -1529,7 +1543,7 @@ impl SettingsRenderer {
                 } else {
                     pal.surface
                 };
-                let border = if hovered {
+                let border = if pal.is_gemini_gem && hovered {
                     with_alpha(pal.accent, (if pal.is_light { 0.36 } else { 0.42 }) * alpha)
                 } else {
                     with_alpha(pal.border, alpha)
@@ -1542,7 +1556,7 @@ impl SettingsRenderer {
                 if hovered {
                     self.fill_rounded(rt, rect, rect.h * 0.5, pal.surface_hover)?;
                 }
-                let border = if hovered {
+                let border = if pal.is_gemini_gem && hovered {
                     with_alpha(pal.accent, if pal.is_light { 0.36 } else { 0.42 })
                 } else {
                     pal.border

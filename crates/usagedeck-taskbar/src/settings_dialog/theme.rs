@@ -4,7 +4,8 @@
 //! Color tokens faithfully reproduce the v1.5.15 WinUI-inspired dark and light
 //! palettes from `src/settings/App.tsx` and `src/ui/palette.ts`.
 
-use usagedeck_core::store::PanelTheme;
+use std::sync::atomic::{AtomicU8, Ordering};
+use usagedeck_core::store::{AppSkin, PanelTheme};
 use usagedeck_core::view::{BarSeverity, SettingsPaceData};
 use windows::core::w;
 use windows::Win32::Foundation::HWND;
@@ -13,6 +14,23 @@ use windows::Win32::Graphics::Dwm::{
     DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE,
 };
 use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
+
+static ACTIVE_APP_SKIN: AtomicU8 = AtomicU8::new(1);
+
+pub fn set_active_app_skin(skin: AppSkin) {
+    let val = match skin {
+        AppSkin::Default => 0,
+        AppSkin::GeminiGem => 1,
+    };
+    ACTIVE_APP_SKIN.store(val, Ordering::Release);
+}
+
+pub fn active_app_skin() -> AppSkin {
+    match ACTIVE_APP_SKIN.load(Ordering::Acquire) {
+        0 => AppSkin::Default,
+        _ => AppSkin::GeminiGem,
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BadgeTone {
@@ -33,6 +51,7 @@ pub struct BadgeColors {
 #[derive(Clone, Copy)]
 pub struct SettingsPalette {
     pub is_light: bool,
+    pub is_gemini_gem: bool,
     pub page: D2D1_COLOR_F,
     pub card: D2D1_COLOR_F,
     pub card_border: D2D1_COLOR_F,
@@ -93,16 +112,23 @@ pub fn with_alpha(c: D2D1_COLOR_F, alpha_scale: f32) -> D2D1_COLOR_F {
 
 impl SettingsPalette {
     pub fn for_mode(is_dark: bool) -> Self {
-        if is_dark {
-            Self::dark()
-        } else {
-            Self::light()
+        Self::for_mode_and_skin(is_dark, active_app_skin())
+    }
+
+    pub fn for_mode_and_skin(is_dark: bool, skin: AppSkin) -> Self {
+        set_active_app_skin(skin);
+        match (is_dark, skin) {
+            (true, AppSkin::GeminiGem) => Self::dark_gemini_gem(),
+            (false, AppSkin::GeminiGem) => Self::light_gemini_gem(),
+            (true, AppSkin::Default) => Self::dark_default(),
+            (false, AppSkin::Default) => Self::light_default(),
         }
     }
 
-    pub const fn dark() -> Self {
+    pub const fn dark_gemini_gem() -> Self {
         Self {
             is_light: false,
+            is_gemini_gem: true,
             page: rgb(0x16, 0x18, 0x1c),
             card: rgb(0x1e, 0x21, 0x27),
             card_border: rgba(255, 255, 255, 0.08),
@@ -140,9 +166,10 @@ impl SettingsPalette {
         }
     }
 
-    pub const fn light() -> Self {
+    pub const fn light_gemini_gem() -> Self {
         Self {
             is_light: true,
+            is_gemini_gem: true,
             page: rgb(0xf4, 0xf6, 0xf8),
             card: rgb(0xff, 0xff, 0xff),
             card_border: rgba(15, 23, 42, 0.09),
@@ -177,6 +204,88 @@ impl SettingsPalette {
             scrollbar_thumb_hover: rgba(0, 153, 102, 0.45),
             toast_bg: rgb(0x16, 0x18, 0x1c),
             toast_border: rgba(0, 212, 146, 0.42),
+        }
+    }
+
+    pub const fn dark_default() -> Self {
+        Self {
+            is_light: false,
+            is_gemini_gem: false,
+            page: rgb(0x20, 0x20, 0x20),
+            card: rgb(0x2b, 0x2b, 0x2b),
+            card_border: rgb(0x1d, 0x1d, 0x1d),
+            nav_hover: rgba(255, 255, 255, 0.06),
+            nav_active: rgba(255, 255, 255, 0.09),
+            nav_active_border: rgba(0, 0, 0, 0.0),
+            accent: rgb(0x00, 0xd4, 0x92),
+            accent_text: rgb(0xf4, 0xf4, 0xf5),
+            switch_on: rgb(0x00, 0x99, 0x66),
+            text: rgb(0xf4, 0xf4, 0xf5),
+            text_secondary: rgb(0xd4, 0xd4, 0xd8),
+            muted: rgb(0x9f, 0x9f, 0xa9),
+            surface: rgb(0x27, 0x27, 0x2a),
+            surface_hover: rgb(0x3f, 0x3f, 0x46),
+            border: rgb(0x3f, 0x3f, 0x46),
+            input_border: rgb(0x71, 0x71, 0x7b),
+            primary_bg: rgb(0xe4, 0xe4, 0xe7),
+            primary_hover: rgb(0xd4, 0xd4, 0xd8),
+            primary_border: rgba(0, 0, 0, 0.0),
+            primary_fg: rgb(0x18, 0x18, 0x1b),
+            bar_ok: rgb(0x00, 0xd4, 0x92),
+            bar_warn: rgb(0xff, 0xb9, 0x00),
+            bar_danger: rgb(0xff, 0x64, 0x67),
+            bar_dim: rgb(0x71, 0x71, 0x7b),
+            track: rgba(255, 255, 255, 0.15),
+            warn_text: rgb(0xff, 0xd2, 0x30),
+            chart_all: rgb(0x8e, 0xc5, 0xff),
+            chart_fable: rgb(0xff, 0xd2, 0x30),
+            chart_all_rgb: (0x8e, 0xc5, 0xff),
+            chart_fable_rgb: (0xff, 0xd2, 0x30),
+            scrollbar_thumb: rgba(255, 255, 255, 0.22),
+            scrollbar_thumb_hover: rgba(255, 255, 255, 0.36),
+            toast_bg: rgb(0x27, 0x27, 0x2a),
+            toast_border: rgb(0x52, 0x52, 0x5b),
+        }
+    }
+
+    pub const fn light_default() -> Self {
+        Self {
+            is_light: true,
+            is_gemini_gem: false,
+            page: rgb(0xf3, 0xf3, 0xf3),
+            card: rgb(0xfb, 0xfb, 0xfb),
+            card_border: rgb(0xe5, 0xe5, 0xe5),
+            nav_hover: rgba(0, 0, 0, 0.04),
+            nav_active: rgba(0, 0, 0, 0.06),
+            nav_active_border: rgba(0, 0, 0, 0.0),
+            accent: rgb(0x00, 0x99, 0x66),
+            accent_text: rgb(0x18, 0x18, 0x1b),
+            switch_on: rgb(0x00, 0x99, 0x66),
+            text: rgb(0x18, 0x18, 0x1b),
+            text_secondary: rgb(0x3f, 0x3f, 0x46),
+            muted: rgb(0x52, 0x52, 0x5c),
+            surface: rgb(0xf4, 0xf4, 0xf5),
+            surface_hover: rgb(0xe4, 0xe4, 0xe7),
+            border: rgb(0xd4, 0xd4, 0xd8),
+            input_border: rgb(0x71, 0x71, 0x7b),
+            primary_bg: rgb(0x18, 0x18, 0x1b),
+            primary_hover: rgb(0x3f, 0x3f, 0x46),
+            primary_border: rgba(0, 0, 0, 0.0),
+            primary_fg: rgb(0xff, 0xff, 0xff),
+            bar_ok: rgb(0x00, 0x7a, 0x55),
+            bar_warn: rgb(0xbb, 0x4d, 0x00),
+            bar_danger: rgb(0xc1, 0x00, 0x07),
+            bar_dim: rgb(0x71, 0x71, 0x7b),
+            track: rgba(113, 113, 123, 0.20),
+            warn_text: rgb(0x97, 0x3c, 0x00),
+            chart_all: rgb(0x19, 0x3c, 0xb8),
+            chart_fable: rgb(0x97, 0x3c, 0x00),
+            chart_all_rgb: (0x19, 0x3c, 0xb8),
+            chart_fable_rgb: (0x97, 0x3c, 0x00),
+            scrollbar_thumb: rgba(0, 0, 0, 0.22),
+            scrollbar_thumb_hover: rgba(0, 0, 0, 0.36),
+            toast_bg: rgb(0x18, 0x18, 0x1b),
+            toast_border: rgb(0x3f, 0x3f, 0x46),
         }
     }
 
@@ -295,24 +404,20 @@ pub fn resolve_is_dark(panel_theme: PanelTheme) -> bool {
     }
 }
 
-/// Apply native dark or light caption bar, obsidian/porcelain caption fill, and subtle emerald
-/// hairline frame via DWM (`DWMWA_USE_IMMERSIVE_DARK_MODE`, `DWMWA_CAPTION_COLOR`,
-/// `DWMWA_BORDER_COLOR`). Unsupported attributes on Windows 10 are safely ignored.
+/// Apply native dark or light caption bar, caption fill, and skin-appropriate frame border via DWM
+/// (`DWMWA_USE_IMMERSIVE_DARK_MODE`, `DWMWA_CAPTION_COLOR`, `DWMWA_BORDER_COLOR`).
 pub fn apply_titlebar_theme(hwnd: HWND, is_dark: bool) {
     if hwnd.is_invalid() {
         return;
     }
+    let skin = active_app_skin();
     let dark_val: i32 = i32::from(is_dark);
-    // Win32 COLORREF layout is 0x00BBGGRR.
-    let caption_color: u32 = if is_dark {
-        0x001c_1816 // #16181C obsidian
-    } else {
-        0x00f8_f6f4 // #F4F6F8 porcelain
-    };
-    let border_color: u32 = if is_dark {
-        0x003b_4a16 // #164A3B subtle dark emerald hairline
-    } else {
-        0x00ce_e3a7 // #A7E3CE soft jade hairline
+    // Win32 COLORREF layout is 0x00BBGGRR (`0xFFFFFFFF` = `DWMWA_COLOR_DEFAULT`).
+    let (caption_color, border_color): (u32, u32) = match (is_dark, skin) {
+        (true, AppSkin::GeminiGem) => (0x001c_1816, 0x003b_4a16), // #16181C obsidian + #164A3B emerald border
+        (false, AppSkin::GeminiGem) => (0x00f8_f6f4, 0x00ce_e3a7), // #F4F6F8 porcelain + #A7E3CE jade border
+        (true, AppSkin::Default) => (0x0020_2020, 0xffff_ffff), // #202020 classic dark + default border
+        (false, AppSkin::Default) => (0x00f3_f3f3, 0xffff_ffff), // #F3F3F3 classic light + default border
     };
     // SAFETY: Each pointer refers to a valid stack-owned 4-byte Win32 attribute value.
     unsafe {

@@ -642,20 +642,33 @@ fn run_modal(
             font_norm,
         );
 
-        let (bg_color, input_bg, fg_color, err_color) = if is_dark {
-            (
+        let is_gem = crate::settings_dialog::theme::active_app_skin()
+            == usagedeck_core::store::AppSkin::GeminiGem;
+        let (bg_color, input_bg, fg_color, err_color) = match (is_dark, is_gem) {
+            (true, true) => (
                 colorref(0x16, 0x18, 0x1c),
                 colorref(0x1e, 0x21, 0x27),
                 colorref(0xf4, 0xf4, 0xf6),
                 colorref(0xff, 0x80, 0x80),
-            )
-        } else {
-            (
+            ),
+            (true, false) => (
+                colorref(0x20, 0x20, 0x20),
+                colorref(0x2b, 0x2b, 0x2b),
+                colorref(0xf4, 0xf4, 0xf5),
+                colorref(0xff, 0x80, 0x80),
+            ),
+            (false, true) => (
                 colorref(0xf4, 0xf6, 0xf8),
                 colorref(0xff, 0xff, 0xff),
                 colorref(0x16, 0x18, 0x1c),
                 colorref(0xc1, 0x00, 0x07),
-            )
+            ),
+            (false, false) => (
+                colorref(0xf3, 0xf3, 0xf3),
+                colorref(0xff, 0xff, 0xff),
+                colorref(0x18, 0x18, 0x1b),
+                colorref(0xc1, 0x00, 0x07),
+            ),
         };
         let bg_brush = CreateSolidBrush(bg_color);
         let input_brush = CreateSolidBrush(input_bg);

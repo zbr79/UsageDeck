@@ -8,7 +8,9 @@ use crate::settings_dialog::theme::{
     calibration_text, format_share_pct, format_snooze_duration, format_usd, format_usd_rate,
     plan_badge_tone, spend_series, BadgeTone, SpendRange,
 };
-use usagedeck_core::store::{PanelTheme, Settings, TaskbarMeterStyle, ThemeMode, WidgetProvider};
+use usagedeck_core::store::{
+    AppSkin, PanelTheme, Settings, TaskbarMeterStyle, ThemeMode, WidgetProvider,
+};
 use usagedeck_core::view::{
     BarSeverity, BarView, ProviderKind, SettingsAccountRow, SettingsSnapshot,
 };
@@ -94,6 +96,7 @@ pub enum Action {
     ToggleHideInFullscreen,
     ToggleAutoHideExhausted,
     SetPanelTheme(PanelTheme),
+    SetAppSkin(AppSkin),
     SetWidgetTheme(ThemeMode),
     SetMeterStyle(TaskbarMeterStyle),
     MoveProviderUp(WidgetProvider),
@@ -1031,6 +1034,21 @@ fn build_general_page(b: &mut ContentBuilder, input: &LayoutInput<'_>) {
     // Theme section
     b.add_section_heading("Theme", 26.0);
     b.add_segmented_row(
+        "App skin",
+        &[
+            (
+                "Default",
+                input.settings.app_skin == AppSkin::Default,
+                Action::SetAppSkin(AppSkin::Default),
+            ),
+            (
+                "Gemini Gem",
+                input.settings.app_skin == AppSkin::GeminiGem,
+                Action::SetAppSkin(AppSkin::GeminiGem),
+            ),
+        ],
+    );
+    b.add_segmented_row(
         "Settings theme",
         &[
             (
@@ -1119,12 +1137,28 @@ fn build_style_page(b: &mut ContentBuilder, input: &LayoutInput<'_>) {
         None,
         "Style",
         Some(
-            "Choose how rolling (R), weekly (W), and monthly (M) meters look on your taskbar."
+            "Choose your app skin and how rolling (R), weekly (W), and monthly (M) meters look on your taskbar."
                 .to_string(),
         ),
         &[],
     );
-    b.add_section_heading("Taskbar meter design", 0.0);
+    b.add_section_heading("Skin", 0.0);
+    b.add_segmented_row(
+        "App skin",
+        &[
+            (
+                "Default",
+                input.settings.app_skin == AppSkin::Default,
+                Action::SetAppSkin(AppSkin::Default),
+            ),
+            (
+                "Gemini Gem",
+                input.settings.app_skin == AppSkin::GeminiGem,
+                Action::SetAppSkin(AppSkin::GeminiGem),
+            ),
+        ],
+    );
+    b.add_section_heading("Taskbar meter design", 26.0);
 
     let styles: [(TaskbarMeterStyle, &'static str, &'static str); 4] = [
         (

@@ -309,6 +309,7 @@ fn open_settings_dialog_on_target_page(
         .build()
         .ok();
     let settings = store.as_ref().map(Store::get_settings).unwrap_or_default();
+    theme::set_active_app_skin(settings.app_skin);
     let is_dark = resolve_is_dark(settings.panel_theme);
 
     let initial_page = target_page;
@@ -1130,8 +1131,31 @@ fn execute_action(hwnd: HWND, action: Action) {
                 })
                 .is_ok()
             {
+                theme::set_active_app_skin(state.settings.app_skin);
                 new_dark_titlebar = Some(resolve_is_dark(theme));
                 state.rebuild_layout();
+                state.invalidate();
+                deferred = DeferredAction::NotifyChanged(state.on_changed.clone());
+            }
+        }
+        Action::SetAppSkin(skin) => {
+            if state.settings.app_skin == skin {
+                return;
+            }
+            if state
+                .save_settings(|mut s| {
+                    s.app_skin = skin;
+                    s
+                })
+                .is_ok()
+            {
+                theme::set_active_app_skin(skin);
+                new_dark_titlebar = Some(resolve_is_dark(state.settings.panel_theme));
+                state.rebuild_layout();
+                state.show_toast(match skin {
+                    usagedeck_core::store::AppSkin::Default => "Switched to Default skin",
+                    usagedeck_core::store::AppSkin::GeminiGem => "Switched to Gemini Gem skin",
+                });
                 state.invalidate();
                 deferred = DeferredAction::NotifyChanged(state.on_changed.clone());
             }
@@ -2084,7 +2108,7 @@ unsafe extern "system" fn settings_wnd_proc(
         WM_PAINT => {
             try_with_state(|state| {
                 let is_dark = resolve_is_dark(state.settings.panel_theme);
-                let pal = SettingsPalette::for_mode(is_dark);
+                let pal = SettingsPalette::for_mode_and_skin(is_dark, state.settings.app_skin);
                 state.renderer.paint_window(
                     hwnd,
                     state.dpi,
