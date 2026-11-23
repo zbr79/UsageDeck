@@ -2362,8 +2362,8 @@ unsafe extern "system" fn settings_wnd_proc(
             SETTINGS_HWND.store(0, Ordering::Release);
             SETTINGS_STATE.with(|cell| {
                 if let Ok(mut borrow) = cell.try_borrow_mut() {
-                    if let Some(st) = borrow.take() {
-                        if let Some(snap) = st.snapshot {
+                    if let Some(mut st) = borrow.take() {
+                        if let Some(snap) = st.snapshot.take() {
                             if let Ok(mut last) = LAST_SETTINGS_SNAPSHOT.lock() {
                                 *last = Some(snap);
                             }
