@@ -675,6 +675,28 @@ pub fn attribute_processes(
     (top_cpu, top_memory)
 }
 
+/// Official `psapi.h` `PROCESS_MEMORY_COUNTERS_EX2` layout (Windows 10/11 22H2+).
+/// Exposes `private_working_set_size` (exact physical RAM privately owned by a process, matching
+/// Windows Task Manager's Memory column and excluding pagefile commit charge & shared DLLs).
+#[cfg(windows)]
+#[repr(C)]
+#[derive(Default)]
+struct ProcessMemoryCountersEx2 {
+    cb: u32,
+    page_fault_count: u32,
+    peak_working_set_size: usize,
+    working_set_size: usize,
+    quota_peak_paged_pool_usage: usize,
+    quota_paged_pool_usage: usize,
+    quota_peak_non_paged_pool_usage: usize,
+    quota_non_paged_pool_usage: usize,
+    pagefile_usage: usize,
+    peak_pagefile_usage: usize,
+    private_usage: usize,
+    private_working_set_size: usize,
+    shared_commit_usage: u64,
+}
+
 /// Stateful native system monitor that computes delta CPU% across samples and attributes live
 /// CPU & Memory usage back to originating applications.
 #[derive(Default)]
@@ -844,26 +866,37 @@ impl SystemMonitor {
                                 next_proc_times.insert(pid, (creation_time, total_proc_time));
                             }
 
-                            let mut pmc = PROCESS_MEMORY_COUNTERS_EX {
-                                cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
+                            let mut pmc2 = ProcessMemoryCountersEx2 {
+                                cb: std::mem::size_of::<ProcessMemoryCountersEx2>() as u32,
                                 ..Default::default()
                             };
                             if K32GetProcessMemoryInfo(
                                 hproc,
-                                &mut pmc as *mut PROCESS_MEMORY_COUNTERS_EX
-                                    as *mut PROCESS_MEMORY_COUNTERS,
-                                std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
+                                std::ptr::from_mut(&mut pmc2).cast::<PROCESS_MEMORY_COUNTERS>(),
+                                std::mem::size_of::<ProcessMemoryCountersEx2>() as u32,
                             )
                             .as_bool()
                             {
-                                let stem = exe_stem_lower(&exe_name);
-                                memory_bytes = if stem.starts_with("vmmem") {
-                                    (pmc.WorkingSetSize.max(pmc.PrivateUsage)) as u64
-                                } else if pmc.PrivateUsage > 0 {
-                                    pmc.PrivateUsage as u64
+                                memory_bytes = if pmc2.private_working_set_size > 0 {
+                                    pmc2.private_working_set_size as u64
                                 } else {
-                                    pmc.WorkingSetSize as u64
+                                    pmc2.working_set_size as u64
                                 };
+                            } else {
+                                let mut pmc = PROCESS_MEMORY_COUNTERS_EX {
+                                    cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
+                                    ..Default::default()
+                                };
+                                if K32GetProcessMemoryInfo(
+                                    hproc,
+                                    std::ptr::from_mut(&mut pmc).cast::<PROCESS_MEMORY_COUNTERS>(),
+                                    std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
+                                )
+                                .as_bool()
+                                {
+                                    // Always use physical WorkingSetSize (never PrivateUsage pagefile commit).
+                                    memory_bytes = pmc.WorkingSetSize as u64;
+                                }
                             }
 
                             let mut path_len = path_buf.len() as u32;
