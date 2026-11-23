@@ -991,7 +991,11 @@ fn finalize_tracked_items(
                 spend_rate_text: p.spend_rate_text,
                 spend_rate_severity: p.spend_rate_severity,
                 secondary: false,
-                display_email: p.display_email,
+                display_email: if settings.show_provider_names {
+                    None
+                } else {
+                    p.display_email
+                },
                 reset_short: p.reset_short,
                 subtitle: p.subtitle,
                 auth_expired: p.auth_expired,
@@ -1119,42 +1123,8 @@ where
             raw_bars.push(bar);
         }
 
-        let mut hover_raw = raw_bars.clone();
-        let has_scoped_label = |needle: &str| {
-            u.weekly_scoped
-                .iter()
-                .any(|s| s.label.trim().eq_ignore_ascii_case(needle))
-        };
-        if !has_scoped_label("Opus") {
-            if let Some(ref opus) = u.weekly_opus {
-                if opus.percent.is_some() || opus.resets_at.is_some() {
-                    hover_raw.push(BarView::new(
-                        "scoped",
-                        "Opus",
-                        opus.percent,
-                        opus.resets_at.clone(),
-                        now_ms,
-                        auth_expired,
-                    ));
-                }
-            }
-        }
-        if !has_scoped_label("Sonnet") {
-            if let Some(ref sonnet) = u.weekly_sonnet {
-                if sonnet.percent.is_some() || sonnet.resets_at.is_some() {
-                    hover_raw.push(BarView::new(
-                        "scoped",
-                        "Sonnet",
-                        sonnet.percent,
-                        sonnet.resets_at.clone(),
-                        now_ms,
-                        auth_expired,
-                    ));
-                }
-            }
-        }
-        let hover_bars = non_empty_hover_bars(hover_raw);
         let flyout_bars = filter_hidden_bars(raw_bars, &hidden);
+        let hover_bars = non_empty_hover_bars(flyout_bars.clone());
 
         // Only check visible fiveHour and weekly bars; explicitly exclude scoped (Fable).
         let exhausted = flyout_bars
@@ -1304,8 +1274,8 @@ fn build_cursor_items(
         }
 
         let raw_bars = vec![fp_bar, api_bar];
-        let hover_bars = non_empty_hover_bars(raw_bars.clone());
         let flyout_bars = filter_hidden_bars(raw_bars, &hidden);
+        let hover_bars = non_empty_hover_bars(flyout_bars.clone());
 
         let known_bars: Vec<&BarView> =
             flyout_bars.iter().filter(|b| b.percent.is_some()).collect();
@@ -1458,8 +1428,8 @@ fn build_codex_items(
                 auth_expired,
             ));
         }
-        let hover_bars = non_empty_hover_bars(raw_bars.clone());
         let flyout_bars = filter_hidden_bars(raw_bars, &hidden);
+        let hover_bars = non_empty_hover_bars(flyout_bars.clone());
 
         let five_hour_shown = flyout_bars.iter().any(|b| b.key == "fiveHour");
         let five_hour_stale_passed = stale && is_passed(u.reset_at.as_deref(), now_ms);
@@ -1678,7 +1648,6 @@ fn build_antigravity_items(
             continue;
         }
 
-        let hover_bars = non_empty_hover_bars(raw_bars.clone());
         let flyout_bars = {
             let f = filter_hidden_bars(raw_bars.clone(), &hidden);
             if f.is_empty() {
@@ -1687,6 +1656,7 @@ fn build_antigravity_items(
                 f
             }
         };
+        let hover_bars = non_empty_hover_bars(flyout_bars.clone());
         let taskbar_bars = pick_taskbar_bars(&flyout_bars);
         let exhausted = flyout_bars
             .iter()
@@ -1846,13 +1816,15 @@ fn build_opencode_items(
         }
 
         let raw_bars = vec![rolling_bar, weekly_bar, monthly_bar];
-        let hover_bars = non_empty_hover_bars(raw_bars.clone());
         let flyout_bars = filter_hidden_bars(raw_bars, &hidden);
+        let hover_bars = non_empty_hover_bars(flyout_bars.clone());
         let taskbar_bars = pick_taskbar_bars(&flyout_bars);
         let reset_short = flyout_bars.first().and_then(|b| b.reset_short.clone());
         let title = opencode_account_title(settings, email);
         let subtitle = if auth_expired {
             Some("key rejected".to_string())
+        } else if settings.show_provider_names {
+            None
         } else {
             Some(email.to_string())
         };
@@ -1884,7 +1856,11 @@ fn build_opencode_items(
                 spend_rate_text: None,
                 spend_rate_severity: BarSeverity::Muted,
                 secondary: false,
-                display_email: Some(email.to_string()),
+                display_email: if settings.show_provider_names {
+                    None
+                } else {
+                    Some(email.to_string())
+                },
                 reset_short,
                 subtitle,
                 auth_expired,
@@ -3700,10 +3676,10 @@ mod tests {
         assert_eq!(item.exhausted_until_ms, None);
         assert_eq!(item.flyout_bars.len(), 2);
         assert_eq!(item.flyout_bars[0].key, "weekly");
-        // hover_bars keeps ALL raw bars including the hidden fiveHour bar.
-        assert_eq!(item.hover_bars.len(), 3);
-        assert_eq!(item.hover_bars[0].key, "fiveHour");
-        assert_eq!(item.hover_bars[2].key, "scoped");
+        // hover_bars respects settings.hidden_bars (fiveHour is hidden here).
+        assert_eq!(item.hover_bars.len(), 2);
+        assert_eq!(item.hover_bars[0].key, "weekly");
+        assert_eq!(item.hover_bars[1].key, "scoped");
         assert_eq!(item.resets_badge.as_deref(), Some("↺ 2"));
         assert_eq!(
             item.hover_details,
@@ -3930,6 +3906,8 @@ mod tests {
         let (items_provider_names, _) = build_grok_items(&rows, &settings, NOW);
         assert_eq!(items_provider_names[0].title, "Grok");
         assert_eq!(items_provider_names[1].title, "Grok");
+        assert_eq!(items_provider_names[0].display_email, None);
+        assert_eq!(items_provider_names[1].display_email, None);
     }
 
     #[test]
@@ -3975,7 +3953,7 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].title, "dev@cursor.sh");
         assert_eq!(items[0].flyout_bars.len(), 1);
-        assert_eq!(items[0].hover_bars.len(), 2);
+        assert_eq!(items[0].hover_bars.len(), 1);
         assert_eq!(
             items[0].hover_details,
             vec![

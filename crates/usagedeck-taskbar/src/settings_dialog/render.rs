@@ -913,8 +913,8 @@ impl SettingsRenderer {
             self.fill_rounded(rt, dot, 4.0, pal.accent)?;
         }
 
-        // Right-aligned dark taskbar miniature preview (`188 × 44 DIP`).
-        let preview_w = 188.0;
+        // Right-aligned dark taskbar miniature preview (`198 × 44 DIP`).
+        let preview_w = 198.0;
         let preview_h = 44.0;
         let preview = DipRect::new(
             r.x + r.w - 16.0 - preview_w,
@@ -926,17 +926,19 @@ impl SettingsRenderer {
         self.stroke_rounded(rt, preview, 6.0, 1.0, rgba(255, 255, 255, 0.14))?;
 
         let sample_meters: [(&str, &str, f32, &str); 2] = match style {
-            TaskbarMeterStyle::ClockBelow => [("R", "3%", 0.08, "4:33"), ("W", "31%", 0.31, "5d")],
+            TaskbarMeterStyle::ClockBelow => {
+                [("R", "3%", 0.08, "4h 33m"), ("W", "31%", 0.31, "5d")]
+            }
             TaskbarMeterStyle::MinimalBelow => {
                 [("R", "3%", 0.08, "4.5h"), ("W", "31%", 0.31, "5d")]
             }
             TaskbarMeterStyle::ResetAtBelow => {
                 [("R", "3%", 0.08, "→ 8:40p"), ("W", "31%", 0.31, "→ Sat")]
             }
-            TaskbarMeterStyle::PillChip => [("R", "3%", 0.08, "4:33"), ("W", "31%", 0.31, "5d")],
+            TaskbarMeterStyle::PillChip => [("R", "3%", 0.08, "4h 33m"), ("W", "31%", 0.31, "5d")],
         };
 
-        let col_w = 80.0;
+        let col_w = 85.0;
         let col_gap = 10.0;
         let start_x = preview.x + (preview.w - (col_w * 2.0 + col_gap)) * 0.5;
         let p_text = rgba(255, 255, 255, 0.96);
@@ -962,7 +964,7 @@ impl SettingsRenderer {
                     false,
                     false,
                     false,
-                    DipRect::new(mx + 18.0, preview.y + 8.0, col_w - 44.0, 13.0),
+                    DipRect::new(mx + 17.0, preview.y + 8.0, col_w - 42.0, 13.0),
                     p_sub,
                 )?;
                 self.draw_dynamic_text(
@@ -974,7 +976,7 @@ impl SettingsRenderer {
                     true,
                     false,
                     false,
-                    DipRect::new(mx + col_w - 28.0, preview.y + 7.5, 28.0, 13.5),
+                    DipRect::new(mx + col_w - 26.0, preview.y + 7.5, 26.0, 13.5),
                     p_text,
                 )?;
                 let track = DipRect::new(mx, preview.y + 27.0, col_w, 4.5);

@@ -38,16 +38,69 @@ pub struct TaskbarMetrics {
     pub theme: TaskbarTheme,
     /// True when the taskbar is hidden off-screen (auto-hide collapsed) or invisible.
     pub hidden: bool,
+    /// Safe left horizontal bound (physical px) separating the strip from app taskbar buttons.
+    pub left_bound_px: i32,
     /// Available horizontal DIP width to the left of `TrayNotifyWnd` before crowding app icons.
     pub available_width_dip: f32,
 }
 
+/// Horizontal DIP cushion reserved between the taskbar strip's right edge and `TrayNotifyWnd` so
+/// transient system tray icons (microphone, camera, location, Bluetooth) can appear and disappear
+/// without shifting the strip left or right.
+const TRANSIENT_TRAY_CUSHION_DIP: f32 = 56.0;
+
+/// Stabilizes the strip's right-hand anchor across `TrayNotifyWnd` width fluctuations.
+///
+/// Resets only when the taskbar's outer bounds or DPI change (monitor switch, resolution change,
+/// DPI change). While on the same display, transient tray icons appearing inside the reserved
+/// cushion move the strip by 0 pixels; if an unusually large number of icons still encroaches,
+/// the anchor shifts left to avoid overlap and holds steady instead of bouncing back and forth.
+#[derive(Default)]
+pub struct StableStripAnchor {
+    tray_key: Option<(i32, i32, u32)>,
+    anchor_right_px: i32,
+}
+
+impl StableStripAnchor {
+    /// Resolve `(stable_right_px, stable_available_width_dip)` for the current `TaskbarMetrics`.
+    pub fn resolve(&mut self, metrics: &TaskbarMetrics) -> (i32, f32) {
+        let gap_px = (6.0 * metrics.scale).round() as i32;
+        let safe_right_px = metrics.notify_rect.left - gap_px;
+        let key = (metrics.tray_rect.left, metrics.tray_rect.right, metrics.dpi);
+
+        if self.tray_key != Some(key) {
+            let desired_cushion = (TRANSIENT_TRAY_CUSHION_DIP * metrics.scale).round() as i32;
+            let min_room_px = (260.0 * metrics.scale).round() as i32;
+            let extra_room = (safe_right_px - metrics.left_bound_px - min_room_px).max(0);
+            let cushion = desired_cushion.min(extra_room);
+            self.anchor_right_px = safe_right_px - cushion;
+            self.tray_key = Some(key);
+        } else if safe_right_px < self.anchor_right_px {
+            // Tray grew past the cushion: push left to avoid overlap and keep stabilized.
+            self.anchor_right_px = safe_right_px;
+        }
+
+        let raw_avail_px = (self.anchor_right_px - metrics.left_bound_px).max(0);
+        let mut avail_dip = (raw_avail_px as f32 / metrics.scale).min(860.0);
+        let total_left_dip =
+            (self.anchor_right_px - metrics.tray_rect.left).max(0) as f32 / metrics.scale;
+        if avail_dip < 72.0 && total_left_dip >= 140.0 {
+            avail_dip = 72.0;
+        }
+        (self.anchor_right_px, avail_dip)
+    }
+}
+
 impl TaskbarMetrics {
-    /// Physical-pixel `(x, y)` for a taskbar strip of `(width_px, height_px)` anchored
-    /// directly to the left of `TrayNotifyWnd`, vertically centered inside `Shell_TrayWnd`.
-    pub fn strip_origin_px(&self, width_px: i32, height_px: i32) -> (i32, i32) {
-        let gap_px = (6.0 * self.scale).round() as i32;
-        let x = (self.notify_rect.left - gap_px - width_px).max(self.tray_rect.left + 4);
+    /// Physical-pixel `(x, y)` for a taskbar strip of `(width_px, height_px)` whose right edge is
+    /// pinned at `right_edge_px`, vertically centered inside `Shell_TrayWnd`.
+    pub fn strip_origin_for_right_px(
+        &self,
+        right_edge_px: i32,
+        width_px: i32,
+        height_px: i32,
+    ) -> (i32, i32) {
+        let x = (right_edge_px - width_px).max(self.tray_rect.left + 4);
         let tray_h = self.tray_rect.bottom - self.tray_rect.top;
         let y = self.tray_rect.top + (tray_h - height_px) / 2;
         (x, y)
@@ -300,6 +353,7 @@ pub fn query_taskbar() -> Option<TaskbarMetrics> {
             scale,
             theme,
             hidden,
+            left_bound_px: left_bound,
             available_width_dip,
         })
     }
@@ -311,6 +365,68 @@ mod tests {
 
     fn colorref(r: u8, g: u8, b: u8) -> u32 {
         u32::from(r) | (u32::from(g) << 8) | (u32::from(b) << 16)
+    }
+
+    fn sample_metrics(notify_left: i32, tray_right: i32, dpi: u32) -> TaskbarMetrics {
+        let scale = dpi as f32 / 96.0;
+        TaskbarMetrics {
+            tray_hwnd: HWND::default(),
+            tray_rect: RECT {
+                left: 0,
+                top: 1032,
+                right: tray_right,
+                bottom: 1080,
+            },
+            notify_rect: RECT {
+                left: notify_left,
+                top: 1032,
+                right: tray_right,
+                bottom: 1080,
+            },
+            monitor_rect: RECT {
+                left: 0,
+                top: 0,
+                right: tray_right,
+                bottom: 1080,
+            },
+            dpi,
+            scale,
+            theme: TaskbarTheme::Dark,
+            hidden: false,
+            left_bound_px: ((tray_right as f32) * 0.42) as i32,
+            available_width_dip: 600.0,
+        }
+    }
+
+    #[test]
+    fn stable_anchor_ignores_transient_tray_icon_appear_and_disappear() {
+        let mut anchor = StableStripAnchor::default();
+        let baseline = sample_metrics(1700, 1920, 96);
+        let (right0, avail0) = anchor.resolve(&baseline);
+        assert_eq!(right0, 1700 - 6 - 56);
+
+        // Microphone icon appears: notify_rect.left shrinks by 32px -> 0px shift!
+        let mic_on = sample_metrics(1668, 1920, 96);
+        let (right1, avail1) = anchor.resolve(&mic_on);
+        assert_eq!(right1, right0);
+        assert_eq!(avail1, avail0);
+
+        // Microphone icon disappears: notify_rect.left returns to 1700 -> still 0px shift!
+        let (right2, avail2) = anchor.resolve(&baseline);
+        assert_eq!(right2, right0);
+        assert_eq!(avail2, avail0);
+
+        // Many extra icons encroach past cushion -> shifts left to avoid overlap, then holds steady.
+        let crowded = sample_metrics(1610, 1920, 96);
+        let (right3, _) = anchor.resolve(&crowded);
+        assert_eq!(right3, 1610 - 6);
+        let (right4, _) = anchor.resolve(&baseline);
+        assert_eq!(right4, right3);
+
+        // Resolution/DPI change resets cleanly.
+        let wide_monitor = sample_metrics(2320, 2560, 96);
+        let (right5, _) = anchor.resolve(&wide_monitor);
+        assert_eq!(right5, 2320 - 6 - 56);
     }
 
     #[test]
