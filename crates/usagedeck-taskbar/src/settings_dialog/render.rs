@@ -402,7 +402,8 @@ impl SettingsRenderer {
         for row in &layout.nav_rows {
             let is_hover = hovered == Some(&row.action);
             if row.selected {
-                self.fill_rounded(rt, row.rect, 4.0, pal.nav_active)?;
+                self.fill_rounded(rt, row.rect, 5.0, pal.nav_active)?;
+                self.stroke_rounded(rt, row.rect, 5.0, 1.0, pal.nav_active_border)?;
                 // 3x16 emerald vertical active pill on left edge.
                 let pill = DipRect::new(
                     row.rect.x,
@@ -412,7 +413,7 @@ impl SettingsRenderer {
                 );
                 self.fill_rounded(rt, pill, 1.5, pal.accent)?;
             } else if is_hover {
-                self.fill_rounded(rt, row.rect, 4.0, pal.nav_hover)?;
+                self.fill_rounded(rt, row.rect, 5.0, pal.nav_hover)?;
             }
 
             let mut text_x = row.rect.x + 12.0;
@@ -465,18 +466,34 @@ impl SettingsRenderer {
             self.fill_rounded(
                 rt,
                 *rect,
-                4.0,
+                5.0,
                 if is_hover {
-                    pal.nav_active
+                    pal.primary_hover
                 } else {
-                    pal.nav_hover
+                    pal.primary_bg
                 },
             )?;
-            self.stroke_rounded(rt, *rect, 4.0, 1.0, with_alpha(pal.accent, 0.45))?;
+            self.stroke_rounded(
+                rt,
+                *rect,
+                5.0,
+                1.0,
+                if is_hover {
+                    with_alpha(pal.accent, 0.72)
+                } else {
+                    pal.primary_border
+                },
+            )?;
             let arrow_rect = DipRect::new(rect.x + 10.0, rect.y, 16.0, rect.h);
             self.draw_text(rt, "↓", &self.fmt_nav_active, arrow_rect, pal.accent)?;
             let lbl_rect = DipRect::new(rect.x + 28.0, rect.y, (rect.w - 36.0).max(20.0), rect.h);
-            self.draw_text(rt, label, &self.fmt_nav_active, lbl_rect, pal.text)?;
+            self.draw_text(
+                rt,
+                label,
+                &self.fmt_nav_active,
+                lbl_rect,
+                if is_hover { pal.text } else { pal.accent_text },
+            )?;
         }
 
         // ---- Right Content Pane (clipped & vertically scrolled) ----
@@ -528,9 +545,11 @@ impl SettingsRenderer {
         if let Some((ref rect, ref msg)) = layout.toast {
             self.fill_rounded(rt, *rect, 6.0, pal.toast_bg)?;
             self.stroke_rounded(rt, *rect, 6.0, 1.0, pal.toast_border)?;
-            let dot = DipRect::new(rect.x + 12.0, rect.y + (rect.h - 7.0) * 0.5, 7.0, 7.0);
+            let bar = DipRect::new(rect.x + 1.0, rect.y + 6.0, 2.5, (rect.h - 12.0).max(8.0));
+            self.fill_rounded(rt, bar, 1.25, pal.accent)?;
+            let dot = DipRect::new(rect.x + 13.0, rect.y + (rect.h - 7.0) * 0.5, 7.0, 7.0);
             self.fill_rounded(rt, dot, 3.5, pal.accent)?;
-            let text_rect = DipRect::new(rect.x + 26.0, rect.y, (rect.w - 36.0).max(20.0), rect.h);
+            let text_rect = DipRect::new(rect.x + 27.0, rect.y, (rect.w - 37.0).max(20.0), rect.h);
             let toast_fg = if pal.is_light {
                 rgba(255, 255, 255, 0.96)
             } else {
@@ -627,8 +646,13 @@ impl SettingsRenderer {
             ContentItem::AppIcon { rect } => {
                 let r = rect.offset_y(-scroll);
                 if visible(r) && !self.icons.draw_app_icon(rt, r.to_d2d()) {
+                    let ink = if pal.is_light {
+                        rgba(255, 255, 255, 1.0)
+                    } else {
+                        rgba(9, 9, 11, 1.0)
+                    };
                     self.fill_rounded(rt, r, 4.0, pal.accent)?;
-                    self.draw_text(rt, "U", &self.fmt_badge, r, pal.primary_fg)?;
+                    self.draw_text(rt, "U", &self.fmt_badge, r, ink)?;
                 }
             }
             ContentItem::ProviderIcon { rect, kind } => {
@@ -708,6 +732,7 @@ impl SettingsRenderer {
                     let is_hover = hovered == Some(&opt.action);
                     if opt.selected {
                         self.fill_rounded(rt, or, 4.0, pal.primary_bg)?;
+                        self.stroke_rounded(rt, or, 4.0, 1.0, pal.primary_border)?;
                         self.draw_text(rt, opt.label, &self.fmt_btn, or, pal.primary_fg)?;
                     } else {
                         if is_hover {
@@ -731,14 +756,27 @@ impl SettingsRenderer {
                     }
                     let is_hover = !chip.disabled && hovered == Some(&chip.action);
                     let alpha = if chip.disabled { 0.55 } else { 1.0 };
-                    let bg = if is_hover {
+                    let bg = if chip.checked {
+                        if is_hover {
+                            pal.primary_hover
+                        } else {
+                            with_alpha(pal.accent, if pal.is_light { 0.10 } else { 0.12 })
+                        }
+                    } else if is_hover {
                         pal.surface_hover
-                    } else if chip.checked {
-                        pal.surface
                     } else {
                         rgba(0, 0, 0, 0.0)
                     };
                     let border = if chip.checked {
+                        with_alpha(
+                            pal.accent,
+                            if is_hover {
+                                0.62 * alpha
+                            } else {
+                                (if pal.is_light { 0.36 } else { 0.42 }) * alpha
+                            },
+                        )
+                    } else if is_hover {
                         with_alpha(pal.border, alpha)
                     } else {
                         with_alpha(pal.card_border, alpha)
@@ -765,7 +803,7 @@ impl SettingsRenderer {
                         r.h,
                     );
                     let fg = if chip.checked {
-                        with_alpha(pal.text, alpha)
+                        with_alpha(pal.accent_text, alpha)
                     } else {
                         with_alpha(pal.muted, alpha)
                     };
@@ -1471,14 +1509,19 @@ impl SettingsRenderer {
                 } else {
                     pal.primary_bg
                 };
-                self.fill_rounded(rt, rect, 4.0, with_alpha(bg, alpha))?;
-                self.draw_text(
-                    rt,
-                    label,
-                    &self.fmt_btn,
-                    rect,
-                    with_alpha(pal.primary_fg, alpha),
-                )?;
+                let border = if hovered {
+                    with_alpha(pal.accent, 0.75 * alpha)
+                } else {
+                    with_alpha(pal.primary_border, alpha)
+                };
+                let fg = if hovered && !pal.is_light {
+                    with_alpha(pal.text, alpha)
+                } else {
+                    with_alpha(pal.primary_fg, alpha)
+                };
+                self.fill_rounded(rt, rect, 5.0, with_alpha(bg, alpha))?;
+                self.stroke_rounded(rt, rect, 5.0, 1.0, border)?;
+                self.draw_text(rt, label, &self.fmt_btn, rect, fg)?;
             }
             ButtonStyle::Secondary => {
                 let bg = if hovered {
@@ -1486,15 +1529,25 @@ impl SettingsRenderer {
                 } else {
                     pal.surface
                 };
-                self.fill_rounded(rt, rect, 4.0, with_alpha(bg, alpha))?;
-                self.stroke_rounded(rt, rect, 4.0, 1.0, with_alpha(pal.border, alpha))?;
+                let border = if hovered {
+                    with_alpha(pal.accent, (if pal.is_light { 0.36 } else { 0.42 }) * alpha)
+                } else {
+                    with_alpha(pal.border, alpha)
+                };
+                self.fill_rounded(rt, rect, 5.0, with_alpha(bg, alpha))?;
+                self.stroke_rounded(rt, rect, 5.0, 1.0, border)?;
                 self.draw_text(rt, label, &self.fmt_btn, rect, with_alpha(pal.text, alpha))?;
             }
             ButtonStyle::Pill => {
                 if hovered {
                     self.fill_rounded(rt, rect, rect.h * 0.5, pal.surface_hover)?;
                 }
-                self.stroke_rounded(rt, rect, rect.h * 0.5, 1.0, pal.border)?;
+                let border = if hovered {
+                    with_alpha(pal.accent, if pal.is_light { 0.36 } else { 0.42 })
+                } else {
+                    pal.border
+                };
+                self.stroke_rounded(rt, rect, rect.h * 0.5, 1.0, border)?;
                 self.draw_text(
                     rt,
                     label,

@@ -9,7 +9,9 @@ use usagedeck_core::view::{BarSeverity, SettingsPaceData};
 use windows::core::w;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
-use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE};
+use windows::Win32::Graphics::Dwm::{
+    DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE,
+};
 use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,7 +38,9 @@ pub struct SettingsPalette {
     pub card_border: D2D1_COLOR_F,
     pub nav_hover: D2D1_COLOR_F,
     pub nav_active: D2D1_COLOR_F,
+    pub nav_active_border: D2D1_COLOR_F,
     pub accent: D2D1_COLOR_F,
+    pub accent_text: D2D1_COLOR_F,
     pub switch_on: D2D1_COLOR_F,
     pub text: D2D1_COLOR_F,
     pub text_secondary: D2D1_COLOR_F,
@@ -47,6 +51,7 @@ pub struct SettingsPalette {
     pub input_border: D2D1_COLOR_F,
     pub primary_bg: D2D1_COLOR_F,
     pub primary_hover: D2D1_COLOR_F,
+    pub primary_border: D2D1_COLOR_F,
     pub primary_fg: D2D1_COLOR_F,
     pub bar_ok: D2D1_COLOR_F,
     pub bar_warn: D2D1_COLOR_F,
@@ -98,74 +103,80 @@ impl SettingsPalette {
     pub const fn dark() -> Self {
         Self {
             is_light: false,
-            page: rgb(0x20, 0x20, 0x20),
-            card: rgb(0x2b, 0x2b, 0x2b),
-            card_border: rgb(0x1d, 0x1d, 0x1d),
-            nav_hover: rgba(255, 255, 255, 0.06),
-            nav_active: rgba(255, 255, 255, 0.09),
+            page: rgb(0x16, 0x18, 0x1c),
+            card: rgb(0x1e, 0x21, 0x27),
+            card_border: rgba(255, 255, 255, 0.08),
+            nav_hover: rgba(255, 255, 255, 0.055),
+            nav_active: rgba(0, 212, 146, 0.11),
+            nav_active_border: rgba(0, 212, 146, 0.28),
             accent: rgb(0x00, 0xd4, 0x92),
-            switch_on: rgb(0x00, 0x99, 0x66),
-            text: rgb(0xf4, 0xf4, 0xf5),
+            accent_text: rgb(0x5e, 0xe9, 0xb5),
+            switch_on: rgb(0x00, 0xb8, 0x7c),
+            text: rgb(0xf4, 0xf4, 0xf6),
             text_secondary: rgb(0xd4, 0xd4, 0xd8),
-            muted: rgb(0x9f, 0x9f, 0xa9),
-            surface: rgb(0x27, 0x27, 0x2a),
-            surface_hover: rgb(0x3f, 0x3f, 0x46),
-            border: rgb(0x3f, 0x3f, 0x46),
-            input_border: rgb(0x71, 0x71, 0x7b),
-            primary_bg: rgb(0xe4, 0xe4, 0xe7),
-            primary_hover: rgb(0xd4, 0xd4, 0xd8),
-            primary_fg: rgb(0x18, 0x18, 0x1b),
+            muted: rgb(0x9a, 0xa0, 0xac),
+            surface: rgb(0x25, 0x29, 0x31),
+            surface_hover: rgb(0x30, 0x35, 0x40),
+            border: rgba(255, 255, 255, 0.12),
+            input_border: rgb(0x63, 0x6b, 0x78),
+            primary_bg: rgba(0, 212, 146, 0.16),
+            primary_hover: rgba(0, 212, 146, 0.26),
+            primary_border: rgba(0, 212, 146, 0.52),
+            primary_fg: rgb(0x5e, 0xe9, 0xb5),
             bar_ok: rgb(0x00, 0xd4, 0x92),
             bar_warn: rgb(0xff, 0xb9, 0x00),
             bar_danger: rgb(0xff, 0x64, 0x67),
             bar_dim: rgb(0x71, 0x71, 0x7b),
-            track: rgba(255, 255, 255, 0.15),
+            track: rgba(255, 255, 255, 0.14),
             warn_text: rgb(0xff, 0xd2, 0x30),
-            chart_all: rgb(0x8e, 0xc5, 0xff),
+            chart_all: rgb(0x00, 0xd4, 0x92),
             chart_fable: rgb(0xff, 0xd2, 0x30),
-            chart_all_rgb: (0x8e, 0xc5, 0xff),
+            chart_all_rgb: (0x00, 0xd4, 0x92),
             chart_fable_rgb: (0xff, 0xd2, 0x30),
-            scrollbar_thumb: rgba(255, 255, 255, 0.22),
-            scrollbar_thumb_hover: rgba(255, 255, 255, 0.36),
-            toast_bg: rgb(0x27, 0x27, 0x2a),
-            toast_border: rgb(0x52, 0x52, 0x5b),
+            scrollbar_thumb: rgba(255, 255, 255, 0.20),
+            scrollbar_thumb_hover: rgba(0, 212, 146, 0.45),
+            toast_bg: rgb(0x1e, 0x22, 0x29),
+            toast_border: rgba(0, 212, 146, 0.36),
         }
     }
 
     pub const fn light() -> Self {
         Self {
             is_light: true,
-            page: rgb(0xf3, 0xf3, 0xf3),
-            card: rgb(0xfb, 0xfb, 0xfb),
-            card_border: rgb(0xe5, 0xe5, 0xe5),
+            page: rgb(0xf4, 0xf6, 0xf8),
+            card: rgb(0xff, 0xff, 0xff),
+            card_border: rgba(15, 23, 42, 0.09),
             nav_hover: rgba(0, 0, 0, 0.04),
-            nav_active: rgba(0, 0, 0, 0.06),
+            nav_active: rgba(0, 153, 102, 0.10),
+            nav_active_border: rgba(0, 153, 102, 0.26),
             accent: rgb(0x00, 0x99, 0x66),
+            accent_text: rgb(0x00, 0x7a, 0x55),
             switch_on: rgb(0x00, 0x99, 0x66),
-            text: rgb(0x18, 0x18, 0x1b),
-            text_secondary: rgb(0x3f, 0x3f, 0x46),
-            muted: rgb(0x52, 0x52, 0x5c),
-            surface: rgb(0xf4, 0xf4, 0xf5),
-            surface_hover: rgb(0xe4, 0xe4, 0xe7),
-            border: rgb(0xd4, 0xd4, 0xd8),
-            input_border: rgb(0x71, 0x71, 0x7b),
-            primary_bg: rgb(0x18, 0x18, 0x1b),
-            primary_hover: rgb(0x3f, 0x3f, 0x46),
-            primary_fg: rgb(0xff, 0xff, 0xff),
-            bar_ok: rgb(0x00, 0x7a, 0x55),
+            text: rgb(0x16, 0x18, 0x1c),
+            text_secondary: rgb(0x3f, 0x45, 0x50),
+            muted: rgb(0x52, 0x58, 0x66),
+            surface: rgb(0xee, 0xf1, 0xf4),
+            surface_hover: rgb(0xe2, 0xe7, 0xec),
+            border: rgba(15, 23, 42, 0.14),
+            input_border: rgb(0x71, 0x78, 0x85),
+            primary_bg: rgba(0, 153, 102, 0.12),
+            primary_hover: rgba(0, 153, 102, 0.20),
+            primary_border: rgba(0, 153, 102, 0.46),
+            primary_fg: rgb(0x00, 0x7a, 0x55),
+            bar_ok: rgb(0x00, 0x85, 0x5c),
             bar_warn: rgb(0xbb, 0x4d, 0x00),
             bar_danger: rgb(0xc1, 0x00, 0x07),
             bar_dim: rgb(0x71, 0x71, 0x7b),
-            track: rgba(113, 113, 123, 0.20),
+            track: rgba(15, 23, 42, 0.13),
             warn_text: rgb(0x97, 0x3c, 0x00),
-            chart_all: rgb(0x19, 0x3c, 0xb8),
+            chart_all: rgb(0x00, 0x99, 0x66),
             chart_fable: rgb(0x97, 0x3c, 0x00),
-            chart_all_rgb: (0x19, 0x3c, 0xb8),
+            chart_all_rgb: (0x00, 0x99, 0x66),
             chart_fable_rgb: (0x97, 0x3c, 0x00),
-            scrollbar_thumb: rgba(0, 0, 0, 0.22),
-            scrollbar_thumb_hover: rgba(0, 0, 0, 0.36),
-            toast_bg: rgb(0x18, 0x18, 0x1b),
-            toast_border: rgb(0x3f, 0x3f, 0x46),
+            scrollbar_thumb: rgba(15, 23, 42, 0.20),
+            scrollbar_thumb_hover: rgba(0, 153, 102, 0.45),
+            toast_bg: rgb(0x16, 0x18, 0x1c),
+            toast_border: rgba(0, 212, 146, 0.42),
         }
     }
 
@@ -284,19 +295,44 @@ pub fn resolve_is_dark(panel_theme: PanelTheme) -> bool {
     }
 }
 
-/// Apply native dark or light caption bar via DWM (`DWMWA_USE_IMMERSIVE_DARK_MODE`).
+/// Apply native dark or light caption bar, obsidian/porcelain caption fill, and subtle emerald
+/// hairline frame via DWM (`DWMWA_USE_IMMERSIVE_DARK_MODE`, `DWMWA_CAPTION_COLOR`,
+/// `DWMWA_BORDER_COLOR`). Unsupported attributes on Windows 10 are safely ignored.
 pub fn apply_titlebar_theme(hwnd: HWND, is_dark: bool) {
     if hwnd.is_invalid() {
         return;
     }
     let dark_val: i32 = i32::from(is_dark);
-    // SAFETY: `dark_val` is a valid 4-byte Win32 `BOOL` for `DWMWA_USE_IMMERSIVE_DARK_MODE`.
+    // Win32 COLORREF layout is 0x00BBGGRR.
+    let caption_color: u32 = if is_dark {
+        0x001c_1816 // #16181C obsidian
+    } else {
+        0x00f8_f6f4 // #F4F6F8 porcelain
+    };
+    let border_color: u32 = if is_dark {
+        0x003b_4a16 // #164A3B subtle dark emerald hairline
+    } else {
+        0x00ce_e3a7 // #A7E3CE soft jade hairline
+    };
+    // SAFETY: Each pointer refers to a valid stack-owned 4-byte Win32 attribute value.
     unsafe {
         let _ = DwmSetWindowAttribute(
             hwnd,
             DWMWA_USE_IMMERSIVE_DARK_MODE,
             (&dark_val as *const i32).cast::<std::ffi::c_void>(),
             std::mem::size_of::<i32>() as u32,
+        );
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_CAPTION_COLOR,
+            (&caption_color as *const u32).cast::<std::ffi::c_void>(),
+            std::mem::size_of::<u32>() as u32,
+        );
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_BORDER_COLOR,
+            (&border_color as *const u32).cast::<std::ffi::c_void>(),
+            std::mem::size_of::<u32>() as u32,
         );
     }
 }
