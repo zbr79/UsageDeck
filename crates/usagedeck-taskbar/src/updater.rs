@@ -558,6 +558,7 @@ mod tests {
         let inner = UpdaterInner {
             machine: Mutex::new(Machine::new("2.0.0".into())),
             auto_install: Mutex::new(None),
+            last_etag: Mutex::new(None),
             pause_auto_install,
             installing: AtomicBool::new(false),
             current_version: v(2, 0, 0),
