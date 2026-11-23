@@ -1135,7 +1135,7 @@ impl SettingsRenderer {
                 DipRect::new(account_col_x, rr.y + 8.0, name_w, 18.0),
                 with_alpha(pal.text, alpha),
             )?;
-            let sub_color = if *warn {
+            let sub_color = if warn {
                 with_alpha(pal.warn_text, if row.hidden { 0.72 } else { 0.95 })
             } else {
                 with_alpha(pal.muted, alpha)
