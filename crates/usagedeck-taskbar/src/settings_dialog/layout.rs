@@ -110,6 +110,8 @@ pub enum Action {
         label: String,
         nickname: Option<String>,
         hidden: bool,
+        unsubscribed: bool,
+        subscription_ends_at: Option<String>,
     },
     ToggleBar {
         provider: WidgetProvider,
@@ -189,7 +191,9 @@ pub struct AccountRowRender {
     pub rect: DipRect,
     pub active: bool,
     pub hidden: bool,
+    pub unsubscribed: bool,
     pub name: String,
+    pub sub_label: Option<(String, bool)>,
     pub warning: Option<String>,
     pub plan: Option<(String, BadgeTone)>,
     pub cells: Vec<TableCellRender>,
@@ -1707,13 +1711,15 @@ fn build_account_table(
             .unwrap_or(&row.label)
             .to_string();
 
-        let dimmed_row = row.hidden || row.lapsed || row.stale;
+        let dimmed_row = row.hidden || row.lapsed || row.stale || row.unsubscribed;
         let menu_action = Action::OpenAccountMenu {
             provider: kind,
             account_id: row.id.clone(),
             label: row.label.clone(),
             nickname: row.nickname.clone(),
             hidden: row.hidden,
+            unsubscribed: row.unsubscribed,
+            subscription_ends_at: row.subscription_ends_at.clone(),
         };
         let menu_btn = DipRect::new(menu_x, ry + (row_h - 28.0) * 0.5, menu_w, 28.0);
         b.add_hit(menu_btn, menu_action.clone(), true);
@@ -1783,12 +1789,19 @@ fn build_account_table(
             .as_deref()
             .filter(|s| !s.is_empty())
             .map(|p| (p.to_string(), plan_badge_tone(p)));
+        let sub_label = row
+            .subscription_ends_label
+            .as_ref()
+            .filter(|s| !s.is_empty())
+            .map(|txt| (txt.clone(), row.subscription_ends_soon));
 
         built_rows.push(AccountRowRender {
             rect: rrect,
             active: row.active,
             hidden: row.hidden,
+            unsubscribed: row.unsubscribed,
             name: shown_name,
+            sub_label,
             warning: row.warning.clone(),
             plan,
             cells,

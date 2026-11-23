@@ -18,7 +18,7 @@ use crate::providers::grok::GrokUsage;
 use crate::providers::opencode::{OpenCodeUsage, UsageWindow};
 use crate::store::{Settings, TaskbarMeterStyle, ThemeMode, WidgetProvider};
 use crate::Core;
-use chrono::{DateTime, Local, TimeZone, Utc};
+use chrono::{DateTime, Local, NaiveDate, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
@@ -54,6 +54,13 @@ impl ProviderKind {
             Self::Grok => "grok",
             Self::OpenCode => "opencode",
             Self::Antigravity => "antigravity",
+        }
+    }
+
+    pub fn cache_section(self) -> &'static str {
+        match self {
+            Self::Grok => "grokbot",
+            _ => self.key_prefix(),
         }
     }
 
@@ -256,6 +263,14 @@ pub struct SettingsAccountRow {
     pub extra_text: Option<String>,
     pub note: Option<String>,
     pub cached_at: Option<i64>,
+    #[serde(default)]
+    pub unsubscribed: bool,
+    #[serde(default)]
+    pub subscription_ends_at: Option<String>,
+    #[serde(default)]
+    pub subscription_ends_label: Option<String>,
+    #[serde(default)]
+    pub subscription_ends_soon: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -634,6 +649,152 @@ fn is_disabled(settings: &Settings, provider: ProviderKind, account_id: &str) ->
         .disabled_accounts
         .iter()
         .any(|d| d.eq_ignore_ascii_case(&key))
+}
+
+fn subscription_account_keys(provider: ProviderKind, account_id: &str) -> (String, Option<String>) {
+    let trimmed = account_id.trim().to_lowercase();
+    let scoped = format!("{}:{trimmed}", provider.key_prefix());
+    let bare = (provider == ProviderKind::OpenCode).then_some(trimmed);
+    (scoped, bare)
+}
+
+fn is_marked_unsubscribed(settings: &Settings, provider: ProviderKind, account_id: &str) -> bool {
+    let (scoped, bare) = subscription_account_keys(provider, account_id);
+    settings.unsubscribed_accounts.iter().any(|entry| {
+        entry.eq_ignore_ascii_case(&scoped)
+            || bare
+                .as_deref()
+                .is_some_and(|b| entry.eq_ignore_ascii_case(b))
+    })
+}
+
+fn lookup_manual_subscription_end(
+    settings: &Settings,
+    provider: ProviderKind,
+    account_id: &str,
+) -> Option<String> {
+    let (scoped, bare) = subscription_account_keys(provider, account_id);
+    settings
+        .subscription_ends_at
+        .iter()
+        .find(|(k, _)| {
+            k.eq_ignore_ascii_case(&scoped)
+                || bare.as_deref().is_some_and(|b| k.eq_ignore_ascii_case(b))
+        })
+        .and_then(|(_, v)| crate::store::normalize_ymd_date(v))
+}
+
+fn naive_date_for_ms(ms: i64) -> Option<NaiveDate> {
+    let dt = DateTime::from_timestamp_millis(ms)?;
+    #[cfg(test)]
+    {
+        Some(dt.date_naive())
+    }
+    #[cfg(not(test))]
+    {
+        Some(dt.with_timezone(&Local).date_naive())
+    }
+}
+
+fn iso_to_naive_date(iso: &str) -> Option<NaiveDate> {
+    if let Some(ms) = parse_iso_ms(iso) {
+        if let Some(d) = naive_date_for_ms(ms) {
+            return Some(d);
+        }
+    }
+    let ymd = crate::store::normalize_ymd_date(iso)?;
+    NaiveDate::parse_from_str(&ymd, "%Y-%m-%d").ok()
+}
+
+/// True when the account should be excluded from the taskbar strip because the user explicitly
+/// marked it unsubscribed or its user-recorded subscription end date has already passed.
+fn is_unsubscribed_effective(
+    settings: &Settings,
+    provider: ProviderKind,
+    account_id: &str,
+    now_ms: i64,
+) -> bool {
+    if is_marked_unsubscribed(settings, provider, account_id) {
+        return true;
+    }
+    let Some(today) = naive_date_for_ms(now_ms) else {
+        return false;
+    };
+    lookup_manual_subscription_end(settings, provider, account_id)
+        .and_then(|ymd| NaiveDate::parse_from_str(&ymd, "%Y-%m-%d").ok())
+        .is_some_and(|end| end < today)
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct SubscriptionStatus {
+    unsubscribed: bool,
+    ends_at: Option<String>,
+    ends_label: Option<String>,
+    ends_soon: bool,
+}
+
+fn resolve_subscription_status(
+    settings: &Settings,
+    provider: ProviderKind,
+    account_id: &str,
+    auto_end_iso: Option<&str>,
+    now_ms: i64,
+) -> SubscriptionStatus {
+    let marked = is_marked_unsubscribed(settings, provider, account_id);
+    let manual_date = lookup_manual_subscription_end(settings, provider, account_id)
+        .and_then(|ymd| NaiveDate::parse_from_str(&ymd, "%Y-%m-%d").ok());
+    let auto_date = auto_end_iso.and_then(iso_to_naive_date);
+    let Some(today) = naive_date_for_ms(now_ms) else {
+        return SubscriptionStatus {
+            unsubscribed: marked,
+            ends_at: manual_date
+                .or(auto_date)
+                .map(|d| d.format("%Y-%m-%d").to_string()),
+            ends_label: None,
+            ends_soon: false,
+        };
+    };
+
+    let manual_expired = manual_date.is_some_and(|d| d < today);
+    let unsubscribed = marked || manual_expired;
+    let effective_date = manual_date.or(auto_date);
+    let ends_at = effective_date.map(|d| d.format("%Y-%m-%d").to_string());
+
+    let (ends_label, ends_soon) = match effective_date {
+        Some(date) => {
+            let days = (date - today).num_days();
+            if manual_date.is_some() || unsubscribed {
+                if days < 0 {
+                    (Some(format!("Ended {}", date.format("%b %-d"))), true)
+                } else if days == 0 {
+                    (Some("Ends today".to_string()), true)
+                } else {
+                    (
+                        Some(format!("Ends {} ({}d)", date.format("%b %-d"), days)),
+                        days <= 3,
+                    )
+                }
+            } else if days < 0 {
+                // Auto-detected cycle timestamp already passed (stale cache); wait for next poll.
+                (None, false)
+            } else if days == 0 {
+                (Some("Ends today".to_string()), true)
+            } else {
+                (
+                    Some(format!("Ends {} ({}d)", date.format("%b %-d"), days)),
+                    days <= 3,
+                )
+            }
+        }
+        None => (None, false),
+    };
+
+    SubscriptionStatus {
+        unsubscribed,
+        ends_at,
+        ends_label,
+        ends_soon,
+    }
 }
 
 /// Whether a manual snooze timestamp is currently active (in the future) for `provider:account_id`.
@@ -1039,7 +1200,9 @@ where
             continue;
         }
         let id = row.get("id").and_then(Value::as_str).unwrap_or("claude");
-        if is_disabled(settings, ProviderKind::Claude, id) {
+        if is_disabled(settings, ProviderKind::Claude, id)
+            || is_unsubscribed_effective(settings, ProviderKind::Claude, id, now_ms)
+        {
             continue;
         }
         let auth_expired = is_auth_expired(row);
@@ -1252,7 +1415,9 @@ fn build_cursor_items(
             continue;
         }
         let id = row.get("id").and_then(Value::as_str).unwrap_or("cursor");
-        if is_disabled(settings, ProviderKind::Cursor, id) {
+        if is_disabled(settings, ProviderKind::Cursor, id)
+            || is_unsubscribed_effective(settings, ProviderKind::Cursor, id, now_ms)
+        {
             continue;
         }
         let auth_expired = is_auth_expired(row);
@@ -1412,7 +1577,9 @@ fn build_codex_items(
             continue;
         }
         let id = row.get("id").and_then(Value::as_str).unwrap_or("codex");
-        if is_disabled(settings, ProviderKind::Codex, id) {
+        if is_disabled(settings, ProviderKind::Codex, id)
+            || is_unsubscribed_effective(settings, ProviderKind::Codex, id, now_ms)
+        {
             continue;
         }
         let auth_expired = is_auth_expired(row);
@@ -1524,7 +1691,9 @@ fn build_grok_items(
             continue;
         }
         let id = row.get("id").and_then(Value::as_str).unwrap_or("grok");
-        if is_disabled(settings, ProviderKind::Grok, id) {
+        if is_disabled(settings, ProviderKind::Grok, id)
+            || is_unsubscribed_effective(settings, ProviderKind::Grok, id, now_ms)
+        {
             continue;
         }
         let auth_expired = is_auth_expired(row);
@@ -1625,7 +1794,9 @@ fn build_antigravity_items(
             .get("id")
             .and_then(Value::as_str)
             .unwrap_or("antigravity");
-        if is_disabled(settings, ProviderKind::Antigravity, id) {
+        if is_disabled(settings, ProviderKind::Antigravity, id)
+            || is_unsubscribed_effective(settings, ProviderKind::Antigravity, id, now_ms)
+        {
             continue;
         }
         let auth_expired = is_auth_expired(row);
@@ -1757,7 +1928,9 @@ fn build_opencode_items(
         let Some(email) = row.get("email").and_then(Value::as_str) else {
             continue;
         };
-        if is_disabled(settings, ProviderKind::OpenCode, email) {
+        if is_disabled(settings, ProviderKind::OpenCode, email)
+            || is_unsubscribed_effective(settings, ProviderKind::OpenCode, email, now_ms)
+        {
             continue;
         }
         let auth_expired = is_auth_expired(row);
@@ -2120,20 +2293,24 @@ fn build_settings_claude_rows(
     now_ms: i64,
 ) -> Vec<SettingsAccountRow> {
     let hidden_bars = hidden_bars_for(settings, ProviderKind::Claude);
-    rows.iter()
+    let mut out: Vec<SettingsAccountRow> = rows
+        .iter()
         .map(|row| {
             let id = row
                 .get("id")
                 .and_then(Value::as_str)
                 .unwrap_or("claude")
                 .to_string();
-            let active = row.get("active").and_then(Value::as_bool).unwrap_or(false);
+            let raw_active = row.get("active").and_then(Value::as_bool).unwrap_or(false);
             let stale = row.get("stale").and_then(Value::as_bool).unwrap_or(false);
             let cached_at = row.get("cachedAt").and_then(Value::as_i64);
             let auth_expired = is_auth_expired(row);
             let hidden = is_disabled(settings, ProviderKind::Claude, &id);
             let nickname = lookup_display_name(settings, &format!("claude:{id}"));
-            let warning = tracked_warning(row, active);
+            let status =
+                resolve_subscription_status(settings, ProviderKind::Claude, &id, None, now_ms);
+            let active = raw_active && !status.unsubscribed;
+            let warning = tracked_warning(row, raw_active);
             let usage: Option<ClaudeUsage> = row
                 .get("usage")
                 .and_then(|v| serde_json::from_value(v.clone()).ok());
@@ -2152,15 +2329,19 @@ fn build_settings_claude_rows(
                     nickname,
                     active,
                     hidden,
-                    lapsed: false,
+                    lapsed: status.unsubscribed,
                     auth_expired,
                     stale,
-                    plan: None,
+                    plan: status.unsubscribed.then(|| "Unsubscribed".to_string()),
                     warning,
                     bars: Vec::new(),
                     extra_text: None,
                     note: Some("Not signed in or unavailable".to_string()),
                     cached_at,
+                    unsubscribed: status.unsubscribed,
+                    subscription_ends_at: status.ends_at,
+                    subscription_ends_label: status.ends_label,
+                    subscription_ends_soon: status.ends_soon,
                 };
             };
             if !u.signed_in {
@@ -2171,15 +2352,19 @@ fn build_settings_claude_rows(
                     nickname,
                     active,
                     hidden,
-                    lapsed: false,
+                    lapsed: status.unsubscribed,
                     auth_expired,
                     stale,
-                    plan: None,
+                    plan: status.unsubscribed.then(|| "Unsubscribed".to_string()),
                     warning,
                     bars: Vec::new(),
                     extra_text: None,
                     note: Some("Not signed in".to_string()),
                     cached_at,
+                    unsubscribed: status.unsubscribed,
+                    subscription_ends_at: status.ends_at,
+                    subscription_ends_label: status.ends_label,
+                    subscription_ends_soon: status.ends_soon,
                 };
             }
 
@@ -2188,7 +2373,12 @@ fn build_settings_claude_rows(
             } else {
                 "Free"
             });
-            let plan = Some(claude_plan_label(plan_raw));
+            let plan = if status.unsubscribed {
+                Some("Unsubscribed".to_string())
+            } else {
+                Some(claude_plan_label(plan_raw))
+            };
+            let dimmed = auth_expired || status.unsubscribed;
             let mut raw_bars = vec![
                 BarView::new(
                     "fiveHour",
@@ -2196,7 +2386,7 @@ fn build_settings_claude_rows(
                     u.five_hour.percent,
                     u.five_hour.resets_at.clone(),
                     now_ms,
-                    auth_expired,
+                    dimmed,
                 ),
                 BarView::new(
                     "weekly",
@@ -2204,18 +2394,18 @@ fn build_settings_claude_rows(
                     u.weekly.percent,
                     u.weekly.resets_at.clone(),
                     now_ms,
-                    auth_expired,
+                    dimmed,
                 ),
             ];
             if let Some(scoped) = u.weekly_scoped.first() {
                 if let Some(bar_pct) = raw_bars[1].percent {
-                    if !auth_expired && settings.fable_shade {
+                    if !dimmed && settings.fable_shade {
                         raw_bars[1].fable_segment_pct = scoped
                             .share_pct_of_weekly
                             .filter(|&v| v > 0.0 && bar_pct > 0.0)
                             .map(|v| v.min(bar_pct));
                     }
-                    if !auth_expired {
+                    if !dimmed {
                         raw_bars[1].tooltip_lines =
                             claude_weekly_tooltip_lines(bar_pct, Some(scoped));
                     }
@@ -2226,7 +2416,7 @@ fn build_settings_claude_rows(
                     scoped.percent,
                     scoped.resets_at.clone(),
                     now_ms,
-                    auth_expired,
+                    dimmed,
                 ));
             }
             let bars = filter_hidden_bars(raw_bars, &hidden_bars);
@@ -2239,7 +2429,7 @@ fn build_settings_claude_rows(
                 nickname,
                 active,
                 hidden,
-                lapsed: false,
+                lapsed: status.unsubscribed,
                 auth_expired,
                 stale,
                 plan,
@@ -2248,9 +2438,15 @@ fn build_settings_claude_rows(
                 extra_text,
                 note: None,
                 cached_at,
+                unsubscribed: status.unsubscribed,
+                subscription_ends_at: status.ends_at,
+                subscription_ends_label: status.ends_label,
+                subscription_ends_soon: status.ends_soon,
             }
         })
-        .collect()
+        .collect();
+    out.sort_by_key(|r| r.unsubscribed);
+    out
 }
 
 fn build_settings_codex_rows(
@@ -2259,20 +2455,24 @@ fn build_settings_codex_rows(
     now_ms: i64,
 ) -> Vec<SettingsAccountRow> {
     let hidden_bars = hidden_bars_for(settings, ProviderKind::Codex);
-    rows.iter()
+    let mut out: Vec<SettingsAccountRow> = rows
+        .iter()
         .map(|row| {
             let id = row
                 .get("id")
                 .and_then(Value::as_str)
                 .unwrap_or("codex")
                 .to_string();
-            let active = row.get("active").and_then(Value::as_bool).unwrap_or(false);
+            let raw_active = row.get("active").and_then(Value::as_bool).unwrap_or(false);
             let stale = row.get("stale").and_then(Value::as_bool).unwrap_or(false);
             let cached_at = row.get("cachedAt").and_then(Value::as_i64);
             let auth_expired = is_auth_expired(row);
             let hidden = is_disabled(settings, ProviderKind::Codex, &id);
             let nickname = lookup_display_name(settings, &format!("codex:{id}"));
-            let warning = tracked_warning(row, active);
+            let status =
+                resolve_subscription_status(settings, ProviderKind::Codex, &id, None, now_ms);
+            let active = raw_active && !status.unsubscribed;
+            let warning = tracked_warning(row, raw_active);
             let usage: Option<CodexUsage> = row
                 .get("usage")
                 .and_then(|v| serde_json::from_value(v.clone()).ok());
@@ -2291,26 +2491,35 @@ fn build_settings_codex_rows(
                     nickname,
                     active,
                     hidden,
-                    lapsed: false,
+                    lapsed: status.unsubscribed,
                     auth_expired,
                     stale,
-                    plan: None,
+                    plan: status.unsubscribed.then(|| "Unsubscribed".to_string()),
                     warning,
                     bars: Vec::new(),
                     extra_text: None,
                     note: Some("Not signed in or unavailable".to_string()),
                     cached_at,
+                    unsubscribed: status.unsubscribed,
+                    subscription_ends_at: status.ends_at,
+                    subscription_ends_label: status.ends_label,
+                    subscription_ends_soon: status.ends_soon,
                 };
             };
 
-            let plan = u.plan_type.as_deref().map(capitalize);
+            let plan = if status.unsubscribed {
+                Some("Unsubscribed".to_string())
+            } else {
+                u.plan_type.as_deref().map(capitalize)
+            };
+            let dimmed = auth_expired || status.unsubscribed;
             let mut raw_bars = vec![BarView::new(
                 "fiveHour",
                 "5h",
                 u.used_percent,
                 u.reset_at.clone(),
                 now_ms,
-                auth_expired,
+                dimmed,
             )];
             if u.weekly_used_percent.is_some() || u.weekly_reset_at.is_some() {
                 raw_bars.push(BarView::new(
@@ -2319,7 +2528,7 @@ fn build_settings_codex_rows(
                     u.weekly_used_percent,
                     u.weekly_reset_at.clone(),
                     now_ms,
-                    auth_expired,
+                    dimmed,
                 ));
             }
             let bars = filter_hidden_bars(raw_bars, &hidden_bars);
@@ -2342,7 +2551,7 @@ fn build_settings_codex_rows(
                 nickname,
                 active,
                 hidden,
-                lapsed: false,
+                lapsed: status.unsubscribed,
                 auth_expired,
                 stale,
                 plan,
@@ -2351,9 +2560,15 @@ fn build_settings_codex_rows(
                 extra_text,
                 note: None,
                 cached_at,
+                unsubscribed: status.unsubscribed,
+                subscription_ends_at: status.ends_at,
+                subscription_ends_label: status.ends_label,
+                subscription_ends_soon: status.ends_soon,
             }
         })
-        .collect()
+        .collect();
+    out.sort_by_key(|r| r.unsubscribed);
+    out
 }
 
 fn build_settings_cursor_rows(
@@ -2371,14 +2586,15 @@ fn build_settings_cursor_rows(
         .unwrap_or(0);
     let hidden_bars = hidden_bars_for(settings, ProviderKind::Cursor);
 
-    rows.iter()
+    let mut out: Vec<SettingsAccountRow> = rows
+        .iter()
         .map(|row| {
             let id = row
                 .get("id")
                 .and_then(Value::as_str)
                 .unwrap_or("cursor")
                 .to_string();
-            let active = row.get("active").and_then(Value::as_bool).unwrap_or(false);
+            let raw_active = row.get("active").and_then(Value::as_bool).unwrap_or(false);
             let stale = row.get("stale").and_then(Value::as_bool).unwrap_or(false);
             let cached_at = row.get("cachedAt").and_then(Value::as_i64);
             let auth_expired = is_auth_expired(row);
@@ -2388,6 +2604,15 @@ fn build_settings_cursor_rows(
             let usage: Option<CursorUsage> = row
                 .get("usage")
                 .and_then(|v| serde_json::from_value(v.clone()).ok());
+            let auto_end_iso = usage.as_ref().and_then(|u| u.resets_at.as_deref());
+            let status = resolve_subscription_status(
+                settings,
+                ProviderKind::Cursor,
+                &id,
+                auto_end_iso,
+                now_ms,
+            );
+            let active = raw_active && !status.unsubscribed;
             let label = row
                 .get("label")
                 .and_then(Value::as_str)
@@ -2403,26 +2628,31 @@ fn build_settings_cursor_rows(
                     nickname,
                     active,
                     hidden,
-                    lapsed: false,
+                    lapsed: status.unsubscribed,
                     auth_expired,
                     stale,
-                    plan: None,
+                    plan: status.unsubscribed.then(|| "Unsubscribed".to_string()),
                     warning,
                     bars: Vec::new(),
                     extra_text: None,
                     note: Some("Not signed in or unavailable".to_string()),
                     cached_at,
+                    unsubscribed: status.unsubscribed,
+                    subscription_ends_at: status.ends_at,
+                    subscription_ends_label: status.ends_label,
+                    subscription_ends_soon: status.ends_soon,
                 };
             };
 
             let cycle_passed = is_passed(u.resets_at.as_deref(), now_ms);
+            let dimmed = auth_expired || status.unsubscribed;
             let fp_bar = BarView::new(
                 "firstParty",
                 "1P",
                 u.cursor_models_percent_used,
                 u.resets_at.clone(),
                 now_ms,
-                auth_expired,
+                dimmed,
             );
             let mut api_bar = BarView::new(
                 "api",
@@ -2430,7 +2660,7 @@ fn build_settings_cursor_rows(
                 u.other_models_percent_used,
                 u.resets_at.clone(),
                 now_ms,
-                auth_expired,
+                dimmed,
             );
             if !cycle_passed {
                 if let Some(ref spend) = u.api_spend {
@@ -2453,6 +2683,11 @@ fn build_settings_cursor_rows(
             } else {
                 None
             };
+            let plan = if status.unsubscribed {
+                Some("Unsubscribed".to_string())
+            } else {
+                u.plan_name
+            };
 
             SettingsAccountRow {
                 provider: ProviderKind::Cursor,
@@ -2461,18 +2696,24 @@ fn build_settings_cursor_rows(
                 nickname,
                 active,
                 hidden,
-                lapsed: false,
+                lapsed: status.unsubscribed,
                 auth_expired,
                 stale,
-                plan: u.plan_name,
+                plan,
                 warning,
                 bars,
                 extra_text,
                 note: None,
                 cached_at,
+                unsubscribed: status.unsubscribed,
+                subscription_ends_at: status.ends_at,
+                subscription_ends_label: status.ends_label,
+                subscription_ends_soon: status.ends_soon,
             }
         })
-        .collect()
+        .collect();
+    out.sort_by_key(|r| r.unsubscribed);
+    out
 }
 
 fn build_settings_grok_rows(
@@ -2480,23 +2721,38 @@ fn build_settings_grok_rows(
     settings: &Settings,
     now_ms: i64,
 ) -> Vec<SettingsAccountRow> {
-    rows.iter()
+    let mut out: Vec<SettingsAccountRow> = rows
+        .iter()
         .map(|row| {
             let id = row
                 .get("id")
                 .and_then(Value::as_str)
                 .unwrap_or("grok")
                 .to_string();
-            let active = row.get("active").and_then(Value::as_bool).unwrap_or(false);
+            let raw_active = row.get("active").and_then(Value::as_bool).unwrap_or(false);
             let stale = row.get("stale").and_then(Value::as_bool).unwrap_or(false);
             let cached_at = row.get("cachedAt").and_then(Value::as_i64);
             let auth_expired = is_auth_expired(row);
             let hidden = is_disabled(settings, ProviderKind::Grok, &id);
             let nickname = lookup_display_name(settings, &format!("grok:{id}"));
-            let warning = tracked_warning(row, active);
+            let warning = tracked_warning(row, raw_active);
             let usage: Option<GrokUsage> = row
                 .get("usage")
                 .and_then(|v| serde_json::from_value(v.clone()).ok());
+            // Only treat Grok's reset_at as a monthly subscription end if it is > 8 days away
+            // (so weekly quota resets are not mislabeled as subscription expiration).
+            let auto_end_iso = usage
+                .as_ref()
+                .and_then(|u| u.reset_at.as_deref())
+                .filter(|iso| parse_iso_ms(iso).is_some_and(|ms| ms > now_ms + 8 * 86_400_000));
+            let status = resolve_subscription_status(
+                settings,
+                ProviderKind::Grok,
+                &id,
+                auto_end_iso,
+                now_ms,
+            );
+            let active = raw_active && !status.unsubscribed;
             let label = row
                 .get("label")
                 .and_then(Value::as_str)
@@ -2512,26 +2768,36 @@ fn build_settings_grok_rows(
                     nickname,
                     active,
                     hidden,
-                    lapsed: false,
+                    lapsed: status.unsubscribed,
                     auth_expired,
                     stale,
-                    plan: None,
+                    plan: status.unsubscribed.then(|| "Unsubscribed".to_string()),
                     warning,
                     bars: Vec::new(),
                     extra_text: None,
                     note: Some("Not signed in or unavailable".to_string()),
                     cached_at,
+                    unsubscribed: status.unsubscribed,
+                    subscription_ends_at: status.ends_at,
+                    subscription_ends_label: status.ends_label,
+                    subscription_ends_soon: status.ends_soon,
                 };
             };
 
+            let dimmed = auth_expired || status.unsubscribed;
             let bars = vec![BarView::new(
                 "weekly",
                 "Weekly",
                 u.percent_used,
                 u.reset_at.clone(),
                 now_ms,
-                auth_expired,
+                dimmed,
             )];
+            let plan = if status.unsubscribed {
+                Some("Unsubscribed".to_string())
+            } else {
+                u.plan_label.or(u.cursor_plan_name)
+            };
 
             SettingsAccountRow {
                 provider: ProviderKind::Grok,
@@ -2540,18 +2806,24 @@ fn build_settings_grok_rows(
                 nickname,
                 active,
                 hidden,
-                lapsed: false,
+                lapsed: status.unsubscribed,
                 auth_expired,
                 stale,
-                plan: u.plan_label.or(u.cursor_plan_name),
+                plan,
                 warning,
                 bars,
                 extra_text: None,
                 note: None,
                 cached_at,
+                unsubscribed: status.unsubscribed,
+                subscription_ends_at: status.ends_at,
+                subscription_ends_label: status.ends_label,
+                subscription_ends_soon: status.ends_soon,
             }
         })
-        .collect()
+        .collect();
+    out.sort_by_key(|r| r.unsubscribed);
+    out
 }
 
 fn build_settings_antigravity_rows(
@@ -2560,20 +2832,24 @@ fn build_settings_antigravity_rows(
     now_ms: i64,
 ) -> Vec<SettingsAccountRow> {
     let hidden_bars = hidden_bars_for(settings, ProviderKind::Antigravity);
-    rows.iter()
+    let mut out: Vec<SettingsAccountRow> = rows
+        .iter()
         .map(|row| {
             let id = row
                 .get("id")
                 .and_then(Value::as_str)
                 .unwrap_or("antigravity")
                 .to_string();
-            let active = row.get("active").and_then(Value::as_bool).unwrap_or(false);
+            let raw_active = row.get("active").and_then(Value::as_bool).unwrap_or(false);
             let auth_expired = is_auth_expired(row);
             let stale = row.get("stale").and_then(Value::as_bool).unwrap_or(false);
             let cached_at = row.get("cachedAt").and_then(Value::as_i64);
             let hidden = is_disabled(settings, ProviderKind::Antigravity, &id);
             let scoped_key = format!("antigravity:{}", id.trim());
             let nickname = lookup_display_name(settings, &scoped_key);
+            let status =
+                resolve_subscription_status(settings, ProviderKind::Antigravity, &id, None, now_ms);
+            let active = raw_active && !status.unsubscribed;
             let warning = auth_expired.then(|| "re-auth".to_string());
             let usage: Option<AntigravityUsage> = row
                 .get("usage")
@@ -2593,18 +2869,23 @@ fn build_settings_antigravity_rows(
                     nickname,
                     active,
                     hidden,
-                    lapsed: false,
+                    lapsed: status.unsubscribed,
                     auth_expired,
                     stale,
-                    plan: None,
+                    plan: status.unsubscribed.then(|| "Unsubscribed".to_string()),
                     warning,
                     bars: Vec::new(),
                     extra_text: None,
                     note: Some("Not signed in or unavailable".to_string()),
                     cached_at,
+                    unsubscribed: status.unsubscribed,
+                    subscription_ends_at: status.ends_at,
+                    subscription_ends_label: status.ends_label,
+                    subscription_ends_soon: status.ends_soon,
                 };
             };
 
+            let dimmed = auth_expired || status.unsubscribed;
             let mut raw_bars = Vec::new();
             if u.five_hour_percent.is_some() || u.five_hour_resets_at.is_some() {
                 raw_bars.push(BarView::new(
@@ -2613,7 +2894,7 @@ fn build_settings_antigravity_rows(
                     u.five_hour_percent,
                     u.five_hour_resets_at.clone(),
                     now_ms,
-                    auth_expired,
+                    dimmed,
                 ));
             }
             if u.weekly_percent.is_some() || u.weekly_resets_at.is_some() {
@@ -2623,7 +2904,7 @@ fn build_settings_antigravity_rows(
                     u.weekly_percent,
                     u.weekly_resets_at.clone(),
                     now_ms,
-                    auth_expired,
+                    dimmed,
                 ));
             }
             let bars = {
@@ -2642,18 +2923,24 @@ fn build_settings_antigravity_rows(
                 nickname,
                 active,
                 hidden,
-                lapsed: false,
+                lapsed: status.unsubscribed,
                 auth_expired,
                 stale,
-                plan: None,
+                plan: status.unsubscribed.then(|| "Unsubscribed".to_string()),
                 warning,
                 bars,
                 extra_text: None,
                 note: None,
                 cached_at,
+                unsubscribed: status.unsubscribed,
+                subscription_ends_at: status.ends_at,
+                subscription_ends_label: status.ends_label,
+                subscription_ends_soon: status.ends_soon,
             }
         })
-        .collect()
+        .collect();
+    out.sort_by_key(|r| r.unsubscribed);
+    out
 }
 
 fn build_settings_opencode_rows(
@@ -2662,28 +2949,47 @@ fn build_settings_opencode_rows(
     now_ms: i64,
 ) -> Vec<SettingsAccountRow> {
     let hidden_bars = hidden_bars_for(settings, ProviderKind::OpenCode);
-    rows.iter()
+    let mut out: Vec<SettingsAccountRow> = rows
+        .iter()
         .map(|row| {
             let email = row.get("email").and_then(Value::as_str).unwrap_or("");
             let enabled = row.get("enabled").and_then(Value::as_bool).unwrap_or(true);
             let hidden = !enabled || is_disabled(settings, ProviderKind::OpenCode, email);
-            let lapsed = row.get("subscriptionActive").and_then(Value::as_bool) == Some(false);
+            let api_lapsed = row.get("subscriptionActive").and_then(Value::as_bool) == Some(false);
             let auth_expired = is_auth_expired(row);
             let stale = row.get("stale").and_then(Value::as_bool).unwrap_or(false);
             let cached_at = row.get("cachedAt").and_then(Value::as_i64);
             let nickname = lookup_display_name(settings, email);
+            let usage: Option<OpenCodeUsage> = row
+                .get("usage")
+                .and_then(|v| serde_json::from_value(v.clone()).ok());
+            // For OpenCode Go, the monthly window reset timestamp IS the subscription cycle end.
+            let auto_end_iso = usage
+                .as_ref()
+                .map(|u| u.monthly.resets_at.as_str())
+                .filter(|s| !s.trim().is_empty());
+            let status = resolve_subscription_status(
+                settings,
+                ProviderKind::OpenCode,
+                email,
+                auto_end_iso,
+                now_ms,
+            );
+            let lapsed = api_lapsed || status.unsubscribed;
             let warning = if auth_expired {
                 Some("key rejected".to_string())
-            } else if lapsed {
+            } else if api_lapsed {
                 Some("not active".to_string())
             } else if row.get("error").and_then(Value::as_str) == Some("missing-credentials") {
                 Some("not signed in".to_string())
             } else {
                 None
             };
-            let usage: Option<OpenCodeUsage> = row
-                .get("usage")
-                .and_then(|v| serde_json::from_value(v.clone()).ok());
+            let plan = if status.unsubscribed {
+                Some("Unsubscribed".to_string())
+            } else {
+                Some("Go".to_string())
+            };
 
             let Some(u) = usage else {
                 return SettingsAccountRow {
@@ -2696,12 +3002,16 @@ fn build_settings_opencode_rows(
                     lapsed,
                     auth_expired,
                     stale,
-                    plan: Some("Go".to_string()),
+                    plan,
                     warning,
                     bars: Vec::new(),
                     extra_text: None,
                     note: Some("Unavailable".to_string()),
                     cached_at,
+                    unsubscribed: status.unsubscribed,
+                    subscription_ends_at: status.ends_at,
+                    subscription_ends_label: status.ends_label,
+                    subscription_ends_soon: status.ends_soon,
                 };
             };
 
@@ -2744,15 +3054,21 @@ fn build_settings_opencode_rows(
                 lapsed,
                 auth_expired,
                 stale,
-                plan: Some("Go".to_string()),
+                plan,
                 warning,
                 bars,
                 extra_text: None,
                 note: None,
                 cached_at,
+                unsubscribed: status.unsubscribed,
+                subscription_ends_at: status.ends_at,
+                subscription_ends_label: status.ends_label,
+                subscription_ends_soon: status.ends_soon,
             }
         })
-        .collect()
+        .collect();
+    out.sort_by_key(|r| r.unsubscribed);
+    out
 }
 
 fn format_at_tz<Tz: TimeZone>(tz: &Tz, ms: i64, now_ms: i64) -> String
@@ -4081,5 +4397,149 @@ mod tests {
             assert!(!item.hover_bars.is_empty());
             assert!(!item.hover_details.is_empty());
         }
+    }
+
+    #[test]
+    fn opencode_auto_detects_subscription_end_from_monthly_reset() {
+        // NOW is 2023-11-14 22:13:20 UTC.
+        let rows = vec![json!({
+            "email": "active@example.com",
+            "enabled": true,
+            "subscriptionActive": true,
+            "stale": false,
+            "usage": {
+                "rolling": { "status": "ok", "percent": 5.0, "resetsAt": "2023-11-15T03:00:00Z" },
+                "weekly":  { "status": "ok", "percent": 15.0, "resetsAt": "2023-11-19T00:00:00Z" },
+                "monthly": { "status": "ok", "percent": 40.0, "resetsAt": "2023-11-29T00:00:00Z" }
+            }
+        })];
+        let built = build_settings_opencode_rows(&rows, &Settings::default(), NOW);
+        assert_eq!(built.len(), 1);
+        assert!(!built[0].unsubscribed);
+        assert_eq!(built[0].plan.as_deref(), Some("Go"));
+        assert_eq!(built[0].subscription_ends_at.as_deref(), Some("2023-11-29"));
+        assert_eq!(
+            built[0].subscription_ends_label.as_deref(),
+            Some("Ends Nov 29 (15d)")
+        );
+        assert!(!built[0].subscription_ends_soon);
+
+        // Ending within 3 days highlights as soon.
+        let soon_rows = vec![json!({
+            "email": "soon@example.com",
+            "enabled": true,
+            "subscriptionActive": true,
+            "stale": false,
+            "usage": {
+                "rolling": { "status": "ok", "percent": 5.0, "resetsAt": "2023-11-15T03:00:00Z" },
+                "weekly":  { "status": "ok", "percent": 15.0, "resetsAt": "2023-11-16T00:00:00Z" },
+                "monthly": { "status": "ok", "percent": 40.0, "resetsAt": "2023-11-16T12:00:00Z" }
+            }
+        })];
+        let soon = build_settings_opencode_rows(&soon_rows, &Settings::default(), NOW);
+        assert_eq!(
+            soon[0].subscription_ends_label.as_deref(),
+            Some("Ends Nov 16 (2d)")
+        );
+        assert!(soon[0].subscription_ends_soon);
+    }
+
+    #[test]
+    fn unsubscribed_and_expired_manual_end_override_plan_sort_bottom_and_hide_from_taskbar() {
+        // NOW is 2023-11-14 UTC.
+        let claude_rows = vec![
+            json!({
+                "id": "old@example.com",
+                "label": "old@example.com",
+                "active": true,
+                "stale": false,
+                "usage": {
+                    "signedIn": true,
+                    "subscribed": true,
+                    "planName": "Max 20x",
+                    "fiveHour": { "percent": 12.0, "resetsAt": iso_in(120) },
+                    "weekly": { "percent": 40.0, "resetsAt": iso_in(1440) }
+                }
+            }),
+            json!({
+                "id": "expired@example.com",
+                "label": "expired@example.com",
+                "active": true,
+                "stale": false,
+                "usage": {
+                    "signedIn": true,
+                    "subscribed": true,
+                    "planName": "Max 5x",
+                    "fiveHour": { "percent": 20.0, "resetsAt": iso_in(120) },
+                    "weekly": { "percent": 50.0, "resetsAt": iso_in(1440) }
+                }
+            }),
+            json!({
+                "id": "active@example.com",
+                "label": "active@example.com",
+                "active": true,
+                "stale": false,
+                "usage": {
+                    "signedIn": true,
+                    "subscribed": true,
+                    "planName": "Max 20x",
+                    "fiveHour": { "percent": 5.0, "resetsAt": iso_in(120) },
+                    "weekly": { "percent": 10.0, "resetsAt": iso_in(1440) }
+                }
+            }),
+        ];
+
+        let mut settings = Settings::default();
+        settings
+            .unsubscribed_accounts
+            .push("claude:old@example.com".to_string());
+        settings.subscription_ends_at.insert(
+            "claude:expired@example.com".to_string(),
+            "2023-11-10".to_string(),
+        );
+        settings.subscription_ends_at.insert(
+            "claude:active@example.com".to_string(),
+            "2023-11-14".to_string(),
+        );
+
+        // Settings rows: active sorts first, unsubscribed & passed-end-date sort below with "Unsubscribed" badge.
+        let rows = build_settings_claude_rows(&claude_rows, &settings, NOW);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].id, "active@example.com");
+        assert!(!rows[0].unsubscribed);
+        assert!(rows[0].active);
+        assert_eq!(rows[0].plan.as_deref(), Some("Ultra"));
+        assert_eq!(
+            rows[0].subscription_ends_label.as_deref(),
+            Some("Ends today")
+        );
+        assert!(rows[0].subscription_ends_soon);
+
+        assert_eq!(rows[1].id, "old@example.com");
+        assert!(rows[1].unsubscribed);
+        assert!(!rows[1].active);
+        assert_eq!(rows[1].plan.as_deref(), Some("Unsubscribed"));
+        assert_eq!(rows[1].bars[0].severity, BarSeverity::Muted);
+
+        assert_eq!(rows[2].id, "expired@example.com");
+        assert!(rows[2].unsubscribed);
+        assert!(!rows[2].active);
+        assert_eq!(rows[2].plan.as_deref(), Some("Unsubscribed"));
+        assert_eq!(
+            rows[2].subscription_ends_label.as_deref(),
+            Some("Ended Nov 10")
+        );
+        assert!(rows[2].subscription_ends_soon);
+
+        // Taskbar items: only active@example.com appears; old & expired are excluded automatically.
+        let spend = ClaudeSpendInfo {
+            rate_text: None,
+            rate_severity: BarSeverity::Muted,
+            summary: None,
+        };
+        let (items, _) =
+            build_claude_items(&claude_rows, &settings, &spend, NOW, |_| (None, Vec::new()));
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].account_id, "active@example.com");
     }
 }

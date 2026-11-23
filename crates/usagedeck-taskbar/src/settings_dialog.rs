@@ -33,9 +33,10 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::{Arc, Mutex, Once};
 use theme::{apply_titlebar_theme, resolve_is_dark, SettingsPalette, SpendRange};
+use usagedeck_core::providers::{SeenAccounts, UsageCache};
 use usagedeck_core::store::{
-    read_json, write_json_atomic, Account, CredentialVault, Settings, Store, WidgetProvider,
-    OPENCODE_KEY_PREFIXES,
+    normalize_ymd_date, read_json, write_json_atomic, Account, CredentialVault, Settings, Store,
+    WidgetProvider, OPENCODE_KEY_PREFIXES, SEEN_ACCOUNTS_FILE, USAGE_CACHE_FILE,
 };
 use usagedeck_core::updater::release::{is_newer, parse_release, Version};
 use usagedeck_core::view::{poll_settings_snapshot, ProviderKind, SettingsSnapshot};
@@ -84,6 +85,8 @@ const MENU_COPY_KEY: usize = 4003;
 const MENU_REPLACE_KEY: usize = 4004;
 const MENU_REFRESH: usize = 4005;
 const MENU_REMOVE: usize = 4006;
+const MENU_TOGGLE_UNSUBSCRIBED: usize = 4007;
+const MENU_SET_SUB_END: usize = 4008;
 
 const MAX_KEY_LENGTH: usize = 512;
 const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/zbr79/UsageDeck/releases/latest";
@@ -938,6 +941,13 @@ fn display_name_key(provider: ProviderKind, account_id: &str) -> String {
     }
 }
 
+fn subscription_account_keys(provider: ProviderKind, account_id: &str) -> (String, Option<String>) {
+    let trimmed = account_id.trim().to_lowercase();
+    let scoped = format!("{}:{trimmed}", provider.key_prefix());
+    let bare = (provider == ProviderKind::OpenCode).then_some(trimmed);
+    (scoped, bare)
+}
+
 // ---- Action Dispatch (Always Runs Win32 Modals / Menus / Callbacks Outside Borrow!) ---------
 
 enum DeferredAction {
@@ -952,6 +962,8 @@ enum DeferredAction {
         label: String,
         nickname: Option<String>,
         hidden: bool,
+        unsubscribed: bool,
+        subscription_ends_at: Option<String>,
         is_dark: bool,
     },
     PromptAddOpenCode {
@@ -1264,6 +1276,8 @@ fn execute_action(hwnd: HWND, action: Action) {
             label,
             nickname,
             hidden,
+            unsubscribed,
+            subscription_ends_at,
         } => {
             deferred = DeferredAction::OpenAccountMenu {
                 provider,
@@ -1271,6 +1285,8 @@ fn execute_action(hwnd: HWND, action: Action) {
                 label,
                 nickname,
                 hidden,
+                unsubscribed,
+                subscription_ends_at,
                 is_dark: resolve_is_dark(state.settings.panel_theme),
             };
         }
@@ -1439,13 +1455,26 @@ fn execute_action(hwnd: HWND, action: Action) {
             label,
             nickname,
             hidden,
+            unsubscribed,
+            subscription_ends_at,
             is_dark,
         } => {
-            run_account_context_menu(hwnd, provider, account_id, label, nickname, hidden, is_dark);
+            run_account_context_menu(
+                hwnd,
+                provider,
+                account_id,
+                label,
+                nickname,
+                hidden,
+                unsubscribed,
+                subscription_ends_at,
+                is_dark,
+            );
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_account_context_menu(
     hwnd: HWND,
     provider: ProviderKind,
@@ -1453,6 +1482,8 @@ fn run_account_context_menu(
     label: String,
     nickname: Option<String>,
     hidden: bool,
+    unsubscribed: bool,
+    subscription_ends_at: Option<String>,
     is_dark: bool,
 ) {
     // SAFETY: TrackPopupMenu runs strictly outside any SETTINGS_STATE borrow.
@@ -1472,15 +1503,35 @@ fn run_account_context_menu(
             PCWSTR(hide_label.as_ptr()),
         );
         let _ = AppendMenuW(menu, MF_STRING, MENU_RENAME, w!("Rename…"));
+        let sub_end_label = wide(if subscription_ends_at.is_some() {
+            "Edit subscription end…"
+        } else {
+            "Set subscription end…"
+        });
+        let _ = AppendMenuW(
+            menu,
+            MF_STRING,
+            MENU_SET_SUB_END,
+            PCWSTR(sub_end_label.as_ptr()),
+        );
+        let unsub_label = wide(if unsubscribed {
+            "Mark as subscribed"
+        } else {
+            "Mark as unsubscribed"
+        });
+        let _ = AppendMenuW(
+            menu,
+            MF_STRING,
+            MENU_TOGGLE_UNSUBSCRIBED,
+            PCWSTR(unsub_label.as_ptr()),
+        );
         if provider == ProviderKind::OpenCode {
             let _ = AppendMenuW(menu, MF_STRING, MENU_COPY_KEY, w!("Copy API key"));
             let _ = AppendMenuW(menu, MF_STRING, MENU_REPLACE_KEY, w!("Replace API key…"));
         }
         let _ = AppendMenuW(menu, MF_STRING, MENU_REFRESH, w!("Refresh now"));
-        if provider == ProviderKind::OpenCode {
-            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-            let _ = AppendMenuW(menu, MF_STRING, MENU_REMOVE, w!("Remove account…"));
-        }
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+        let _ = AppendMenuW(menu, MF_STRING, MENU_REMOVE, w!("Remove account…"));
 
         let mut pt = POINT::default();
         let _ = GetCursorPos(&mut pt);
@@ -1564,6 +1615,119 @@ fn run_account_context_menu(
                 }
             }
         }
+        MENU_SET_SUB_END => {
+            if let Some(next_date) = modals::prompt_subscription_end(
+                hwnd,
+                is_dark,
+                &label,
+                subscription_ends_at.as_deref(),
+            ) {
+                let (scoped, bare) = subscription_account_keys(provider, &account_id);
+                let mut cb = None;
+                let mut poll = false;
+                try_with_state(|state| {
+                    if state
+                        .save_settings(|mut s| {
+                            s.subscription_ends_at.retain(|k, _| {
+                                !k.eq_ignore_ascii_case(&scoped)
+                                    && bare.as_deref().is_none_or(|b| !k.eq_ignore_ascii_case(b))
+                            });
+                            if let Some(ref ymd) = next_date {
+                                s.subscription_ends_at.insert(scoped.clone(), ymd.clone());
+                            }
+                            s
+                        })
+                        .is_ok()
+                    {
+                        state.loading = true;
+                        state.show_toast(if next_date.is_some() {
+                            "Subscription end saved"
+                        } else {
+                            "Subscription end cleared"
+                        });
+                        cb = Some(state.on_changed.clone());
+                        poll = true;
+                    }
+                });
+                if let Some(cb) = cb {
+                    cb();
+                }
+                if poll {
+                    spawn_settings_poll();
+                }
+            }
+        }
+        MENU_TOGGLE_UNSUBSCRIBED => {
+            let (scoped, bare) = subscription_account_keys(provider, &account_id);
+            let next_unsub = !unsubscribed;
+            let today = chrono::Local::now().date_naive();
+            let mut cb = None;
+            let mut poll = false;
+            try_with_state(|state| {
+                if state
+                    .save_settings(|mut s| {
+                        s.unsubscribed_accounts.retain(|e| {
+                            !e.eq_ignore_ascii_case(&scoped)
+                                && bare.as_deref().is_none_or(|b| !e.eq_ignore_ascii_case(b))
+                        });
+                        if next_unsub {
+                            s.unsubscribed_accounts.push(scoped.clone());
+                        } else {
+                            // Clear any expired manual end date so re-subscribing takes effect.
+                            s.subscription_ends_at.retain(|k, v| {
+                                let matches_acc = k.eq_ignore_ascii_case(&scoped)
+                                    || bare.as_deref().is_some_and(|b| k.eq_ignore_ascii_case(b));
+                                if !matches_acc {
+                                    return true;
+                                }
+                                normalize_ymd_date(v)
+                                    .and_then(|ymd| {
+                                        chrono::NaiveDate::parse_from_str(&ymd, "%Y-%m-%d").ok()
+                                    })
+                                    .is_none_or(|d| d >= today)
+                            });
+                        }
+                        s
+                    })
+                    .is_ok()
+                {
+                    if let Some(ref mut snap) = state.snapshot {
+                        let list = match provider {
+                            ProviderKind::Claude => &mut snap.claude,
+                            ProviderKind::Codex => &mut snap.codex,
+                            ProviderKind::Cursor => &mut snap.cursor,
+                            ProviderKind::Grok => &mut snap.grok,
+                            ProviderKind::OpenCode => &mut snap.opencode,
+                            ProviderKind::Antigravity => &mut snap.antigravity,
+                        };
+                        for row in list.iter_mut() {
+                            if row.id.eq_ignore_ascii_case(&account_id) {
+                                row.unsubscribed = next_unsub;
+                                row.lapsed = next_unsub;
+                                if next_unsub {
+                                    row.active = false;
+                                    row.plan = Some("Unsubscribed".to_string());
+                                }
+                            }
+                        }
+                    }
+                    state.loading = true;
+                    state.show_toast(if next_unsub {
+                        "Marked as unsubscribed"
+                    } else {
+                        "Marked as subscribed"
+                    });
+                    cb = Some(state.on_changed.clone());
+                    poll = true;
+                }
+            });
+            if let Some(cb) = cb {
+                cb();
+            }
+            if poll {
+                spawn_settings_poll();
+            }
+        }
         MENU_COPY_KEY => {
             try_with_state(|state| {
                 let accounts = match (&state.store, &state.rt) {
@@ -1610,8 +1774,13 @@ fn run_account_context_menu(
                 .as_deref()
                 .filter(|s| !s.trim().is_empty())
                 .unwrap_or(&label);
-            if modals::confirm_remove_account(hwnd, display_name) {
-                remove_opencode_account(&account_id);
+            let is_oc = provider == ProviderKind::OpenCode;
+            if modals::confirm_remove_account(hwnd, provider.display_name(), display_name, is_oc) {
+                if is_oc {
+                    remove_opencode_account(&account_id);
+                } else {
+                    remove_tracked_account(provider, &account_id);
+                }
             }
         }
         _ => {}
@@ -1694,6 +1863,66 @@ fn remove_opencode_account(email: &str) {
             Ok(()) => {
                 if let Some(ref mut snap) = state.snapshot {
                     snap.opencode.retain(|r| !r.id.eq_ignore_ascii_case(email));
+                }
+                state.loading = true;
+                state.show_toast("Account removed");
+                cb = Some(state.on_changed.clone());
+                poll = true;
+            }
+            Err(e) => {
+                log::warn!("{e}");
+                state.show_toast("Couldn't remove account");
+            }
+        }
+    });
+    if let Some(cb) = cb {
+        cb();
+    }
+    if poll {
+        spawn_settings_poll();
+    }
+}
+
+fn remove_tracked_account(provider: ProviderKind, account_id: &str) {
+    let mut cb = None;
+    let mut poll = false;
+    try_with_state(|state| {
+        let res = match (&state.store, &state.rt) {
+            (Some(store), Some(rt)) => {
+                let seen = SeenAccounts::new(store.file(SEEN_ACCOUNTS_FILE));
+                let cache = UsageCache::new(store.file(USAGE_CACHE_FILE));
+                let id_str = account_id.trim().to_string();
+                let id_lower = id_str.to_lowercase();
+                rt.block_on(async {
+                    seen.forget(provider.key_prefix(), std::slice::from_ref(&id_str))
+                        .await;
+                    cache.remove(provider.cache_section(), &id_lower).await;
+                    if id_lower != id_str {
+                        cache.remove(provider.cache_section(), &id_str).await;
+                    }
+                    store
+                        .forget_tracked_account(provider.key_prefix(), &id_str)
+                        .await
+                })
+                .map(|next| {
+                    state.settings = next;
+                })
+                .map_err(|e| format!("Failed to remove account: {e}"))
+            }
+            _ => Err("Data folder unavailable.".to_string()),
+        };
+        match res {
+            Ok(()) => {
+                if let Some(ref mut snap) = state.snapshot {
+                    let list = match provider {
+                        ProviderKind::Claude => &mut snap.claude,
+                        ProviderKind::Codex => &mut snap.codex,
+                        ProviderKind::Cursor => &mut snap.cursor,
+                        ProviderKind::Grok => &mut snap.grok,
+                        ProviderKind::OpenCode => &mut snap.opencode,
+                        ProviderKind::Antigravity => &mut snap.antigravity,
+                    };
+                    list.retain(|r| !r.id.eq_ignore_ascii_case(account_id));
                 }
                 state.loading = true;
                 state.show_toast("Account removed");

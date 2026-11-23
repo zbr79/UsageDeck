@@ -1088,12 +1088,16 @@ impl SettingsRenderer {
             self.fill_rounded(rt, pill, 1.5, pal.accent)?;
         }
 
-        let alpha = if row.hidden { 0.60 } else { 1.0 };
+        let alpha = if row.hidden || row.unsubscribed {
+            0.60
+        } else {
+            1.0
+        };
 
         // Account column: name + optional hidden tag + warning + plan badge.
         let mut right_limit = account_col_x + account_col_w;
         if let Some((ref plan_label, tone)) = row.plan {
-            let bw = (plan_label.chars().count() as f32 * 6.5 + 14.0).clamp(30.0, 74.0);
+            let bw = (plan_label.chars().count() as f32 * 6.5 + 14.0).clamp(30.0, 96.0);
             let bx = (right_limit - bw).max(account_col_x + 40.0);
             let brect = DipRect::new(bx, rr.y + (rr.h - 18.0) * 0.5, bw, 18.0);
             let bc = pal.badge(tone);
@@ -1123,13 +1127,40 @@ impl SettingsRenderer {
             row.name.clone()
         };
         let name_w = (right_limit - account_col_x).max(30.0);
-        self.draw_text(
-            rt,
-            &name_text,
-            &self.fmt_row_name,
-            DipRect::new(account_col_x, rr.y, name_w, rr.h),
-            with_alpha(pal.text, alpha),
-        )?;
+        if let Some((ref sub_txt, warn)) = row.sub_label {
+            self.draw_text(
+                rt,
+                &name_text,
+                &self.fmt_row_name,
+                DipRect::new(account_col_x, rr.y + 8.0, name_w, 18.0),
+                with_alpha(pal.text, alpha),
+            )?;
+            let sub_color = if *warn {
+                with_alpha(pal.warn_text, if row.hidden { 0.72 } else { 0.95 })
+            } else {
+                with_alpha(pal.muted, alpha)
+            };
+            self.draw_dynamic_text(
+                rt,
+                sub_txt,
+                11.0,
+                false,
+                false,
+                false,
+                false,
+                false,
+                DipRect::new(account_col_x, rr.y + 27.0, name_w, 16.0),
+                sub_color,
+            )?;
+        } else {
+            self.draw_text(
+                rt,
+                &name_text,
+                &self.fmt_row_name,
+                DipRect::new(account_col_x, rr.y, name_w, rr.h),
+                with_alpha(pal.text, alpha),
+            )?;
+        }
 
         // Usage cells or spanning note.
         if let Some((nx, nw, ref note_text)) = row.note {

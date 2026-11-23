@@ -11,7 +11,7 @@ use crate::settings_dialog::is_valid_opencode_key;
 use crate::settings_dialog::theme::apply_titlebar_theme;
 use std::cell::RefCell;
 use std::sync::Once;
-use usagedeck_core::store::MAX_NICKNAME_LENGTH;
+use usagedeck_core::store::{normalize_ymd_date, MAX_NICKNAME_LENGTH};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
@@ -69,6 +69,7 @@ enum ModalKind {
     AddOpenCode,
     ReplaceOpenCode,
     HourlyTarget,
+    SubscriptionEnd,
 }
 
 #[derive(Clone, Debug)]
@@ -76,6 +77,7 @@ enum ModalOutcome {
     Rename(String),
     OpenCode(String, String),
     HourlyTarget(Option<u32>),
+    SubscriptionEnd(Option<String>),
 }
 
 struct ModalState {
@@ -198,11 +200,23 @@ fn set_ctrl_text(hwnd: HWND, text: &str) {
     }
 }
 
-/// Confirm deleting an OpenCode account (`No` is the default button).
-pub fn confirm_remove_account(owner: HWND, display_name: &str) -> bool {
-    let msg = wide(&format!(
-        "Remove OpenCode account \"{display_name}\"?\n\nIts API key will be deleted from Windows Credential Manager."
-    ));
+/// Confirm removing an account (`No` is the default button).
+pub fn confirm_remove_account(
+    owner: HWND,
+    provider_name: &str,
+    display_name: &str,
+    is_opencode: bool,
+) -> bool {
+    let body = if is_opencode {
+        format!(
+            "Remove OpenCode account \"{display_name}\"?\n\nIts API key will be deleted from Windows Credential Manager."
+        )
+    } else {
+        format!(
+            "Remove {provider_name} account \"{display_name}\"?\n\nIt will be removed from UsageDeck's remembered accounts and cached usage. If you are still signed in to {provider_name}, it may reappear on the next refresh."
+        )
+    };
+    let msg = wide(&body);
     let title = wide("Remove account");
     // SAFETY: NUL-terminated UTF-16 strings; runs modal confirmation outside any RefCell borrow.
     unsafe {
@@ -235,6 +249,31 @@ pub fn prompt_rename(
         166.0,
     ) {
         Some(ModalOutcome::Rename(v)) => Some(v),
+        _ => None,
+    }
+}
+
+/// Prompt the user to record or clear a subscription end date (`YYYY-MM-DD`, blank clears).
+pub fn prompt_subscription_end(
+    owner: HWND,
+    is_dark: bool,
+    account_label: &str,
+    current_date: Option<&str>,
+) -> Option<Option<String>> {
+    let desc =
+        format!("Subscription end date for {account_label} (YYYY-MM-DD, leave blank to clear):");
+    match run_modal(
+        owner,
+        is_dark,
+        ModalKind::SubscriptionEnd,
+        "Subscription end date",
+        &desc,
+        current_date.unwrap_or(""),
+        None,
+        440.0,
+        172.0,
+    ) {
+        Some(ModalOutcome::SubscriptionEnd(v)) => Some(v),
         _ => None,
     }
 }
@@ -457,7 +496,7 @@ fn run_modal(
         );
 
         let (edit1, edit2, chk_show, err_y) = match kind {
-            ModalKind::Rename | ModalKind::HourlyTarget => {
+            ModalKind::Rename | ModalKind::HourlyTarget | ModalKind::SubscriptionEnd => {
                 let e1 = mk(
                     no_ex,
                     w!("EDIT"),
@@ -783,6 +822,30 @@ fn handle_modal_command(id: u16, notify: u16) {
                             set_ctrl_text(
                                 state.lbl_error,
                                 "Enter a whole number between 1 and 10000, or leave blank.",
+                            );
+                            // SAFETY: focus invalid input.
+                            unsafe {
+                                let _ = SetFocus(Some(state.edit1));
+                            }
+                        }
+                    }
+                }
+                ModalKind::SubscriptionEnd => {
+                    let raw = get_edit_text(state.edit1).trim().to_string();
+                    if raw.is_empty() {
+                        state.outcome = Some(ModalOutcome::SubscriptionEnd(None));
+                        state.done = true;
+                        return;
+                    }
+                    match normalize_ymd_date(&raw) {
+                        Some(ymd) => {
+                            state.outcome = Some(ModalOutcome::SubscriptionEnd(Some(ymd)));
+                            state.done = true;
+                        }
+                        None => {
+                            set_ctrl_text(
+                                state.lbl_error,
+                                "Use YYYY-MM-DD format (e.g. 2026-12-31), or leave blank.",
                             );
                             // SAFETY: focus invalid input.
                             unsafe {
