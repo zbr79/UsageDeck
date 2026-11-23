@@ -12,9 +12,7 @@ use crate::icons::IconAtlas;
 use crate::layout::DipRect;
 use crate::taskbar::{TaskbarMetrics, TaskbarTheme};
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
-use usagedeck_core::sysmon::{
-    format_bytes_compact, format_memory_summary, AttributedConsumer, SystemSnapshot,
-};
+use usagedeck_core::sysmon::{format_memory_summary, AttributedConsumer, SystemSnapshot};
 use usagedeck_core::view::{BarSeverity, BarView, ProviderItem, ProviderKind};
 use windows::core::{w, Result, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
@@ -110,10 +108,10 @@ const HEADER_ICON_GAP_DIP: f32 = 8.0;
 const HEADER_SUB_H_DIP: f32 = 14.0;
 const HEADER_MIN_TITLE_W_DIP: f32 = 52.0;
 
-const BADGE_H_DIP: f32 = 18.0;
-const BADGE_PAD_X_DIP: f32 = 6.5;
-const BADGE_GAP_DIP: f32 = 5.0;
-const BADGE_RADIUS_DIP: f32 = 5.0;
+const BADGE_H_DIP: f32 = 21.0;
+const BADGE_PAD_X_DIP: f32 = 8.0;
+const BADGE_GAP_DIP: f32 = 6.0;
+const BADGE_RADIUS_DIP: f32 = 6.0;
 
 const SECTION_GAP_DIP: f32 = 10.0;
 const BAR_GAP_DIP: f32 = 10.0;
@@ -145,6 +143,7 @@ struct HoverPalette {
     ok: D2D1_COLOR_F,
     warn: D2D1_COLOR_F,
     danger: D2D1_COLOR_F,
+    purple: D2D1_COLOR_F,
     muted: D2D1_COLOR_F,
     accent: D2D1_COLOR_F,
     divider: D2D1_COLOR_F,
@@ -167,6 +166,7 @@ impl HoverPalette {
                 ok: rgba(16, 185, 129, 1.0),
                 warn: rgba(245, 158, 11, 1.0),
                 danger: rgba(239, 68, 68, 1.0),
+                purple: rgba(192, 132, 252, 1.0),
                 muted: rgba(113, 113, 122, 1.0),
                 accent: rgba(96, 165, 250, 1.0),
                 divider: rgba(255, 255, 255, 0.09),
@@ -185,6 +185,7 @@ impl HoverPalette {
                 ok: rgba(5, 150, 105, 1.0),
                 warn: rgba(217, 119, 6, 1.0),
                 danger: rgba(220, 38, 38, 1.0),
+                purple: rgba(126, 34, 206, 1.0),
                 muted: rgba(113, 113, 122, 1.0),
                 accent: rgba(37, 99, 235, 1.0),
                 divider: rgba(0, 0, 0, 0.09),
@@ -340,14 +341,66 @@ fn friendly_bar_label(label: &str) -> &str {
     }
 }
 
-fn combine_reset_parts(short: Option<&str>, local: Option<&str>) -> Option<String> {
-    let s = short.map(str::trim).filter(|v| !v.is_empty());
-    let l = local.map(str::trim).filter(|v| !v.is_empty());
-    match (s, l) {
-        (Some(sv), Some(lv)) if !lv.eq_ignore_ascii_case(sv) => Some(format!("{sv} · {lv}")),
-        (Some(sv), _) => Some(sv.to_string()),
-        (None, Some(lv)) => Some(lv.to_string()),
-        (None, None) => None,
+/// Expand a compact remaining-time string like `"4h43m"`, `"4h 43m"`, `"5d"`, or `"<1m"` into
+/// readable words (`"4 hours 43 minutes"`, `"5 days"`, `"<1 minute"`) for the hover card.
+fn format_reset_duration_words(short: Option<&str>) -> Option<String> {
+    let raw = short.map(str::trim).filter(|v| !v.is_empty())?;
+    if raw.eq_ignore_ascii_case("<1m") || raw.eq_ignore_ascii_case("< 1m") {
+        return Some("<1 minute".to_string());
+    }
+
+    let bytes = raw.as_bytes();
+    let mut i = 0usize;
+    let mut parts: Vec<String> = Vec::new();
+    let mut consumed_any = false;
+    while i < bytes.len() {
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        let num_start = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i == num_start || i >= bytes.len() {
+            return Some(raw.to_string());
+        }
+        let Ok(n) = raw[num_start..i].parse::<u64>() else {
+            return Some(raw.to_string());
+        };
+        let unit = (bytes[i] as char).to_ascii_lowercase();
+        i += 1;
+        let label = match unit {
+            'd' => {
+                if n == 1 {
+                    "day"
+                } else {
+                    "days"
+                }
+            }
+            'h' => {
+                if n == 1 {
+                    "hour"
+                } else {
+                    "hours"
+                }
+            }
+            'm' => {
+                if n == 1 {
+                    "minute"
+                } else {
+                    "minutes"
+                }
+            }
+            _ => return Some(raw.to_string()),
+        };
+        parts.push(format!("{n} {label}"));
+        consumed_any = true;
+    }
+
+    if consumed_any && !parts.is_empty() {
+        Some(parts.join(" "))
+    } else {
+        Some(raw.to_string())
     }
 }
 
@@ -718,7 +771,7 @@ impl TooltipWindow {
                 &dwrite,
                 w!("Segoe UI"),
                 DWRITE_FONT_WEIGHT_SEMI_BOLD,
-                9.5,
+                10.5,
                 DWRITE_TEXT_ALIGNMENT_CENTER,
                 false,
             )?;
@@ -1348,7 +1401,7 @@ impl TooltipWindow {
         let header_right_limit = settings_btn.rect.x - 8.0;
 
         // Collect inline header badges placed directly to the right of the provider name:
-        // price/spend rate -> reset badge -> status badge.
+        // price/spend rate (clean neutral) -> reset count (purple) -> active alert badge.
         let mut badge_specs: Vec<BadgeSpec> = Vec::new();
         if let Some(rate) = item
             .spend_rate_text
@@ -1356,20 +1409,11 @@ impl TooltipWindow {
             .map(str::trim)
             .filter(|s| !s.is_empty())
         {
-            let (bg, border, fg) = if item.spend_rate_severity == BarSeverity::Muted {
-                (
-                    pal.badge_neutral_bg,
-                    pal.badge_neutral_border,
-                    pal.text_muted,
-                )
-            } else {
-                HoverPalette::tinted_pill(pal.severity_color(item.spend_rate_severity), theme)
-            };
             badge_specs.push(BadgeSpec {
                 text: rate.to_string(),
-                bg,
-                border,
-                fg,
+                bg: pal.badge_neutral_bg,
+                border: pal.badge_neutral_border,
+                fg: pal.text_primary,
             });
         }
         if let Some(badge) = item
@@ -1378,11 +1422,12 @@ impl TooltipWindow {
             .map(str::trim)
             .filter(|s| !s.is_empty())
         {
+            let (bg, border, fg) = HoverPalette::tinted_pill(pal.purple, theme);
             badge_specs.push(BadgeSpec {
                 text: badge.to_string(),
-                bg: pal.badge_neutral_bg,
-                border: pal.badge_neutral_border,
-                fg: pal.text_muted,
+                bg,
+                border,
+                fg,
             });
         }
         if item.exhausted {
@@ -1401,19 +1446,12 @@ impl TooltipWindow {
                 border,
                 fg,
             });
-        } else if item.stale {
-            badge_specs.push(BadgeSpec {
-                text: "Stale".to_string(),
-                bg: pal.badge_neutral_bg,
-                border: pal.badge_neutral_border,
-                fg: pal.text_muted,
-            });
         }
 
         let mut measured_specs: Vec<(BadgeSpec, f32)> = Vec::with_capacity(badge_specs.len());
         for spec in badge_specs {
             let (tw, _) = self.measure_text(&spec.text, &self.fmt_badge, 140.0, BADGE_H_DIP)?;
-            let bw = (tw.ceil() + BADGE_PAD_X_DIP * 2.0).max(26.0);
+            let bw = (tw.ceil() + BADGE_PAD_X_DIP * 2.0).max(30.0);
             measured_specs.push((spec, bw));
         }
         let total_badges_w: f32 = measured_specs
@@ -1504,11 +1542,10 @@ impl TooltipWindow {
                 }
                 let bar_y = cursor_y;
                 let raw_label = friendly_bar_label(&bar.label);
-                let raw_reset =
-                    combine_reset_parts(bar.reset_short.as_deref(), bar.reset_at_local.as_deref());
+                let raw_reset = format_reset_duration_words(bar.reset_short.as_deref());
 
                 let (label, label_w, reset_text) = if let Some(ref rs) = raw_reset {
-                    let max_lbl_w = (usable_meta_w * 0.48).max(52.0);
+                    let max_lbl_w = (usable_meta_w * 0.42).max(52.0);
                     let lbl = self.truncate_to_width(raw_label, &self.fmt_bar_label, max_lbl_w);
                     let (lw, _) =
                         self.measure_text(&lbl, &self.fmt_bar_label, max_lbl_w, BAR_META_H_DIP)?;
@@ -1920,8 +1957,8 @@ impl TooltipWindow {
         const PROC_ROW_H: f32 = 20.0;
         const MINI_BAR_W: f32 = 56.0;
         const MINI_BAR_H: f32 = 4.0;
-        const CPU_VAL_W: f32 = 42.0;
-        const MEM_VAL_W: f32 = 56.0;
+        const CPU_VAL_W: f32 = 44.0;
+        const MEM_VAL_W: f32 = 44.0;
 
         let scale = metrics.scale.max(0.5);
         let mon_w_dip = (metrics.monitor_rect.right - metrics.monitor_rect.left) as f32 / scale;
@@ -2289,13 +2326,21 @@ impl TooltipWindow {
                         },
                         pal.text_primary,
                     )?;
-                    let frac = (consumer.memory_bytes as f64 / total_mem).clamp(0.0, 1.0) as f32;
-                    let bar_col = if frac >= 0.45 {
-                        pal.danger
-                    } else if frac >= 0.25 {
-                        pal.warn
+                    let raw_pct = (consumer.memory_bytes as f64 / total_mem) * 100.0;
+                    let max_pct = sys.memory_percent.clamp(0.0, 100.0);
+                    let mem_pct = raw_pct.clamp(0.0, if max_pct > 0.0 { max_pct } else { 100.0 });
+                    let frac = (mem_pct / 100.0).clamp(0.0, 1.0) as f32;
+                    let row_sev = if mem_pct >= 45.0 {
+                        BarSeverity::Danger
+                    } else if mem_pct >= 25.0 {
+                        BarSeverity::Warn
                     } else {
-                        pal.accent
+                        BarSeverity::Ok
+                    };
+                    let bar_col = match row_sev {
+                        BarSeverity::Danger => pal.danger,
+                        BarSeverity::Warn => pal.warn,
+                        _ => pal.accent,
                     };
                     let track = DipRect {
                         x: bar_x,
@@ -2318,7 +2363,7 @@ impl TooltipWindow {
                             bar_col,
                         )?;
                     }
-                    let val_str = format_bytes_compact(consumer.memory_bytes);
+                    let val_str = format_pct_share(mem_pct);
                     draw_text(
                         rt,
                         &val_str,
@@ -2329,7 +2374,7 @@ impl TooltipWindow {
                             w: MEM_VAL_W,
                             h: PROC_ROW_H,
                         },
-                        pal.text_primary,
+                        pal.percent_color(row_sev),
                     )?;
                 }
             }
@@ -2396,13 +2441,17 @@ fn system_load_severity(pct: f64) -> BarSeverity {
     }
 }
 
-fn format_consumer_cpu(c: &AttributedConsumer) -> String {
-    let pct = c.cpu_percent.clamp(0.0, 100.0);
-    if pct >= 10.0 {
-        format!("{:.0}%", pct.round())
+fn format_pct_share(pct: f64) -> String {
+    let clamped = pct.clamp(0.0, 100.0);
+    if clamped >= 10.0 {
+        format!("{:.0}%", clamped.round())
     } else {
-        format!("{pct:.1}%")
+        format!("{clamped:.1}%")
     }
+}
+
+fn format_consumer_cpu(c: &AttributedConsumer) -> String {
+    format_pct_share(c.cpu_percent)
 }
 
 fn draw_card_bar_track(
@@ -2512,24 +2561,33 @@ mod tests {
     }
 
     #[test]
-    fn combine_reset_parts_dedupes_and_formats_cleanly() {
+    fn format_reset_duration_words_expands_cleanly() {
         assert_eq!(
-            combine_reset_parts(Some("3h 56m"), Some("Today 1:30 AM")).as_deref(),
-            Some("3h 56m · Today 1:30 AM")
+            format_reset_duration_words(Some("4h43m")).as_deref(),
+            Some("4 hours 43 minutes")
         );
         assert_eq!(
-            combine_reset_parts(Some("3h 56m"), None).as_deref(),
-            Some("3h 56m")
+            format_reset_duration_words(Some("3h 56m")).as_deref(),
+            Some("3 hours 56 minutes")
         );
         assert_eq!(
-            combine_reset_parts(None, Some("Thu 9:00 PM")).as_deref(),
-            Some("Thu 9:00 PM")
+            format_reset_duration_words(Some("1h 1m")).as_deref(),
+            Some("1 hour 1 minute")
         );
         assert_eq!(
-            combine_reset_parts(Some("2h"), Some("2h")).as_deref(),
-            Some("2h")
+            format_reset_duration_words(Some("5d")).as_deref(),
+            Some("5 days")
         );
-        assert_eq!(combine_reset_parts(Some("  "), Some("")), None);
+        assert_eq!(
+            format_reset_duration_words(Some("1d 2h")).as_deref(),
+            Some("1 day 2 hours")
+        );
+        assert_eq!(
+            format_reset_duration_words(Some("<1m")).as_deref(),
+            Some("<1 minute")
+        );
+        assert_eq!(format_reset_duration_words(Some("  ")), None);
+        assert_eq!(format_reset_duration_words(None), None);
     }
 
     #[test]

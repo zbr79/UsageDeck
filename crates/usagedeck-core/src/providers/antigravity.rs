@@ -28,7 +28,7 @@ const DAILY_QUOTA_URL: &str =
     "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary";
 const PROD_QUOTA_URL: &str =
     "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary";
-const USER_AGENT: &str = "antigravity/hub/2.24.0 (aidev_client; os_type=win32; arch=x64)";
+const USER_AGENT: &str = "antigravity/hub/2.34.0 (aidev_client; os_type=win32; arch=x64)";
 const SECTION: &str = "antigravity";
 const PROVIDER: &str = "antigravity";
 
@@ -161,12 +161,16 @@ fn read_keyring_credential() -> Option<AntigravityCredential> {
 }
 
 fn read_file_credential_in(home: &Path) -> Option<AntigravityCredential> {
-    let dir = home.join(".gemini").join("antigravity-acp");
-    for filename in ["antigravity-oauth-token", "acp_token.json"] {
-        let path = dir.join(filename);
-        if let Ok(text) = std::fs::read_to_string(&path) {
-            if let Some(cred) = parse_credential_json(&text) {
-                return Some(cred);
+    let gemini_dir = home.join(".gemini");
+    // Check official Antigravity CLI (`antigravity-cli`), ACP (`antigravity-acp`), and base folders.
+    for subdir in ["antigravity-cli", "antigravity-acp", "antigravity"] {
+        let dir = gemini_dir.join(subdir);
+        for filename in ["antigravity-oauth-token", "acp_token.json"] {
+            let path = dir.join(filename);
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                if let Some(cred) = parse_credential_json(&text) {
+                    return Some(cred);
+                }
             }
         }
     }
@@ -205,23 +209,36 @@ impl WindowKind {
 
     fn parse(window: Option<&str>, bucket_id: Option<&str>) -> Option<Self> {
         if let Some(w) = window.map(str::trim) {
-            if w.eq_ignore_ascii_case("5h")
-                || w.eq_ignore_ascii_case("five_hour")
-                || w.eq_ignore_ascii_case("5_hour")
+            let wl = w.to_ascii_lowercase();
+            if matches!(
+                wl.as_str(),
+                "5h" | "five_hour" | "five-hour" | "five hour" | "5_hour" | "5-hour"
+            ) || wl.contains("five_hour")
+                || wl.contains("5_hour")
             {
                 return Some(Self::FiveHour);
             }
-            if w.eq_ignore_ascii_case("weekly")
-                || w.eq_ignore_ascii_case("7d")
-                || w.eq_ignore_ascii_case("seven_day")
+            if matches!(
+                wl.as_str(),
+                "weekly" | "week" | "7d" | "seven_day" | "seven-day" | "seven day"
+            ) || wl.contains("week")
+                || wl.contains("7d")
             {
                 return Some(Self::Weekly);
             }
         }
         let id = bucket_id?.trim().to_ascii_lowercase();
-        if id.ends_with("-5h") || id.ends_with("_5h") {
+        if id.ends_with("-5h")
+            || id.ends_with("_5h")
+            || id.contains("five_hour")
+            || id.contains("five-hour")
+        {
             Some(Self::FiveHour)
-        } else if id.ends_with("-weekly") || id.ends_with("_weekly") {
+        } else if id.ends_with("-weekly")
+            || id.ends_with("_weekly")
+            || id.contains("weekly")
+            || id.contains("7d")
+        {
             Some(Self::Weekly)
         } else {
             None
@@ -246,25 +263,31 @@ fn parse_bucket(bucket: &Value, now: DateTime<Utc>) -> Option<ParsedBucket> {
             .or_else(|| obj.get("bucket_id"))
             .and_then(Value::as_str),
     )?;
-    let remaining_fraction = obj
-        .get("remainingFraction")
-        .or_else(|| obj.get("remaining_fraction"))
-        .and_then(Value::as_f64)
-        .filter(|v| v.is_finite())?
-        .clamp(0.0, 1.0);
-
-    let percent_used = ((1.0 - remaining_fraction) * 100.0).clamp(0.0, 100.0);
-    let has_description = obj
-        .get("description")
-        .and_then(Value::as_str)
-        .is_some_and(|s| !s.trim().is_empty());
-
     let raw_reset = obj
         .get("resetTime")
         .or_else(|| obj.get("reset_time"))
         .and_then(Value::as_str)
         .and_then(|s| DateTime::parse_from_rfc3339(s.trim()).ok())
         .map(|d| d.with_timezone(&Utc));
+
+    let remaining_fraction = match obj
+        .get("remainingFraction")
+        .or_else(|| obj.get("remaining_fraction"))
+        .and_then(Value::as_f64)
+        .filter(|v| v.is_finite())
+    {
+        Some(f) => f.clamp(0.0, 1.0),
+        // Protobuf3 JSON omits zero-valued float fields: an active bucket with a resetTime
+        // and omitted remainingFraction means 0% remaining (100% used).
+        None if raw_reset.is_some() => 0.0,
+        None => return None,
+    };
+
+    let percent_used = ((1.0 - remaining_fraction) * 100.0).clamp(0.0, 100.0);
+    let has_description = obj
+        .get("description")
+        .and_then(Value::as_str)
+        .is_some_and(|s| !s.trim().is_empty());
 
     // For an untouched bucket (remainingFraction == 1.0, no description), Google returns a rolling
     // resetTime ≈ now + window. Drop that synthetic rolling timestamp so idle bars stay clean.
@@ -402,56 +425,294 @@ async fn post_quota_summary(
     parse_quota_summary(&bytes, email, Utc::now())
 }
 
-async fn fetch(
-    http: reqwest::Client,
-    cred: AntigravityCredential,
-) -> Result<AntigravityUsage, FetchError<AntigravityUsage>> {
-    match post_quota_summary(
-        &http,
-        DAILY_QUOTA_URL,
-        &cred.access_token,
-        cred.email.clone(),
+/// Parse `agy -p /usage` stdout into `AntigravityUsage`.
+///
+/// Handles table and line layouts containing `Five Hour` / `5h` and `Weekly` remaining or used
+/// percentages along with optional RFC3339 reset timestamps.
+pub fn parse_agy_usage_output(output: &str) -> Option<AntigravityUsage> {
+    let mut usage = AntigravityUsage::default();
+    let mut found_any = false;
+
+    for raw_line in output.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let lower = line.to_ascii_lowercase();
+        let kind = if lower.contains("five hour")
+            || lower.contains("five-hour")
+            || lower.contains("5 hour")
+            || lower.contains("5-hour")
+            || lower.contains(" 5h")
+        {
+            WindowKind::FiveHour
+        } else if lower.contains("weekly") || lower.contains("7-day") || lower.contains("7 day") {
+            WindowKind::Weekly
+        } else {
+            continue;
+        };
+
+        let Some(pct) = extract_percent_token(line) else {
+            continue;
+        };
+        let is_remaining = lower.contains("remaining") || lower.contains("left");
+        let used_pct = if is_remaining {
+            (100.0 - pct).clamp(0.0, 100.0)
+        } else {
+            pct.clamp(0.0, 100.0)
+        };
+        let resets_at = extract_iso_timestamp(line);
+        let candidate = ParsedBucket {
+            kind,
+            percent_used: used_pct,
+            resets_at,
+        };
+        match kind {
+            WindowKind::FiveHour => merge_window(
+                &mut usage.five_hour_percent,
+                &mut usage.five_hour_resets_at,
+                candidate,
+            ),
+            WindowKind::Weekly => merge_window(
+                &mut usage.weekly_percent,
+                &mut usage.weekly_resets_at,
+                candidate,
+            ),
+        }
+        found_any = true;
+    }
+
+    found_any.then_some(usage)
+}
+
+fn extract_percent_token(line: &str) -> Option<f64> {
+    let bytes = line.as_bytes();
+    for (idx, &b) in bytes.iter().enumerate() {
+        if b != b'%' {
+            continue;
+        }
+        let mut start = idx;
+        while start > 0 && (bytes[start - 1].is_ascii_digit() || bytes[start - 1] == b'.') {
+            start -= 1;
+        }
+        if start < idx {
+            if let Ok(val) = line[start..idx].parse::<f64>() {
+                if val.is_finite() && (0.0..=100.0).contains(&val) {
+                    return Some(val);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn extract_iso_timestamp(line: &str) -> Option<String> {
+    for tok in
+        line.split(|c: char| c.is_whitespace() || c == '|' || c == ',' || c == '(' || c == ')')
+    {
+        let cleaned = tok.trim_matches(|c: char| c == '[' || c == ']' || c == '"' || c == '\'');
+        if cleaned.len() >= 20 && cleaned.contains('T') {
+            if let Ok(dt) = DateTime::parse_from_rfc3339(cleaned) {
+                return Some(
+                    dt.with_timezone(&Utc)
+                        .to_rfc3339_opts(SecondsFormat::Millis, true),
+                );
+            }
+        }
+    }
+    None
+}
+
+fn find_agy_binary() -> Option<PathBuf> {
+    if let Some(home) = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+    {
+        for rel in [
+            ".local/bin/agy.exe",
+            ".local/bin/agy.cmd",
+            ".local/bin/agy",
+            ".gemini/antigravity/bin/agy.exe",
+            ".gemini/antigravity/bin/agy.cmd",
+            ".gemini/antigravity/bin/agy",
+        ] {
+            let candidate = home.join(rel);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    if let Some(local_app) = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+    {
+        for rel in [
+            "Programs/Antigravity/bin/agy.exe",
+            "Programs/Antigravity/bin/agy.cmd",
+            "Programs/agy/agy.exe",
+        ] {
+            let candidate = local_app.join(rel);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    if let Some(path_var) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            for name in ["agy.exe", "agy.cmd", "agy"] {
+                let candidate = dir.join(name);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+    None
+}
+
+async fn fetch_via_agy_cli(email: Option<String>) -> Result<AntigravityUsage, ProviderError> {
+    let Some(bin) = tokio::task::spawn_blocking(find_agy_binary)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return Err(ProviderError::AuthRejected);
+    };
+
+    let output = tokio::time::timeout(
+        Duration::from_secs(20),
+        tokio::task::spawn_blocking(move || {
+            let mut cmd = std::process::Command::new(&bin);
+            cmd.args(["-p", "/usage"])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+                cmd.creation_flags(CREATE_NO_WINDOW);
+            }
+            cmd.output()
+        }),
     )
     .await
-    {
-        Ok(usage) => Ok(usage),
-        Err(err @ (ProviderError::AuthRejected | ProviderError::RateLimited)) => Err(err.into()),
-        Err(_) => post_quota_summary(&http, PROD_QUOTA_URL, &cred.access_token, cred.email)
-            .await
-            .map_err(FetchError::from),
+    .map_err(|_| {
+        log::warn!("antigravity: agy -p /usage timed out");
+        ProviderError::Network
+    })?
+    .map_err(|_| ProviderError::Network)?
+    .map_err(|e| {
+        log::warn!("antigravity: failed to run agy CLI: {e}");
+        ProviderError::Network
+    })?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if let Some(mut usage) = parse_agy_usage_output(&stdout) {
+        if usage.email.is_none() {
+            usage.email = email;
+        }
+        return Ok(usage);
     }
+
+    let combined = format!("{stdout}\n{}", String::from_utf8_lossy(&output.stderr));
+    if let Some(mut usage) = parse_agy_usage_output(&combined) {
+        if usage.email.is_none() {
+            usage.email = email;
+        }
+        return Ok(usage);
+    }
+
+    log::warn!(
+        "antigravity: agy -p /usage exited {:?} without parseable quota rows",
+        output.status.code()
+    );
+    Err(ProviderError::AuthRejected)
+}
+
+async fn fetch(
+    http: reqwest::Client,
+    cred: Option<AntigravityCredential>,
+) -> Result<AntigravityUsage, FetchError<AntigravityUsage>> {
+    let email = cred.as_ref().and_then(|c| c.email.clone());
+    if let Some(c) = cred {
+        match post_quota_summary(&http, DAILY_QUOTA_URL, &c.access_token, c.email.clone()).await {
+            Ok(usage) => return Ok(usage),
+            Err(ProviderError::RateLimited) => return Err(ProviderError::RateLimited.into()),
+            Err(ProviderError::AuthRejected) => {
+                // Stored access token is expired; let official `agy` CLI refresh and report quota.
+                log::info!("antigravity: direct token rejected (401/403), trying agy CLI fallback");
+                return fetch_via_agy_cli(c.email).await.map_err(FetchError::from);
+            }
+            Err(_) => {
+                match post_quota_summary(&http, PROD_QUOTA_URL, &c.access_token, c.email.clone())
+                    .await
+                {
+                    Ok(usage) => return Ok(usage),
+                    Err(ProviderError::AuthRejected) => {
+                        return fetch_via_agy_cli(c.email).await.map_err(FetchError::from);
+                    }
+                    Err(e) => return Err(e.into()),
+                }
+            }
+        }
+    }
+    fetch_via_agy_cli(email).await.map_err(FetchError::from)
 }
 
 /// Rows for Antigravity (`TrackedAccount<AntigravityUsage>` each).
 pub async fn accounts(core: &Core) -> Vec<Value> {
-    let cred = tokio::task::spawn_blocking(read_credential)
-        .await
-        .ok()
-        .flatten();
-    let live: Vec<LiveAccount<'_, AntigravityUsage>> = cred
-        .into_iter()
-        .map(|cred| {
-            let label = cred.email.clone().or_else(|| Some("Antigravity".into()));
-            let id = cred
-                .email
-                .as_deref()
-                .unwrap_or("antigravity")
-                .trim()
-                .to_lowercase();
-            let http = core.http.clone();
-            LiveAccount {
-                id: id.clone(),
-                label,
-                active: true,
-                load: Box::pin(async move {
-                    CACHE
-                        .get(&core.cache, &id, move |_| fetch(http, cred))
-                        .await
-                }),
-                label_from: None,
-            }
-        })
-        .collect();
+    let (cred, has_agy) = tokio::task::spawn_blocking(|| {
+        let cred = read_credential();
+        let has_agy = if cred.is_some() || !super::codex::real_sign_ins() {
+            false
+        } else {
+            find_agy_binary().is_some()
+        };
+        (cred, has_agy)
+    })
+    .await
+    .unwrap_or((None, false));
+
+    let live: Vec<LiveAccount<'_, AntigravityUsage>> = if let Some(cred) = cred {
+        let label = cred.email.clone().or_else(|| Some("Antigravity".into()));
+        let id = cred
+            .email
+            .as_deref()
+            .unwrap_or("antigravity")
+            .trim()
+            .to_lowercase();
+        let http = core.http.clone();
+        vec![LiveAccount {
+            id: id.clone(),
+            label,
+            active: true,
+            load: Box::pin(async move {
+                CACHE
+                    .get(&core.cache, &id, move |_| fetch(http, Some(cred)))
+                    .await
+            }),
+            label_from: None,
+        }]
+    } else if has_agy {
+        let id = "antigravity".to_string();
+        let http = core.http.clone();
+        vec![LiveAccount {
+            id: id.clone(),
+            label: Some("Antigravity".into()),
+            active: true,
+            load: Box::pin(async move {
+                CACHE
+                    .get(&core.cache, &id, move |_| fetch(http, None))
+                    .await
+            }),
+            label_from: None,
+        }]
+    } else {
+        Vec::new()
+    };
+
     let rows: Vec<TrackedAccount<AntigravityUsage>> =
         collect_accounts(&core.seen, &core.cache, PROVIDER, SECTION, live).await;
     rows.into_iter()
@@ -687,5 +948,40 @@ mod tests {
         assert!(bad.stale);
         assert_eq!(bad.usage, good.usage);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cli_dir_and_agy_usage_output_parse() {
+        let dir =
+            std::env::temp_dir().join(format!("usagedeck-antigravity-cli-{}", std::process::id()));
+        let cli_dir = dir.join(".gemini").join("antigravity-cli");
+        std::fs::create_dir_all(&cli_dir).unwrap();
+        let token = json!({
+            "access_token": "cli-tok-123",
+            "email": "dev@example.com"
+        });
+        std::fs::write(cli_dir.join("antigravity-oauth-token"), token.to_string()).unwrap();
+        let cred = read_file_credential_in(&dir).expect("reads antigravity-cli token");
+        assert_eq!(cred.access_token, "cli-tok-123");
+        assert_eq!(cred.email.as_deref(), Some("dev@example.com"));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let stdout = "\
+Model Group          | Limit                      | Remaining | Resets
+Gemini Models        | Five Hour Limit Remaining  | 82%       | 2026-11-23T05:00:00Z
+Gemini Models        | Weekly Limit Remaining     | 65%       | 2026-11-28T00:00:00Z
+Claude and GPT       | Five Hour Limit Remaining  | 40%       | 2026-11-23T04:30:00Z
+";
+        let parsed = parse_agy_usage_output(stdout).expect("parses agy /usage output");
+        assert_eq!(parsed.five_hour_percent, Some(60.0));
+        assert_eq!(
+            parsed.five_hour_resets_at.as_deref(),
+            Some("2026-11-23T04:30:00.000Z")
+        );
+        assert_eq!(parsed.weekly_percent, Some(35.0));
+        assert_eq!(
+            parsed.weekly_resets_at.as_deref(),
+            Some("2026-11-28T00:00:00.000Z")
+        );
     }
 }
