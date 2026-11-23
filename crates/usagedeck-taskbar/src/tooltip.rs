@@ -132,6 +132,7 @@ const FOOTER_BTN_RADIUS_DIP: f32 = 6.0;
 
 #[derive(Clone, Copy)]
 struct HoverPalette {
+    is_gemini_gem: bool,
     card_bg: D2D1_COLOR_F,
     card_border: D2D1_COLOR_F,
     top_highlight: D2D1_COLOR_F,
@@ -153,8 +154,11 @@ struct HoverPalette {
 
 impl HoverPalette {
     fn for_theme(theme: TaskbarTheme) -> Self {
-        match theme {
-            TaskbarTheme::Dark => Self {
+        let is_gem = crate::settings_dialog::theme::active_app_skin()
+            == usagedeck_core::store::AppSkin::GeminiGem;
+        match (theme, is_gem) {
+            (TaskbarTheme::Dark, true) => Self {
+                is_gemini_gem: true,
                 card_bg: rgba(22, 24, 28, 0.975),
                 card_border: rgba(255, 255, 255, 0.13),
                 top_highlight: rgba(0, 212, 146, 0.52),
@@ -173,7 +177,8 @@ impl HoverPalette {
                 badge_neutral_bg: rgba(255, 255, 255, 0.075),
                 badge_neutral_border: rgba(255, 255, 255, 0.12),
             },
-            TaskbarTheme::Light => Self {
+            (TaskbarTheme::Light, true) => Self {
+                is_gemini_gem: true,
                 card_bg: rgba(252, 253, 254, 0.985),
                 card_border: rgba(15, 23, 42, 0.11),
                 top_highlight: rgba(0, 153, 102, 0.42),
@@ -191,6 +196,46 @@ impl HoverPalette {
                 divider: rgba(15, 23, 42, 0.09),
                 badge_neutral_bg: rgba(15, 23, 42, 0.05),
                 badge_neutral_border: rgba(15, 23, 42, 0.10),
+            },
+            (TaskbarTheme::Dark, false) => Self {
+                is_gemini_gem: false,
+                card_bg: rgba(24, 25, 30, 0.97),
+                card_border: rgba(255, 255, 255, 0.14),
+                top_highlight: rgba(255, 255, 255, 0.06),
+                text_primary: rgba(244, 244, 246, 0.98),
+                text_muted: rgba(161, 161, 170, 0.92),
+                text_caption: rgba(113, 113, 122, 0.95),
+                track_bg: rgba(255, 255, 255, 0.12),
+                pace_tick: rgba(255, 255, 255, 0.65),
+                ok: rgba(16, 185, 129, 1.0),
+                warn: rgba(245, 158, 11, 1.0),
+                danger: rgba(239, 68, 68, 1.0),
+                purple: rgba(192, 132, 252, 1.0),
+                muted: rgba(113, 113, 122, 1.0),
+                accent: rgba(96, 165, 250, 1.0),
+                divider: rgba(255, 255, 255, 0.09),
+                badge_neutral_bg: rgba(255, 255, 255, 0.08),
+                badge_neutral_border: rgba(255, 255, 255, 0.12),
+            },
+            (TaskbarTheme::Light, false) => Self {
+                is_gemini_gem: false,
+                card_bg: rgba(250, 251, 253, 0.98),
+                card_border: rgba(0, 0, 0, 0.12),
+                top_highlight: rgba(255, 255, 255, 0.85),
+                text_primary: rgba(20, 20, 24, 0.96),
+                text_muted: rgba(82, 82, 91, 0.90),
+                text_caption: rgba(113, 113, 122, 0.95),
+                track_bg: rgba(24, 24, 28, 0.12),
+                pace_tick: rgba(24, 24, 28, 0.55),
+                ok: rgba(5, 150, 105, 1.0),
+                warn: rgba(217, 119, 6, 1.0),
+                danger: rgba(220, 38, 38, 1.0),
+                purple: rgba(126, 34, 206, 1.0),
+                muted: rgba(113, 113, 122, 1.0),
+                accent: rgba(37, 99, 235, 1.0),
+                divider: rgba(0, 0, 0, 0.09),
+                badge_neutral_bg: rgba(0, 0, 0, 0.055),
+                badge_neutral_border: rgba(0, 0, 0, 0.10),
             },
         }
     }
@@ -629,6 +674,7 @@ enum TooltipCacheKey {
         anchor_top: i32,
         dpi: u32,
         theme: TaskbarTheme,
+        skin: usagedeck_core::store::AppSkin,
         footer_text: String,
         footer_style: FooterStyle,
         hovered_button: Option<HoverCardAction>,
@@ -639,6 +685,7 @@ enum TooltipCacheKey {
         anchor_top: i32,
         dpi: u32,
         theme: TaskbarTheme,
+        skin: usagedeck_core::store::AppSkin,
         hovered_button: Option<HoverCardAction>,
     },
 }
@@ -996,12 +1043,14 @@ impl TooltipWindow {
         let anchor_top = anchor_rect_px.top.min(metrics.tray_rect.top);
         let (footer_text, footer_style) = resolve_footer(item, footer_hint);
 
+        let skin = crate::settings_dialog::theme::active_app_skin();
         let key = TooltipCacheKey::ProviderCard {
             item: Box::new(item.clone()),
             anchor_cx,
             anchor_top,
             dpi: metrics.dpi,
             theme,
+            skin,
             footer_text: footer_text.clone(),
             footer_style,
             hovered_button: self.hovered_button.clone(),
@@ -1059,6 +1108,7 @@ impl TooltipWindow {
     ) {
         let anchor_cx = (anchor_rect_px.left + anchor_rect_px.right) / 2;
         let anchor_top = anchor_rect_px.top.min(metrics.tray_rect.top);
+        let skin = crate::settings_dialog::theme::active_app_skin();
 
         let key = TooltipCacheKey::SystemCard {
             snapshot: Box::new(sys.clone()),
@@ -1066,6 +1116,7 @@ impl TooltipWindow {
             anchor_top,
             dpi: metrics.dpi,
             theme,
+            skin,
             hovered_button: self.hovered_button.clone(),
         };
         if self.visible
@@ -1889,6 +1940,8 @@ impl TooltipWindow {
                         ),
                         if is_hovered && dark {
                             pal.text_primary
+                        } else if !pal.is_gemini_gem {
+                            pal.accent
                         } else if dark {
                             rgba(94, 233, 181, 1.0)
                         } else {

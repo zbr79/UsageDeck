@@ -44,6 +44,7 @@ impl SharedSnapshot {
                 hide_in_fullscreen: true,
                 is_demo: false,
                 theme_mode: ThemeMode::Auto,
+                app_skin: usagedeck_core::store::AppSkin::default(),
                 snoozed_count: 0,
                 taskbar_meter_style: usagedeck_core::store::TaskbarMeterStyle::default(),
                 system_monitor_enabled: true,

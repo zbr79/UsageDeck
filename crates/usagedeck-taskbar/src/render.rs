@@ -155,8 +155,10 @@ fn rgba(r: u8, g: u8, b: u8, a: f32) -> D2D1_COLOR_F {
 }
 
 fn palette(theme: TaskbarTheme) -> Palette {
-    match theme {
-        TaskbarTheme::Dark => Palette {
+    let is_gem = crate::settings_dialog::theme::active_app_skin()
+        == usagedeck_core::store::AppSkin::GeminiGem;
+    match (theme, is_gem) {
+        (TaskbarTheme::Dark, true) => Palette {
             pill_bg: rgba(0, 0, 0, 0.0),
             pill_bg_hover: rgba(0, 212, 146, 0.085),
             pill_border: rgba(0, 0, 0, 0.0),
@@ -178,7 +180,7 @@ fn palette(theme: TaskbarTheme) -> Palette {
             danger: rgba(0xff, 0x64, 0x67, 1.0),
             bar_muted: rgba(0x71, 0x71, 0x7b, 1.0),
         },
-        TaskbarTheme::Light => Palette {
+        (TaskbarTheme::Light, true) => Palette {
             pill_bg: rgba(0, 0, 0, 0.0),
             pill_bg_hover: rgba(0, 153, 102, 0.09),
             pill_border: rgba(0, 0, 0, 0.0),
@@ -196,6 +198,50 @@ fn palette(theme: TaskbarTheme) -> Palette {
             text: rgba(20, 20, 24, 0.95),
             muted: rgba(58, 58, 66, 0.76),
             ok: rgba(0x00, 0x85, 0x5c, 1.0),
+            warn: rgba(0xbb, 0x4d, 0x00, 1.0),
+            danger: rgba(0xc1, 0x00, 0x07, 1.0),
+            bar_muted: rgba(0x71, 0x71, 0x7b, 1.0),
+        },
+        (TaskbarTheme::Dark, false) => Palette {
+            pill_bg: rgba(0, 0, 0, 0.0),
+            pill_bg_hover: rgba(255, 255, 255, 0.085),
+            pill_border: rgba(0, 0, 0, 0.0),
+            pill_border_hover: rgba(255, 255, 255, 0.14),
+            pill_border_danger: rgba(0xff, 0x64, 0x67, 0.65),
+            pill_border_warn: rgba(0xff, 0xb9, 0x00, 0.55),
+            flyout_bg: rgba(30, 29, 31, 0.96),
+            flyout_border: rgba(255, 255, 255, 0.13),
+            card_bg: rgba(255, 255, 255, 0.055),
+            card_border: rgba(255, 255, 255, 0.09),
+            btn_bg: rgba(255, 255, 255, 0.08),
+            btn_bg_hover: rgba(255, 255, 255, 0.16),
+            track: rgba(255, 255, 255, 0.24),
+            sep: rgba(255, 255, 255, 0.20),
+            text: rgba(255, 255, 255, 0.97),
+            muted: rgba(232, 232, 240, 0.84),
+            ok: rgba(0x00, 0xd4, 0x92, 1.0),
+            warn: rgba(0xff, 0xb9, 0x00, 1.0),
+            danger: rgba(0xff, 0x64, 0x67, 1.0),
+            bar_muted: rgba(0x71, 0x71, 0x7b, 1.0),
+        },
+        (TaskbarTheme::Light, false) => Palette {
+            pill_bg: rgba(0, 0, 0, 0.0),
+            pill_bg_hover: rgba(255, 255, 255, 0.48),
+            pill_border: rgba(0, 0, 0, 0.0),
+            pill_border_hover: rgba(0, 0, 0, 0.11),
+            pill_border_danger: rgba(0xc1, 0x00, 0x07, 0.65),
+            pill_border_warn: rgba(0xbb, 0x4d, 0x00, 0.55),
+            flyout_bg: rgba(247, 248, 250, 0.97),
+            flyout_border: rgba(0, 0, 0, 0.12),
+            card_bg: rgba(255, 255, 255, 0.88),
+            card_border: rgba(0, 0, 0, 0.08),
+            btn_bg: rgba(0, 0, 0, 0.06),
+            btn_bg_hover: rgba(0, 0, 0, 0.12),
+            track: rgba(24, 24, 28, 0.16),
+            sep: rgba(0, 0, 0, 0.12),
+            text: rgba(20, 20, 24, 0.95),
+            muted: rgba(58, 58, 66, 0.76),
+            ok: rgba(0x00, 0x7a, 0x55, 1.0),
             warn: rgba(0xbb, 0x4d, 0x00, 1.0),
             danger: rgba(0xc1, 0x00, 0x07, 1.0),
             bar_muted: rgba(0x71, 0x71, 0x7b, 1.0),
@@ -901,6 +947,7 @@ impl Renderer {
         let scale = dpi as f32 / 96.0;
         let width_px = (layout.width_dip * scale).ceil() as i32;
         let height_px = (layout.height_dip * scale).ceil() as i32;
+        crate::settings_dialog::theme::set_active_app_skin(snapshot.app_skin);
         let pal = palette(theme);
 
         self.commit_layered(hwnd, (x, y), (width_px, height_px), dpi, |rt| {
@@ -1868,6 +1915,7 @@ impl Renderer {
         let scale = dpi as f32 / 96.0;
         let width_px = (layout.width_dip * scale).ceil() as i32;
         let height_px = (layout.height_dip * scale).ceil() as i32;
+        crate::settings_dialog::theme::set_active_app_skin(snapshot.app_skin);
         let pal = palette(theme);
 
         self.commit_layered(hwnd, (x, y), (width_px, height_px), dpi, |rt| {
@@ -1878,22 +1926,24 @@ impl Renderer {
                 h: layout.height_dip - 1.0,
             };
             self.fill_rounded(rt, outer, 12.0, pal.flyout_bg)?;
-            let top_glow = if theme == TaskbarTheme::Dark {
-                rgba(0, 212, 146, 0.50)
-            } else {
-                rgba(0, 153, 102, 0.40)
-            };
-            self.fill_rounded(
-                rt,
-                DipRect {
-                    x: 16.0,
-                    y: 1.0,
-                    w: (layout.width_dip - 32.0).max(0.0),
-                    h: 2.0,
-                },
-                1.0,
-                top_glow,
-            )?;
+            if snapshot.app_skin == usagedeck_core::store::AppSkin::GeminiGem {
+                let top_glow = if theme == TaskbarTheme::Dark {
+                    rgba(0, 212, 146, 0.50)
+                } else {
+                    rgba(0, 153, 102, 0.40)
+                };
+                self.fill_rounded(
+                    rt,
+                    DipRect {
+                        x: 16.0,
+                        y: 1.0,
+                        w: (layout.width_dip - 32.0).max(0.0),
+                        h: 2.0,
+                    },
+                    1.0,
+                    top_glow,
+                )?;
+            }
             self.stroke_rounded(rt, outer, 12.0, 1.0, pal.flyout_border)?;
 
             // Header title

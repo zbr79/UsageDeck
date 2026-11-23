@@ -230,6 +230,9 @@ pub struct TaskbarSnapshot {
     pub hide_in_fullscreen: bool,
     pub is_demo: bool,
     pub theme_mode: ThemeMode,
+    /// Selected visual skin (`Default` vs. `GeminiGem`).
+    #[serde(default)]
+    pub app_skin: crate::store::AppSkin,
     /// Number of exhausted cards currently hidden via manual snooze or `auto_hide_exhausted`.
     pub snoozed_count: usize,
     /// Selected taskbar meter layout & reset-time style.
@@ -1097,6 +1100,7 @@ pub async fn poll_snapshot(core: &Core) -> TaskbarSnapshot {
         hide_in_fullscreen: settings.hide_in_fullscreen,
         is_demo: false,
         theme_mode: settings.theme_mode,
+        app_skin: settings.app_skin,
         snoozed_count,
         taskbar_meter_style: settings.taskbar_meter_style,
         system_monitor_enabled: settings.system_monitor_enabled,
@@ -3838,6 +3842,7 @@ pub fn demo_snapshot(now_ms: i64) -> TaskbarSnapshot {
         hide_in_fullscreen: true,
         is_demo: true,
         theme_mode: ThemeMode::Auto,
+        app_skin: crate::store::AppSkin::default(),
         snoozed_count: 0,
         taskbar_meter_style: TaskbarMeterStyle::default(),
         system_monitor_enabled: true,

@@ -524,6 +524,17 @@ const MAX_KEY_LENGTH: usize = 320;
 const MAX_ENTRIES: usize = 500;
 const FORBIDDEN_KEYS: [&str; 3] = ["__proto__", "constructor", "prototype"];
 
+/// Visual color & surface skin for UsageDeck (selectable in Settings → General & Style).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AppSkin {
+    /// Classic neutral slate/blue-accent skin (`v2.12`).
+    Default,
+    /// Obsidian & Emerald Glass skin crafted with Gemini (`"Gemini Gem"`).
+    #[default]
+    GeminiGem,
+}
+
 /// Visual style for taskbar usage meters and reset time display (selectable in Settings → Style).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -558,6 +569,9 @@ pub struct Settings {
     pub fable_shade: bool,
     pub theme_mode: ThemeMode,
     pub panel_theme: PanelTheme,
+    /// visual skin (Classic `Default` vs. `GeminiGem` Obsidian & Emerald Glass)
+    #[serde(rename = "appSkin", default)]
+    pub app_skin: AppSkin,
     /// nickname per OpenCode account email, or per provider id; values are always strings
     pub display_names: Map<String, Value>,
     /// lower-cased account keys hidden from the widget
@@ -603,6 +617,7 @@ impl Default for Settings {
             fable_shade: true,
             theme_mode: ThemeMode::Auto,
             panel_theme: PanelTheme::Dark,
+            app_skin: AppSkin::default(),
             display_names: Map::new(),
             disabled_accounts: Vec::new(),
             provider_order: DEFAULT_PROVIDER_ORDER.to_vec(),
@@ -880,6 +895,11 @@ pub fn apply_settings_patch_at(current: &Settings, patch: &Value, now_ms: u64) -
         Some("light") => next.panel_theme = PanelTheme::Light,
         Some("dark") => next.panel_theme = PanelTheme::Dark,
         Some("system") => next.panel_theme = PanelTheme::System,
+        _ => {}
+    }
+    match obj.get("appSkin").and_then(Value::as_str) {
+        Some("default") => next.app_skin = AppSkin::Default,
+        Some("geminiGem") => next.app_skin = AppSkin::GeminiGem,
         _ => {}
     }
     match obj.get("taskbarMeterStyle").and_then(Value::as_str) {
@@ -1212,6 +1232,28 @@ mod tests {
             &json!({ "taskbarMeterStyle": "invalid" }),
         );
         assert_eq!(kept.taskbar_meter_style, TaskbarMeterStyle::PillChip);
+    }
+
+    #[test]
+    fn app_skin_patch_and_serialization() {
+        assert_eq!(Settings::default().app_skin, AppSkin::GeminiGem);
+        for (wire, expected) in [
+            ("default", AppSkin::Default),
+            ("geminiGem", AppSkin::GeminiGem),
+        ] {
+            let patched = apply_settings_patch(&Settings::default(), &json!({ "appSkin": wire }));
+            assert_eq!(patched.app_skin, expected);
+            let out = serde_json::to_value(&patched).unwrap();
+            assert_eq!(out["appSkin"], json!(wire));
+        }
+        let kept = apply_settings_patch(
+            &Settings {
+                app_skin: AppSkin::Default,
+                ..Settings::default()
+            },
+            &json!({ "appSkin": "invalid" }),
+        );
+        assert_eq!(kept.app_skin, AppSkin::Default);
     }
 
     #[test]
