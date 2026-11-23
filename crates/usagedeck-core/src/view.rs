@@ -1839,7 +1839,42 @@ fn build_antigravity_items(
                 f
             }
         };
-        let hover_bars = non_empty_hover_bars(flyout_bars.clone());
+        let hover_bars = if u.groups.len() > 1 {
+            let mut pool_bars = Vec::new();
+            for grp in &u.groups {
+                if !hidden.iter().any(|h| h == "fiveHour")
+                    && (grp.five_hour_percent.is_some() || grp.five_hour_resets_at.is_some())
+                {
+                    pool_bars.push(BarView::new(
+                        "fiveHour",
+                        format!("{} · 5h", grp.name),
+                        grp.five_hour_percent,
+                        grp.five_hour_resets_at.clone(),
+                        now_ms,
+                        auth_expired,
+                    ));
+                }
+                if !hidden.iter().any(|h| h == "weekly")
+                    && (grp.weekly_percent.is_some() || grp.weekly_resets_at.is_some())
+                {
+                    pool_bars.push(BarView::new(
+                        "weekly",
+                        format!("{} · Weekly", grp.name),
+                        grp.weekly_percent,
+                        grp.weekly_resets_at.clone(),
+                        now_ms,
+                        auth_expired,
+                    ));
+                }
+            }
+            if pool_bars.is_empty() {
+                non_empty_hover_bars(flyout_bars.clone())
+            } else {
+                non_empty_hover_bars(pool_bars)
+            }
+        } else {
+            non_empty_hover_bars(flyout_bars.clone())
+        };
         let taskbar_bars = pick_taskbar_bars(&flyout_bars);
         let exhausted = flyout_bars
             .iter()
@@ -3320,19 +3355,201 @@ fn build_diagnostics_text(
     redact(&blocks.join("\n\n"))
 }
 
+fn cached_tracked_rows(
+    data_dir: &std::path::Path,
+    cache_root: Option<&serde_json::Map<String, Value>>,
+    provider: &str,
+    section: &str,
+) -> Vec<Value> {
+    let seen = crate::providers::SeenAccounts::new(data_dir.join(crate::store::SEEN_ACCOUNTS_FILE));
+    let remembered = seen.remembered(provider);
+    let sec = cache_root
+        .and_then(|m| m.get(section))
+        .and_then(Value::as_object);
+    let mut rows = Vec::new();
+    let mut emitted = HashSet::new();
+
+    // `SeenAccounts` keeps the newest/most-recent sign-in last; iterate newest first.
+    for acc in remembered.into_iter().rev() {
+        let entry = sec.and_then(|s| s.get(&acc.id));
+        let usage = entry.and_then(|e| e.get("data")).cloned();
+        let cached_at = entry.and_then(|e| e.get("savedAt")).and_then(Value::as_i64);
+        emitted.insert(acc.id.clone());
+        rows.push(serde_json::json!({
+            "id": acc.id,
+            "label": acc.label,
+            "active": false,
+            "usage": usage,
+            "stale": false,
+            "cachedAt": cached_at,
+            "authExpired": false,
+            "error": Value::Null,
+        }));
+    }
+
+    // Also include any cached entries not yet recorded in seen-accounts.json.
+    if let Some(sec_map) = sec {
+        for (key, entry) in sec_map {
+            let norm = key.trim().to_lowercase();
+            if norm.is_empty() || !emitted.insert(norm.clone()) {
+                continue;
+            }
+            let usage = entry.get("data").cloned();
+            if usage.as_ref().is_none_or(Value::is_null) {
+                continue;
+            }
+            let cached_at = entry.get("savedAt").and_then(Value::as_i64);
+            rows.push(serde_json::json!({
+                "id": norm,
+                "label": key,
+                "active": false,
+                "usage": usage,
+                "stale": false,
+                "cachedAt": cached_at,
+                "authExpired": false,
+                "error": Value::Null,
+            }));
+        }
+    }
+    rows
+}
+
+fn cached_opencode_rows(
+    data_dir: &std::path::Path,
+    cache_root: Option<&serde_json::Map<String, Value>>,
+) -> Vec<Value> {
+    let emails: Vec<String> =
+        match crate::store::read_json(&data_dir.join(crate::store::ACCOUNTS_FILE)) {
+            Some(Value::Array(arr)) => arr
+                .iter()
+                .filter_map(|r| r.get("email").and_then(Value::as_str).map(str::to_string))
+                .collect(),
+            _ => Vec::new(),
+        };
+    let sec = cache_root
+        .and_then(|m| m.get("opencode"))
+        .and_then(Value::as_object);
+    emails
+        .into_iter()
+        .map(|email| {
+            let lower = email.trim().to_lowercase();
+            let entry = sec.and_then(|s| s.get(&lower).or_else(|| s.get(&email)));
+            let usage = entry.and_then(|e| e.get("data")).cloned();
+            let cached_at = entry.and_then(|e| e.get("savedAt")).and_then(Value::as_i64);
+            serde_json::json!({
+                "email": email,
+                "enabled": true,
+                "usage": usage,
+                "stale": false,
+                "cachedAt": cached_at,
+                "authExpired": false,
+                "error": Value::Null,
+            })
+        })
+        .collect()
+}
+
+/// Synchronously build a `SettingsSnapshot` from disk caches (`seen-accounts.json`,
+/// `usage-cache.json`, `accounts.json`) with zero network calls or subprocesses (< 5ms).
+/// Used so the Settings window displays accounts immediately while live refresh runs in the background.
+pub fn cached_settings_snapshot(
+    data_dir: &std::path::Path,
+    settings: Settings,
+) -> SettingsSnapshot {
+    let now_ms = claude_logs::now_ms();
+    let cache_val = crate::store::read_json(&data_dir.join(crate::store::USAGE_CACHE_FILE));
+    let cache_root = cache_val.as_ref().and_then(Value::as_object);
+
+    let claude_rows = cached_tracked_rows(data_dir, cache_root, "claude", "claude");
+    let codex_rows = cached_tracked_rows(data_dir, cache_root, "codex", "codex");
+    let cursor_rows = cached_tracked_rows(data_dir, cache_root, "cursor", "cursor");
+    let cursor_resp = serde_json::json!({ "accounts": cursor_rows });
+    let grok_rows = cached_tracked_rows(data_dir, cache_root, "grok", "grokbot");
+    let opencode_rows = cached_opencode_rows(data_dir, cache_root);
+    let antigravity_rows = cached_tracked_rows(data_dir, cache_root, "antigravity", "antigravity");
+
+    let attempt = crate::providers::cursor::last_attempt();
+    let diag_rows = attempt
+        .as_ref()
+        .map_or_else(Vec::new, |a| cursor_diag_rows(a, now_ms));
+    let app_version = env!("CARGO_PKG_VERSION").to_string();
+    let system = current_system_label();
+    let diagnostics_text =
+        build_diagnostics_text(&app_version, &system, now_ms, attempt.as_ref(), "");
+
+    SettingsSnapshot {
+        claude: build_settings_claude_rows(&claude_rows, &settings, now_ms),
+        codex: build_settings_codex_rows(&codex_rows, &settings, now_ms),
+        cursor: build_settings_cursor_rows(&cursor_resp, &settings, now_ms),
+        grok: build_settings_grok_rows(&grok_rows, &settings, now_ms),
+        opencode: build_settings_opencode_rows(&opencode_rows, &settings, now_ms),
+        antigravity: build_settings_antigravity_rows(&antigravity_rows, &settings, now_ms),
+        settings,
+        pace: SettingsPaceData::default(),
+        cursor_diag_rows: diag_rows,
+        diagnostics_text,
+        app_version,
+    }
+}
+
 /// Poll all providers, Claude pace/calibration, and diagnostics for the pure-Rust Settings window.
 pub async fn poll_settings_snapshot(core: &Core) -> SettingsSnapshot {
     let settings = core.store.get_settings();
     let now_ms = claude_logs::now_ms();
+    let per_provider_timeout = std::time::Duration::from_secs(8);
+    let data_dir = core.store.dir().to_path_buf();
 
-    let (claude_rows, cursor_resp, codex_rows, grok_rows, opencode_rows, antigravity_rows) = tokio::join!(
-        crate::providers::claude::accounts(core),
-        crate::providers::cursor::response(core),
-        crate::providers::codex::accounts(core),
-        crate::providers::grok::accounts(core),
-        crate::providers::opencode::accounts(core),
-        crate::providers::antigravity::accounts(core),
+    let (claude_res, cursor_res, codex_res, grok_res, opencode_res, antigravity_res) = tokio::join!(
+        tokio::time::timeout(
+            per_provider_timeout,
+            crate::providers::claude::accounts(core)
+        ),
+        tokio::time::timeout(
+            per_provider_timeout,
+            crate::providers::cursor::response(core)
+        ),
+        tokio::time::timeout(
+            per_provider_timeout,
+            crate::providers::codex::accounts(core)
+        ),
+        tokio::time::timeout(per_provider_timeout, crate::providers::grok::accounts(core)),
+        tokio::time::timeout(
+            per_provider_timeout,
+            crate::providers::opencode::accounts(core)
+        ),
+        tokio::time::timeout(
+            per_provider_timeout,
+            crate::providers::antigravity::accounts(core)
+        ),
     );
+
+    let need_fallback = claude_res.is_err()
+        || cursor_res.is_err()
+        || codex_res.is_err()
+        || grok_res.is_err()
+        || opencode_res.is_err()
+        || antigravity_res.is_err();
+    let cache_val = need_fallback
+        .then(|| crate::store::read_json(&data_dir.join(crate::store::USAGE_CACHE_FILE)))
+        .flatten();
+    let cache_root = cache_val.as_ref().and_then(Value::as_object);
+
+    let claude_rows = claude_res
+        .unwrap_or_else(|_| cached_tracked_rows(&data_dir, cache_root, "claude", "claude"));
+    let cursor_resp = cursor_res.unwrap_or_else(|_| {
+        serde_json::json!({
+            "accounts": cached_tracked_rows(&data_dir, cache_root, "cursor", "cursor")
+        })
+    });
+    let codex_rows =
+        codex_res.unwrap_or_else(|_| cached_tracked_rows(&data_dir, cache_root, "codex", "codex"));
+    let grok_rows =
+        grok_res.unwrap_or_else(|_| cached_tracked_rows(&data_dir, cache_root, "grok", "grokbot"));
+    let opencode_rows =
+        opencode_res.unwrap_or_else(|_| cached_opencode_rows(&data_dir, cache_root));
+    let antigravity_rows = antigravity_res.unwrap_or_else(|_| {
+        cached_tracked_rows(&data_dir, cache_root, "antigravity", "antigravity")
+    });
 
     let spend = core.spend.spend(now_ms);
     let spend_report = spend.report();
@@ -4541,5 +4758,112 @@ mod tests {
             build_claude_items(&claude_rows, &settings, &spend, NOW, |_| (None, Vec::new()));
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].account_id, "active@example.com");
+    }
+
+    #[test]
+    fn antigravity_hover_card_splits_gemini_and_claude_gpt_pools() {
+        let rows = vec![json!({
+            "id": "dev@example.com",
+            "label": "dev@example.com",
+            "active": true,
+            "stale": false,
+            "usage": {
+                "email": "dev@example.com",
+                "fiveHourPercent": 100.0,
+                "fiveHourResetsAt": iso_in(180),
+                "weeklyPercent": 45.0,
+                "weeklyResetsAt": iso_in(4320),
+                "groups": [
+                    {
+                        "name": "Gemini",
+                        "fiveHourPercent": 12.0,
+                        "fiveHourResetsAt": iso_in(210),
+                        "weeklyPercent": 8.0,
+                        "weeklyResetsAt": iso_in(4320)
+                    },
+                    {
+                        "name": "Claude & GPT",
+                        "fiveHourPercent": 100.0,
+                        "fiveHourResetsAt": iso_in(180),
+                        "weeklyPercent": 45.0,
+                        "weeklyResetsAt": iso_in(4320)
+                    }
+                ]
+            }
+        })];
+        let (items, _) = build_antigravity_items(&rows, &Settings::default(), NOW);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].taskbar_bars.len(), 2);
+        let hover_labels: Vec<&str> = items[0]
+            .hover_bars
+            .iter()
+            .map(|b| b.label.as_str())
+            .collect();
+        assert_eq!(
+            hover_labels,
+            vec![
+                "Gemini · 5h",
+                "Gemini · Weekly",
+                "Claude & GPT · 5h",
+                "Claude & GPT · Weekly",
+            ]
+        );
+    }
+
+    #[test]
+    fn cached_settings_snapshot_loads_accounts_synchronously_from_disk() {
+        let dir =
+            std::env::temp_dir().join(format!("usagedeck-cached-settings-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::store::write_json_atomic(
+            &dir.join(crate::store::SEEN_ACCOUNTS_FILE),
+            &json!({
+                "codex": [{ "id": "dev@example.com", "label": "dev@example.com" }],
+                "antigravity": [{ "id": "ag@example.com", "label": "ag@example.com" }]
+            }),
+        )
+        .unwrap();
+        crate::store::write_json_atomic(
+            &dir.join(crate::store::USAGE_CACHE_FILE),
+            &json!({
+                "codex": {
+                    "dev@example.com": {
+                        "savedAt": NOW,
+                        "data": {
+                            "email": "dev@example.com",
+                            "planType": "plus",
+                            "usedPercent": 25.0,
+                            "resetAt": iso_in(120)
+                        }
+                    }
+                },
+                "antigravity": {
+                    "ag@example.com": {
+                        "savedAt": NOW,
+                        "data": {
+                            "email": "ag@example.com",
+                            "fiveHourPercent": 35.0,
+                            "weeklyPercent": 15.0
+                        }
+                    }
+                }
+            }),
+        )
+        .unwrap();
+        crate::store::write_json_atomic(
+            &dir.join(crate::store::ACCOUNTS_FILE),
+            &json!([{ "email": "oc@example.com" }]),
+        )
+        .unwrap();
+
+        let snap = cached_settings_snapshot(&dir, Settings::default());
+        assert_eq!(snap.codex.len(), 1);
+        assert_eq!(snap.codex[0].id, "dev@example.com");
+        assert_eq!(snap.codex[0].plan.as_deref(), Some("Plus"));
+        assert_eq!(snap.antigravity.len(), 1);
+        assert_eq!(snap.antigravity[0].id, "ag@example.com");
+        assert_eq!(snap.opencode.len(), 1);
+        assert_eq!(snap.opencode[0].id, "oc@example.com");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
