@@ -92,6 +92,15 @@ where
     args.into_iter().any(|a| a.as_ref() == "--demo")
 }
 
+/// True when the installer relaunched UsageDeck right after an update: `usagedeck.exe --updated`.
+pub fn wants_updated<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    args.into_iter().any(|a| a.as_ref() == "--updated")
+}
+
 /// Release builds use the GUI subsystem: without an inherited stdout (a pipe or a file), attach
 /// to the parent console so CLI output is visible when run from cmd or PowerShell.
 fn attach_console() {

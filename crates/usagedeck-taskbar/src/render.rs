@@ -12,7 +12,10 @@ use crate::layout::{
     WIDE_ICON_GAP_DIP, WIDE_PAD_X_DIP, WIDE_RATE_ICON_COL_DIP,
 };
 use crate::taskbar::TaskbarTheme;
-use usagedeck_core::view::{BarSeverity, BarView, ProviderItem, ProviderKind, TaskbarSnapshot};
+use usagedeck_core::store::TaskbarMeterStyle;
+use usagedeck_core::view::{
+    parse_iso_ms, BarSeverity, BarView, ProviderItem, ProviderKind, TaskbarSnapshot,
+};
 use windows::core::{w, Result};
 use windows::Win32::Foundation::{COLORREF, HWND, POINT, RECT, SIZE};
 use windows::Win32::Graphics::Direct2D::Common::{
@@ -20,7 +23,8 @@ use windows::Win32::Graphics::Direct2D::Common::{
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1CreateFactory, ID2D1DCRenderTarget, ID2D1Factory, ID2D1StrokeStyle,
-    D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_RENDER_TARGET_PROPERTIES,
+    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_DRAW_TEXT_OPTIONS_CLIP,
+    D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_RENDER_TARGET_PROPERTIES,
     D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1_RENDER_TARGET_USAGE_NONE, D2D1_ROUNDED_RECT,
     D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
 };
@@ -40,6 +44,63 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{UpdateLayeredWindow, ULW_ALPHA};
 
+/// Animation frame for the brief "Update complete" notification overlay on the first taskbar card.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UpdateFlashFrame {
+    /// Overlay opacity (`0.0..=1.0`).
+    pub alpha: f32,
+    /// Vertical slide offset in DIPs (`+7.0 -> 0.0` entering, `0.0 -> -6.0` exiting).
+    pub slide_y_dip: f32,
+    /// Subtle left-to-right shimmer highlight progress (`0.0..=1.0`) during the hold phase.
+    pub shimmer_t: f32,
+    /// Remaining bottom-edge accent bar fraction (`1.0 -> 0.0`) during the 1-second hold.
+    pub progress_remaining: f32,
+}
+
+const UPDATE_FLASH_ENTER_MS: u64 = 220;
+const UPDATE_FLASH_HOLD_MS: u64 = 1000;
+const UPDATE_FLASH_EXIT_MS: u64 = 240;
+const UPDATE_FLASH_TOTAL_MS: u64 =
+    UPDATE_FLASH_ENTER_MS + UPDATE_FLASH_HOLD_MS + UPDATE_FLASH_EXIT_MS;
+
+/// Compute the eased animation state for the first-card "Update complete" notification at
+/// `elapsed_ms` since it began, returning `None` once finished so normal rendering resumes.
+pub fn compute_update_flash_frame(elapsed_ms: u64) -> Option<UpdateFlashFrame> {
+    if elapsed_ms >= UPDATE_FLASH_TOTAL_MS {
+        return None;
+    }
+    if elapsed_ms < UPDATE_FLASH_ENTER_MS {
+        let t = (elapsed_ms as f32 / UPDATE_FLASH_ENTER_MS as f32).clamp(0.0, 1.0);
+        let eased = 1.0 - (1.0 - t).powi(3);
+        Some(UpdateFlashFrame {
+            alpha: eased,
+            slide_y_dip: (1.0 - eased) * 7.0,
+            shimmer_t: 0.0,
+            progress_remaining: 1.0,
+        })
+    } else if elapsed_ms < UPDATE_FLASH_ENTER_MS + UPDATE_FLASH_HOLD_MS {
+        let t = ((elapsed_ms - UPDATE_FLASH_ENTER_MS) as f32 / UPDATE_FLASH_HOLD_MS as f32)
+            .clamp(0.0, 1.0);
+        Some(UpdateFlashFrame {
+            alpha: 1.0,
+            slide_y_dip: 0.0,
+            shimmer_t: t,
+            progress_remaining: 1.0 - t,
+        })
+    } else {
+        let t = ((elapsed_ms - UPDATE_FLASH_ENTER_MS - UPDATE_FLASH_HOLD_MS) as f32
+            / UPDATE_FLASH_EXIT_MS as f32)
+            .clamp(0.0, 1.0);
+        let eased = t.powi(3);
+        Some(UpdateFlashFrame {
+            alpha: 1.0 - eased,
+            slide_y_dip: -eased * 6.0,
+            shimmer_t: 1.0,
+            progress_remaining: 0.0,
+        })
+    }
+}
+
 pub struct Renderer {
     d2d: ID2D1Factory,
     dwrite: IDWriteFactory,
@@ -50,6 +111,9 @@ pub struct Renderer {
     fmt_rate_center: IDWriteTextFormat,
     fmt_label_left: IDWriteTextFormat,
     fmt_reset_sub: IDWriteTextFormat,
+    fmt_chip: IDWriteTextFormat,
+    fmt_flash: IDWriteTextFormat,
+    fmt_flash_compact: IDWriteTextFormat,
     fmt_sub: IDWriteTextFormat,
     fmt_title: IDWriteTextFormat,
     fmt_btn: IDWriteTextFormat,
@@ -137,11 +201,90 @@ fn palette(theme: TaskbarTheme) -> Palette {
     }
 }
 
-fn meter_bar_label(label: &str) -> &str {
+/// Compact single-letter window tag used across all providers (`R` for every rolling/5h window,
+/// `W` for Weekly, `M` for Monthly).
+fn meter_window_tag(label: &str) -> &str {
     match label {
-        "Rolling" => "5h",
+        "5h" | "Rolling" => "R",
+        "Weekly" => "W",
+        "Monthly" => "M",
         other => other,
     }
+}
+
+/// Convert a local reset label like `"Today 8:40 PM"`, `"Tomorrow 9:00 AM"`, or `"Sat 2:00 PM"`
+/// into a compact taskbar clock token (`"→ 8:40p"`, `"→ 9:00a"`, `"→ Sat"`).
+fn format_reset_at_compact(local: &str) -> Option<String> {
+    let trimmed = local.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let rest = trimmed
+        .strip_prefix("Today ")
+        .or_else(|| trimmed.strip_prefix("Tomorrow "));
+    if let Some(clock) = rest {
+        let short = clock
+            .replace(" AM", "a")
+            .replace(" PM", "p")
+            .replace(" am", "a")
+            .replace(" pm", "p");
+        return Some(format!("→ {short}"));
+    }
+    let first = trimmed.split_whitespace().next()?;
+    Some(format!("→ {first}"))
+}
+
+/// Format remaining reset time for a taskbar meter according to the user's selected
+/// [`TaskbarMeterStyle`].
+fn format_meter_time(style: TaskbarMeterStyle, bar: &BarView, now_ms: i64) -> Option<String> {
+    if style == TaskbarMeterStyle::ResetAtBelow {
+        if let Some(ref local) = bar.reset_at_local {
+            if let Some(compact) = format_reset_at_compact(local) {
+                return Some(compact);
+            }
+        }
+    }
+
+    let rem_ms = bar
+        .resets_at
+        .as_deref()
+        .and_then(parse_iso_ms)
+        .map(|ms| ms - now_ms)
+        .filter(|&d| d > 0);
+
+    if let Some(rem) = rem_ms {
+        let mins = ((rem + 59_999) / 60_000).max(1);
+        if mins < 60 {
+            return Some(format!("{mins}m"));
+        }
+        if mins >= 24 * 60 {
+            let days = mins / (24 * 60);
+            return Some(format!("{days}d"));
+        }
+        return match style {
+            TaskbarMeterStyle::MinimalBelow => {
+                let tenths = ((mins as f64 / 60.0) * 10.0).round() as i64;
+                if tenths % 10 == 0 {
+                    Some(format!("{}h", tenths / 10))
+                } else {
+                    Some(format!("{}.{}h", tenths / 10, tenths % 10))
+                }
+            }
+            TaskbarMeterStyle::ClockBelow
+            | TaskbarMeterStyle::PillChip
+            | TaskbarMeterStyle::ResetAtBelow => {
+                let h = mins / 60;
+                let m = mins % 60;
+                Some(format!("{h}:{m:02}"))
+            }
+        };
+    }
+
+    bar.reset_short
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 fn provider_badge_style(
@@ -329,6 +472,27 @@ impl Renderer {
                 8.5,
                 DWRITE_TEXT_ALIGNMENT_LEADING,
             )?;
+            let fmt_chip = make_text_format(
+                &dwrite,
+                w!("Segoe UI"),
+                DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                8.5,
+                DWRITE_TEXT_ALIGNMENT_CENTER,
+            )?;
+            let fmt_flash = make_text_format(
+                &dwrite,
+                w!("Segoe UI"),
+                DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                11.0,
+                DWRITE_TEXT_ALIGNMENT_LEADING,
+            )?;
+            let fmt_flash_compact = make_text_format(
+                &dwrite,
+                w!("Segoe UI"),
+                DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                9.5,
+                DWRITE_TEXT_ALIGNMENT_LEADING,
+            )?;
             let fmt_sub = make_text_format(
                 &dwrite,
                 w!("Segoe UI"),
@@ -363,6 +527,9 @@ impl Renderer {
                 fmt_rate_center,
                 fmt_label_left,
                 fmt_reset_sub,
+                fmt_chip,
+                fmt_flash,
+                fmt_flash_compact,
                 fmt_sub,
                 fmt_title,
                 fmt_btn,
@@ -714,6 +881,7 @@ impl Renderer {
         hovered_icon_pill: Option<usize>,
         hovered_hide_pill: Option<usize>,
         forced_contrast_backdrop: bool,
+        update_flash: Option<UpdateFlashFrame>,
     ) -> Result<()> {
         let scale = dpi as f32 / 96.0;
         let width_px = (layout.width_dip * scale).ceil() as i32;
@@ -721,7 +889,7 @@ impl Renderer {
         let pal = palette(theme);
 
         self.commit_layered(hwnd, (x, y), (width_px, height_px), dpi, |rt| {
-            // Subtle near-invisible full-strip hit backdrop so clicks between pills still open flyout.
+            // Subtle near-invisible full-strip hit backdrop.
             self.fill_rounded(
                 rt,
                 DipRect {
@@ -794,11 +962,18 @@ impl Renderer {
                     slots,
                     overflow_badge,
                 } => {
-                    for slot in slots {
+                    for (slot_pos, slot) in slots.iter().enumerate() {
                         if let Some(item) = snapshot.items.get(slot.item_index) {
                             let pill_hovered = hovered_pill == Some(slot.item_index);
                             let icon_hovered = hovered_icon_pill == Some(slot.item_index);
                             let hide_hovered = hovered_hide_pill == Some(slot.item_index);
+                            let meter_now_ms = if snapshot.is_demo {
+                                snapshot.updated_at_ms
+                            } else {
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map_or(snapshot.updated_at_ms, |d| d.as_millis() as i64)
+                            };
                             self.draw_provider_pill(
                                 rt,
                                 item,
@@ -809,7 +984,14 @@ impl Renderer {
                                 icon_hovered,
                                 hide_hovered,
                                 forced_contrast_backdrop,
+                                snapshot.taskbar_meter_style,
+                                meter_now_ms,
                             )?;
+                            if slot_pos == 0 {
+                                if let Some(flash) = update_flash {
+                                    self.draw_update_complete_card(rt, slot.rect, theme, flash)?;
+                                }
+                            }
                         }
                     }
                     // Subtle 1px vertical hairline dividers centered between adjacent providers
@@ -947,6 +1129,153 @@ impl Renderer {
         )
     }
 
+    /// Paint the brief animated "Update complete" notification card right on top of the first
+    /// taskbar card, clipped strictly to its slot bounds.
+    fn draw_update_complete_card(
+        &self,
+        rt: &ID2D1DCRenderTarget,
+        slot_rect: DipRect,
+        theme: TaskbarTheme,
+        flash: UpdateFlashFrame,
+    ) -> Result<()> {
+        let a = flash.alpha.clamp(0.0, 1.0);
+        if a <= 0.01 {
+            return Ok(());
+        }
+        let dark = theme == TaskbarTheme::Dark;
+        let clip = D2D_RECT_F {
+            left: slot_rect.x,
+            top: slot_rect.y,
+            right: slot_rect.x + slot_rect.w,
+            bottom: slot_rect.y + slot_rect.h,
+        };
+        // SAFETY: PushAxisAlignedClip is always balanced by PopAxisAlignedClip right below.
+        unsafe {
+            rt.PushAxisAlignedClip(&clip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        }
+        let res = (|| -> Result<()> {
+            let card = DipRect {
+                x: slot_rect.x + 0.5,
+                y: slot_rect.y + flash.slide_y_dip + 0.5,
+                w: (slot_rect.w - 1.0).max(1.0),
+                h: (slot_rect.h - 1.0).max(1.0),
+            };
+            let base_bg = if dark {
+                rgba(18, 30, 26, 0.94 * a)
+            } else {
+                rgba(240, 252, 247, 0.96 * a)
+            };
+            let tint_bg = if dark {
+                rgba(16, 185, 129, 0.16 * a)
+            } else {
+                rgba(16, 185, 129, 0.12 * a)
+            };
+            let border = if dark {
+                rgba(52, 211, 153, 0.72 * a)
+            } else {
+                rgba(16, 185, 129, 0.62 * a)
+            };
+            self.fill_rounded(rt, card, 6.0, base_bg)?;
+            self.fill_rounded(rt, card, 6.0, tint_bg)?;
+
+            // Subtle left-to-right sheen sweep across the card during the 1-second hold.
+            if flash.shimmer_t > 0.0 && flash.shimmer_t < 1.0 {
+                let sweep_w = 34.0;
+                let sweep_x = card.x - sweep_w + (card.w + sweep_w * 2.0) * flash.shimmer_t;
+                let sweep_color = if dark {
+                    rgba(255, 255, 255, 0.11 * a)
+                } else {
+                    rgba(16, 185, 129, 0.14 * a)
+                };
+                self.fill_rounded(
+                    rt,
+                    DipRect {
+                        x: sweep_x,
+                        y: card.y + 1.0,
+                        w: sweep_w,
+                        h: (card.h - 2.0).max(1.0),
+                    },
+                    6.0,
+                    sweep_color,
+                )?;
+            }
+
+            self.stroke_rounded(rt, card, 6.0, 1.0, border)?;
+
+            // Thin emerald countdown bar along the bottom edge during the 1-second hold.
+            if flash.progress_remaining > 0.01 {
+                let max_bar_w = (card.w - 16.0).max(10.0);
+                let bar_w = max_bar_w * flash.progress_remaining.clamp(0.0, 1.0);
+                let bar_color = if dark {
+                    rgba(52, 211, 153, 0.88 * a)
+                } else {
+                    rgba(16, 185, 129, 0.85 * a)
+                };
+                self.fill_rounded(
+                    rt,
+                    DipRect {
+                        x: card.x + 8.0,
+                        y: card.y + card.h - 3.0,
+                        w: bar_w,
+                        h: 2.0,
+                    },
+                    1.0,
+                    bar_color,
+                )?;
+            }
+
+            // Centered emerald check badge + "Update complete" label (compact fallback on tight slots).
+            let compact = card.w < 130.0;
+            let (label, text_w, fmt) = if compact {
+                ("Updated", 50.0, &self.fmt_flash_compact)
+            } else {
+                ("Update complete", 96.0, &self.fmt_flash)
+            };
+            let badge_sz = if compact { 14.0 } else { 16.0 };
+            let gap = 6.0;
+            let content_w = badge_sz + gap + text_w;
+            let start_x = card.x + ((card.w - content_w) * 0.5).max(8.0);
+            let badge_rect = DipRect {
+                x: start_x,
+                y: card.y + (card.h - badge_sz) * 0.5 - 0.5,
+                w: badge_sz,
+                h: badge_sz,
+            };
+            self.fill_rounded(rt, badge_rect, badge_sz * 0.5, rgba(16, 185, 129, 0.95 * a))?;
+            self.draw_text(
+                rt,
+                "✓",
+                &self.fmt_chip,
+                badge_rect,
+                rgba(255, 255, 255, 0.98 * a),
+            )?;
+            let text_color = if dark {
+                rgba(244, 255, 250, 0.96 * a)
+            } else {
+                rgba(6, 78, 59, 0.96 * a)
+            };
+            let avail_text_w = (card.x + card.w - (start_x + badge_sz + gap) - 6.0).max(20.0);
+            self.draw_text(
+                rt,
+                label,
+                fmt,
+                DipRect {
+                    x: start_x + badge_sz + gap,
+                    y: card.y - 0.5,
+                    w: avail_text_w,
+                    h: card.h,
+                },
+                text_color,
+            )?;
+            Ok(())
+        })();
+        // SAFETY: matches PushAxisAlignedClip above.
+        unsafe {
+            rt.PopAxisAlignedClip();
+        }
+        res
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn draw_provider_pill(
         &self,
@@ -959,6 +1288,8 @@ impl Renderer {
         icon_hovered: bool,
         hide_hovered: bool,
         forced_contrast_backdrop: bool,
+        meter_style: TaskbarMeterStyle,
+        now_ms: i64,
     ) -> Result<()> {
         match slot.style {
             PillStyle::WideMeters => self.draw_wide_meter_pill(
@@ -971,6 +1302,8 @@ impl Renderer {
                 icon_hovered,
                 hide_hovered,
                 forced_contrast_backdrop,
+                meter_style,
+                now_ms,
             ),
             PillStyle::CompactStacked => self.draw_compact_stacked_pill(
                 rt,
@@ -998,6 +1331,8 @@ impl Renderer {
         icon_hovered: bool,
         hide_hovered: bool,
         forced_contrast_backdrop: bool,
+        meter_style: TaskbarMeterStyle,
+        now_ms: i64,
     ) -> Result<()> {
         let r = slot.rect;
         // Option 1 borderless at rest (unless theme mismatches taskbar); subtle Fluent rounded plate on hover.
@@ -1058,7 +1393,6 @@ impl Renderer {
             )?;
         }
 
-        // Option 3 side-by-side meter columns: `label reset_time` + `%` on top, progress bar below.
         if slot.meter_rects.is_empty() {
             let fallback_x = icon_col_x
                 + if item.spend_rate_text.is_some() {
@@ -1093,23 +1427,10 @@ impl Renderer {
             return Ok(());
         }
 
+        let dark = theme == TaskbarTheme::Dark;
         for (m, bar) in slot.meter_rects.iter().zip(item.taskbar_bars.iter()) {
-            let lbl = meter_bar_label(&bar.label);
-            let pct_w = 29.0;
-            let left_w = (m.w - pct_w).max(20.0);
-            self.draw_text(
-                rt,
-                lbl,
-                &self.fmt_label_left,
-                DipRect {
-                    x: m.x,
-                    y: m.y + 1.5,
-                    w: left_w,
-                    h: 13.0,
-                },
-                pal.muted,
-            )?;
-
+            let tag = meter_window_tag(&bar.label);
+            let time_text = format_meter_time(meter_style, bar, now_ms);
             let pct_color = if bar.percent.is_some_and(|p| p.round() >= 100.0)
                 || bar.severity == BarSeverity::Danger
             {
@@ -1119,44 +1440,115 @@ impl Renderer {
             } else {
                 pal.text
             };
-            self.draw_text(
-                rt,
-                &bar.percent_label(),
-                &self.fmt_pct,
-                DipRect {
-                    x: m.x + m.w - pct_w,
-                    y: m.y + 1.5,
-                    w: pct_w,
-                    h: 13.0,
-                },
-                pct_color,
-            )?;
-
-            let track_rect = DipRect {
-                x: m.x,
-                y: m.y + 16.0,
-                w: m.w,
-                h: 4.0,
+            let reset_color = D2D1_COLOR_F {
+                a: pal.muted.a * 0.82,
+                ..pal.muted
             };
-            self.draw_bar_fill(rt, track_rect, 2.0, bar, pal)?;
 
-            if let Some(rs) = bar.reset_short.as_deref().filter(|s| !s.is_empty()) {
-                let reset_color = D2D1_COLOR_F {
-                    a: pal.muted.a * 0.85,
-                    ..pal.muted
+            if meter_style == TaskbarMeterStyle::PillChip {
+                // 2-tier layout: `[R] 4:33  3%` on top, thicker progress bar below.
+                let chip_w = if tag.len() <= 1 { 15.0 } else { 22.0 };
+                let chip_rect = DipRect {
+                    x: m.x,
+                    y: m.y + 4.0,
+                    w: chip_w,
+                    h: 13.0,
                 };
+                let chip_bg = if dark {
+                    rgba(255, 255, 255, 0.13)
+                } else {
+                    rgba(0, 0, 0, 0.08)
+                };
+                self.fill_rounded(rt, chip_rect, 3.0, chip_bg)?;
+                self.draw_text(rt, tag, &self.fmt_chip, chip_rect, pal.text)?;
+
+                let pct_w = 29.0;
+                if let Some(ref ts) = time_text {
+                    let time_x = chip_rect.x + chip_rect.w + 4.0;
+                    let time_w = (m.x + m.w - pct_w - time_x).max(0.0);
+                    if time_w >= 14.0 {
+                        self.draw_text(
+                            rt,
+                            ts,
+                            &self.fmt_reset_sub,
+                            DipRect {
+                                x: time_x,
+                                y: m.y + 4.0,
+                                w: time_w,
+                                h: 13.0,
+                            },
+                            reset_color,
+                        )?;
+                    }
+                }
                 self.draw_text(
                     rt,
-                    &format!("↺ {rs}"),
-                    &self.fmt_reset_sub,
+                    &bar.percent_label(),
+                    &self.fmt_pct,
+                    DipRect {
+                        x: m.x + m.w - pct_w,
+                        y: m.y + 3.5,
+                        w: pct_w,
+                        h: 13.5,
+                    },
+                    pct_color,
+                )?;
+                let track_rect = DipRect {
+                    x: m.x,
+                    y: m.y + 22.0,
+                    w: m.w,
+                    h: 4.5,
+                };
+                self.draw_bar_fill(rt, track_rect, 2.25, bar, pal)?;
+            } else {
+                // 3-tier layout: `R  3%` on top, bar middle, crisp time token underneath.
+                let pct_w = 29.0;
+                let left_w = (m.w - pct_w).max(20.0);
+                self.draw_text(
+                    rt,
+                    tag,
+                    &self.fmt_label_left,
                     DipRect {
                         x: m.x,
-                        y: m.y + 21.5,
-                        w: m.w,
-                        h: 12.0,
+                        y: m.y + 1.5,
+                        w: left_w,
+                        h: 13.0,
                     },
-                    reset_color,
+                    pal.muted,
                 )?;
+                self.draw_text(
+                    rt,
+                    &bar.percent_label(),
+                    &self.fmt_pct,
+                    DipRect {
+                        x: m.x + m.w - pct_w,
+                        y: m.y + 1.5,
+                        w: pct_w,
+                        h: 13.0,
+                    },
+                    pct_color,
+                )?;
+                let track_rect = DipRect {
+                    x: m.x,
+                    y: m.y + 16.0,
+                    w: m.w,
+                    h: 4.0,
+                };
+                self.draw_bar_fill(rt, track_rect, 2.0, bar, pal)?;
+                if let Some(ref ts) = time_text {
+                    self.draw_text(
+                        rt,
+                        ts,
+                        &self.fmt_reset_sub,
+                        DipRect {
+                            x: m.x,
+                            y: m.y + 21.5,
+                            w: m.w,
+                            h: 12.0,
+                        },
+                        reset_color,
+                    )?;
+                }
             }
         }
 
@@ -1317,7 +1709,7 @@ impl Renderer {
     }
 
     /// Paint the anchored Windows 11 Fluent flyout above the taskbar strip.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(dead_code, clippy::too_many_arguments)]
     pub fn render_flyout(
         &self,
         hwnd: HWND,
@@ -1633,5 +2025,88 @@ impl Renderer {
 
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{DateTime, Utc};
+
+    #[test]
+    fn maps_every_rolling_window_to_r_and_weekly_monthly_to_w_m() {
+        assert_eq!(meter_window_tag("5h"), "R");
+        assert_eq!(meter_window_tag("Rolling"), "R");
+        assert_eq!(meter_window_tag("Weekly"), "W");
+        assert_eq!(meter_window_tag("Monthly"), "M");
+        assert_eq!(meter_window_tag("1P"), "1P");
+        assert_eq!(meter_window_tag("API"), "API");
+    }
+
+    #[test]
+    fn formats_meter_time_for_all_four_styles() {
+        let now = 1_700_000_000_000i64;
+        let iso = |mins: i64| {
+            DateTime::<Utc>::from_timestamp_millis(now + mins * 60_000).map(|dt| dt.to_rfc3339())
+        };
+        let mut bar_4h33 = BarView::new("fiveHour", "5h", Some(12.0), iso(4 * 60 + 33), now, false);
+        bar_4h33.reset_at_local = Some("Today 8:40 PM".to_string());
+
+        assert_eq!(
+            format_meter_time(TaskbarMeterStyle::ClockBelow, &bar_4h33, now).as_deref(),
+            Some("4:33")
+        );
+        assert_eq!(
+            format_meter_time(TaskbarMeterStyle::PillChip, &bar_4h33, now).as_deref(),
+            Some("4:33")
+        );
+        assert_eq!(
+            format_meter_time(TaskbarMeterStyle::MinimalBelow, &bar_4h33, now).as_deref(),
+            Some("4.6h")
+        );
+        assert_eq!(
+            format_meter_time(TaskbarMeterStyle::ResetAtBelow, &bar_4h33, now).as_deref(),
+            Some("→ 8:40p")
+        );
+
+        let mut bar_5d = BarView::new("weekly", "Weekly", Some(31.0), iso(5 * 24 * 60), now, false);
+        bar_5d.reset_at_local = Some("Sat 2:00 PM".to_string());
+        assert_eq!(
+            format_meter_time(TaskbarMeterStyle::ClockBelow, &bar_5d, now).as_deref(),
+            Some("5d")
+        );
+        assert_eq!(
+            format_meter_time(TaskbarMeterStyle::MinimalBelow, &bar_5d, now).as_deref(),
+            Some("5d")
+        );
+        assert_eq!(
+            format_meter_time(TaskbarMeterStyle::ResetAtBelow, &bar_5d, now).as_deref(),
+            Some("→ Sat")
+        );
+    }
+
+    #[test]
+    fn update_flash_animation_enters_holds_exits_and_completes() {
+        let start = compute_update_flash_frame(0).unwrap();
+        assert_eq!(start.alpha, 0.0);
+        assert!(start.slide_y_dip > 5.0);
+
+        let mid_enter = compute_update_flash_frame(110).unwrap();
+        assert!(mid_enter.alpha > 0.5 && mid_enter.alpha < 1.0);
+        assert!(mid_enter.slide_y_dip > 0.0 && mid_enter.slide_y_dip < 7.0);
+
+        let hold_mid = compute_update_flash_frame(UPDATE_FLASH_ENTER_MS + 500).unwrap();
+        assert_eq!(hold_mid.alpha, 1.0);
+        assert_eq!(hold_mid.slide_y_dip, 0.0);
+        assert!((hold_mid.shimmer_t - 0.5).abs() < 0.01);
+        assert!((hold_mid.progress_remaining - 0.5).abs() < 0.01);
+
+        let mid_exit =
+            compute_update_flash_frame(UPDATE_FLASH_ENTER_MS + UPDATE_FLASH_HOLD_MS + 120).unwrap();
+        assert!(mid_exit.alpha > 0.0 && mid_exit.alpha < 1.0);
+        assert!(mid_exit.slide_y_dip < 0.0);
+
+        assert!(compute_update_flash_frame(UPDATE_FLASH_TOTAL_MS).is_none());
+        assert!(compute_update_flash_frame(UPDATE_FLASH_TOTAL_MS + 500).is_none());
     }
 }

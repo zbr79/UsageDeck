@@ -490,6 +490,21 @@ const MAX_KEY_LENGTH: usize = 320;
 const MAX_ENTRIES: usize = 500;
 const FORBIDDEN_KEYS: [&str; 3] = ["__proto__", "constructor", "prototype"];
 
+/// Visual style for taskbar usage meters and reset time display (selectable in Settings → Style).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TaskbarMeterStyle {
+    /// 3-tier: `R`/`W`/`M` + `%` on top, bar middle, crisp `4:33` / `5d` clock countdown below.
+    #[default]
+    ClockBelow,
+    /// 3-tier: `R`/`W`/`M` + `%` on top, bar middle, rounded single-unit `4.5h` / `5d` below.
+    MinimalBelow,
+    /// 3-tier: `R`/`W`/`M` + `%` on top, bar middle, local reset clock `→ 8:40p` / `→ Sat` below.
+    ResetAtBelow,
+    /// 2-tier: subtle `[R]` micro-pill + `4:33` + `%` on top, thicker bar below.
+    PillChip,
+}
+
 /// Same shape as `Settings` in `lib/types.ts`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -525,6 +540,9 @@ pub struct Settings {
     /// automatically hide exhausted cards from the taskbar until they reset
     #[serde(rename = "autoHideExhausted", default)]
     pub auto_hide_exhausted: bool,
+    /// taskbar meter layout & reset-time presentation style
+    #[serde(rename = "taskbarMeterStyle", default)]
+    pub taskbar_meter_style: TaskbarMeterStyle,
 }
 
 impl Default for Settings {
@@ -550,6 +568,7 @@ impl Default for Settings {
             snoozed_until: BTreeMap::new(),
             hidden_bars: BTreeMap::new(),
             auto_hide_exhausted: false,
+            taskbar_meter_style: TaskbarMeterStyle::default(),
         }
     }
 }
@@ -763,6 +782,13 @@ pub fn apply_settings_patch_at(current: &Settings, patch: &Value, now_ms: u64) -
         Some("light") => next.panel_theme = PanelTheme::Light,
         Some("dark") => next.panel_theme = PanelTheme::Dark,
         Some("system") => next.panel_theme = PanelTheme::System,
+        _ => {}
+    }
+    match obj.get("taskbarMeterStyle").and_then(Value::as_str) {
+        Some("clockBelow") => next.taskbar_meter_style = TaskbarMeterStyle::ClockBelow,
+        Some("minimalBelow") => next.taskbar_meter_style = TaskbarMeterStyle::MinimalBelow,
+        Some("resetAtBelow") => next.taskbar_meter_style = TaskbarMeterStyle::ResetAtBelow,
+        Some("pillChip") => next.taskbar_meter_style = TaskbarMeterStyle::PillChip,
         _ => {}
     }
     if let Some(names) = obj
@@ -1051,6 +1077,35 @@ mod tests {
             out["hiddenBars"],
             json!({ "cursor": ["api"], "claude": ["scoped"] })
         );
+    }
+
+    #[test]
+    fn taskbar_meter_style_patch_and_serialization() {
+        assert_eq!(
+            Settings::default().taskbar_meter_style,
+            TaskbarMeterStyle::ClockBelow
+        );
+        for (wire, expected) in [
+            ("clockBelow", TaskbarMeterStyle::ClockBelow),
+            ("minimalBelow", TaskbarMeterStyle::MinimalBelow),
+            ("resetAtBelow", TaskbarMeterStyle::ResetAtBelow),
+            ("pillChip", TaskbarMeterStyle::PillChip),
+        ] {
+            let patched =
+                apply_settings_patch(&Settings::default(), &json!({ "taskbarMeterStyle": wire }));
+            assert_eq!(patched.taskbar_meter_style, expected);
+            let out = serde_json::to_value(&patched).unwrap();
+            assert_eq!(out["taskbarMeterStyle"], json!(wire));
+        }
+        // Unknown values preserve the existing style.
+        let kept = apply_settings_patch(
+            &Settings {
+                taskbar_meter_style: TaskbarMeterStyle::PillChip,
+                ..Settings::default()
+            },
+            &json!({ "taskbarMeterStyle": "invalid" }),
+        );
+        assert_eq!(kept.taskbar_meter_style, TaskbarMeterStyle::PillChip);
     }
 
     #[test]

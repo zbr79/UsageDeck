@@ -16,7 +16,7 @@ use crate::providers::cursor_diag::{CursorAttempt, DbHow};
 use crate::providers::cursor_usage::{CursorUsage, ModelSpend as CursorModelSpend, OnDemand};
 use crate::providers::grok::GrokUsage;
 use crate::providers::opencode::{OpenCodeUsage, UsageWindow};
-use crate::store::{Settings, ThemeMode, WidgetProvider};
+use crate::store::{Settings, TaskbarMeterStyle, ThemeMode, WidgetProvider};
 use crate::Core;
 use chrono::{DateTime, Local, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
@@ -225,6 +225,8 @@ pub struct TaskbarSnapshot {
     pub theme_mode: ThemeMode,
     /// Number of exhausted cards currently hidden via manual snooze or `auto_hide_exhausted`.
     pub snoozed_count: usize,
+    /// Selected taskbar meter layout & reset-time style.
+    pub taskbar_meter_style: TaskbarMeterStyle,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -925,6 +927,7 @@ pub async fn poll_snapshot(core: &Core) -> TaskbarSnapshot {
         is_demo: false,
         theme_mode: settings.theme_mode,
         snoozed_count,
+        taskbar_meter_style: settings.taskbar_meter_style,
     }
 }
 
@@ -3315,6 +3318,7 @@ pub fn demo_snapshot(now_ms: i64) -> TaskbarSnapshot {
         is_demo: true,
         theme_mode: ThemeMode::Auto,
         snoozed_count: 0,
+        taskbar_meter_style: TaskbarMeterStyle::default(),
     }
 }
 

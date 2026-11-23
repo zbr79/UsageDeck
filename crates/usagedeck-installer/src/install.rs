@@ -147,9 +147,13 @@ pub fn start_at_login() -> bool {
     decide::start_at_login(text.as_deref())
 }
 
-/// Launch the installed `usagedeck.exe` detached with its install directory as CWD.
-pub fn launch_app(exe: &Path) -> io::Result<()> {
+/// Launch the installed `usagedeck.exe` detached, optionally passing `--updated` so the taskbar
+/// plays its brief "Update complete" animation on the first card.
+pub fn launch_app_with_updated(exe: &Path, updated: bool) -> io::Result<()> {
     let mut cmd = Command::new(exe);
+    if updated {
+        cmd.arg("--updated");
+    }
     if let Some(dir) = exe.parent() {
         cmd.current_dir(dir);
     }
@@ -276,7 +280,7 @@ pub fn install_with_progress(
     on_progress(1.0, "Done");
 
     if plan.relaunch {
-        if let Err(e) = launch_app(&exe_path) {
+        if let Err(e) = launch_app_with_updated(&exe_path, plan.update) {
             warnings.push(format!("Installed, but could not launch UsageDeck ({e})."));
         }
     }
