@@ -973,7 +973,7 @@ fn handle_click(state: &mut UiState, target: HitTarget) -> bool {
                 } => p.clone(),
                 _ => install::installed_exe(),
             };
-            match install::launch_app(&exe) {
+            match install::launch_app_with_updated(&exe, state.action == Action::Update) {
                 Ok(()) => !state.is_busy(),
                 Err(e) => {
                     state.phase = Phase::Error {

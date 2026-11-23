@@ -14,7 +14,7 @@
 use crate::clipboard;
 use crate::layout::{compute_strip_layout, exhausted_until_ms, PillStyle, StripLayout, StripMode};
 use crate::poller::{PollerCmd, SharedSnapshot, WM_APP_SNAPSHOT};
-use crate::render::Renderer;
+use crate::render::{compute_update_flash_frame, Renderer};
 use crate::settings_dialog;
 use crate::taskbar::{query_taskbar, TaskbarMetrics, TaskbarTheme};
 use crate::tooltip::{
@@ -65,6 +65,8 @@ const TIMER_ZORDER_ID: usize = 2;
 const TIMER_ZORDER_MS: u32 = 60;
 const TIMER_HOVER_CLOSE_ID: usize = 3;
 const TIMER_HOVER_CLOSE_MS: u32 = 80;
+const TIMER_ANIM_ID: usize = 4;
+const TIMER_ANIM_MS: u32 = 16;
 const HOVER_DISMISS_GRACE: Duration = Duration::from_millis(260);
 const TOAST_DURATION: Duration = Duration::from_millis(2200);
 
@@ -109,6 +111,8 @@ struct AppState {
     fullscreen_debounce: fullscreen::Debounce,
     strip_visible: bool,
     toast: Option<ToastNotice>,
+    update_flash_pending: bool,
+    update_flash_started_at: Option<Instant>,
     last_status_log: Option<String>,
 }
 
@@ -514,10 +518,20 @@ fn update_active_tooltip(state: &mut AppState) {
     }
 }
 
+enum AnimTimerOp {
+    None,
+    Start,
+    Stop,
+}
+
 enum StripWindowOp {
     None,
     Hide(HWND),
-    Show { strip_hwnd: HWND, need_show: bool },
+    Show {
+        strip_hwnd: HWND,
+        need_show: bool,
+        anim_timer: AnimTimerOp,
+    },
 }
 
 fn sync_and_paint_strip_ui() {
@@ -627,6 +641,29 @@ fn sync_and_paint_strip_ui() {
             ),
         );
 
+        // Start the one-shot first-card "Update complete" animation as soon as the first real card
+        // is visible on the taskbar, and stop the 60fps animation timer the instant it completes.
+        let mut anim_timer = AnimTimerOp::None;
+        let has_first_card = matches!(&layout.mode, StripMode::Pills { slots, .. } if !slots.is_empty());
+        if state.update_flash_pending && has_first_card {
+            state.update_flash_pending = false;
+            state.update_flash_started_at = Some(Instant::now());
+            anim_timer = AnimTimerOp::Start;
+        }
+        let update_flash = if let Some(started) = state.update_flash_started_at {
+            let elapsed_ms = started.elapsed().as_millis() as u64;
+            match compute_update_flash_frame(elapsed_ms) {
+                Some(frame) => Some(frame),
+                None => {
+                    state.update_flash_started_at = None;
+                    anim_timer = AnimTimerOp::Stop;
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         let effective_hovered_pill = state.strip_hovered_pill.or(state.active_hover_pill);
         if let Err(e) = state.renderer.render_strip(
             state.strip_hwnd,
@@ -641,6 +678,7 @@ fn sync_and_paint_strip_ui() {
             state.strip_hovered_icon_pill,
             state.strip_hovered_hide_pill,
             forced_contrast_backdrop,
+            update_flash,
         ) {
             log::warn!("render_strip failed: {e}");
         }
@@ -654,12 +692,13 @@ fn sync_and_paint_strip_ui() {
         StripWindowOp::Show {
             strip_hwnd: state.strip_hwnd,
             need_show,
+            anim_timer,
         }
     })
     .unwrap_or(StripWindowOp::None);
 
-    // Perform `ShowWindow` / `SetWindowPos` strictly outside any `STATE` borrow so synchronous
-    // Win32 messages (`WM_SHOWWINDOW`, `WM_WINDOWPOSCHANGING`, etc.) never collide with `RefCell`.
+    // Perform `ShowWindow` / `SetWindowPos` / timer changes strictly outside any `STATE` borrow
+    // so synchronous Win32 messages never collide with `RefCell`.
     match op {
         StripWindowOp::None => {}
         StripWindowOp::Hide(strip_hwnd) => {
@@ -672,12 +711,28 @@ fn sync_and_paint_strip_ui() {
         StripWindowOp::Show {
             strip_hwnd,
             need_show,
+            anim_timer,
         } => {
             STRIP_VISIBLE_FLAG.store(true, Ordering::Release);
             if need_show {
                 // SAFETY: non-activating reveal on our own HWND.
                 unsafe {
                     let _ = ShowWindow(strip_hwnd, SW_SHOWNOACTIVATE);
+                }
+            }
+            match anim_timer {
+                AnimTimerOp::None => {}
+                AnimTimerOp::Start => {
+                    // SAFETY: 60fps timer on our own HWND for the ~1.5s post-update flash.
+                    unsafe {
+                        SetTimer(Some(strip_hwnd), TIMER_ANIM_ID, TIMER_ANIM_MS, None);
+                    }
+                }
+                AnimTimerOp::Stop => {
+                    // SAFETY: stops the animation timer once the flash completes.
+                    unsafe {
+                        let _ = KillTimer(Some(strip_hwnd), TIMER_ANIM_ID);
+                    }
                 }
             }
             ensure_strip_above_tray_now();
@@ -871,7 +926,7 @@ unsafe extern "system" fn strip_wnd_proc(
     }
 
     match msg {
-        WM_TIMER if wparam.0 == TIMER_SYNC_ID => {
+        WM_TIMER if wparam.0 == TIMER_SYNC_ID || wparam.0 == TIMER_ANIM_ID => {
             sync_and_paint_strip_ui();
             LRESULT(0)
         }
@@ -1243,6 +1298,7 @@ pub fn run_ui(
     updater: UpdaterHandle,
     demo: bool,
     open_settings_on_start: bool,
+    just_updated: bool,
 ) -> Result<()> {
     let renderer = Renderer::new()?;
     let tooltip = TooltipWindow::new().ok();
@@ -1312,6 +1368,8 @@ pub fn run_ui(
                 fullscreen_debounce: fullscreen::Debounce::default(),
                 strip_visible: false,
                 toast: None,
+                update_flash_pending: just_updated,
+                update_flash_started_at: None,
                 last_status_log: None,
             });
         });

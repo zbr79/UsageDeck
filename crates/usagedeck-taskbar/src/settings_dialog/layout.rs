@@ -1113,7 +1113,10 @@ fn build_style_page(b: &mut ContentBuilder, input: &LayoutInput<'_>) {
     b.add_page_header(
         None,
         "Style",
-        Some("Choose how rolling (R), weekly (W), and monthly (M) meters look on your taskbar."),
+        Some(
+            "Choose how rolling (R), weekly (W), and monthly (M) meters look on your taskbar."
+                .to_string(),
+        ),
         &[],
     );
     b.add_section_heading("Taskbar meter design", 0.0);

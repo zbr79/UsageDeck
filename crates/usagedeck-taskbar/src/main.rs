@@ -58,8 +58,14 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let demo = cli::wants_demo(&args);
     let open_settings_on_start = cli::wants_settings(&args);
+    let explicit_updated = cli::wants_updated(&args);
+    let just_updated = detect_just_updated(
+        default_data_dir().as_deref(),
+        env!("CARGO_PKG_VERSION"),
+        explicit_updated,
+    );
     log::info!(
-        "UsageDeck v{} starting (demo={demo}, settings={open_settings_on_start})",
+        "UsageDeck v{} starting (demo={demo}, settings={open_settings_on_start}, updated={just_updated})",
         env!("CARGO_PKG_VERSION")
     );
 
@@ -112,7 +118,13 @@ fn main() {
     });
 
     let shared = SharedSnapshot::new(demo);
-    if let Err(e) = window::run_ui(shared, updater_handle.clone(), demo, open_settings_on_start) {
+    if let Err(e) = window::run_ui(
+        shared,
+        updater_handle.clone(),
+        demo,
+        open_settings_on_start,
+        just_updated,
+    ) {
         log::error!("UsageDeck taskbar UI exited with error: {e}");
         show_fatal_dialog(&format!(
             "UsageDeck could not start its taskbar UI:\n\n{e}\n\nCheck %LOCALAPPDATA%\\com.usagedeck.app\\logs\\usagedeck.log for details."
@@ -130,6 +142,40 @@ fn main() {
     }
 }
 
+const LAST_VERSION_FILE: &str = "last-version.txt";
+
+/// Return `true` when UsageDeck just launched after an update (explicit `--updated` flag,
+/// version change compared to `last-version.txt`, or upgrading from an older release that already
+/// wrote `settings.json` before `last-version.txt` existed), and persist `current_version`.
+fn detect_just_updated(
+    data_dir: Option<&std::path::Path>,
+    current_version: &str,
+    explicit_flag: bool,
+) -> bool {
+    let Some(dir) = data_dir else {
+        return explicit_flag;
+    };
+    let ver_path = dir.join(LAST_VERSION_FILE);
+    let prev = std::fs::read_to_string(&ver_path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let updated = if explicit_flag {
+        true
+    } else if let Some(ref prev_ver) = prev {
+        prev_ver != current_version
+    } else {
+        dir.join("settings.json").exists()
+    };
+
+    if prev.as_deref() != Some(current_version) {
+        let _ = std::fs::create_dir_all(dir);
+        let _ = std::fs::write(&ver_path, current_version);
+    }
+    updated
+}
+
 fn format_update_status(status: &updater::UpdateStatus) -> String {
     match &status.phase {
         updater::Phase::Idle => format!("Version {}", status.current_version),
@@ -140,5 +186,39 @@ fn format_update_status(status: &updater::UpdateStatus) -> String {
         }
         updater::Phase::UpToDate => format!("Up to date (v{})", status.current_version),
         updater::Phase::Failed { message } => format!("Update check failed: {message}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_update_from_flag_version_change_or_legacy_settings() {
+        let tmp = std::env::temp_dir().join(format!("usagedeck-ver-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        // Fresh install: no settings.json, no last-version.txt -> false, records version.
+        assert!(!detect_just_updated(Some(&tmp), "2.5.0", false));
+        assert_eq!(
+            std::fs::read_to_string(tmp.join(LAST_VERSION_FILE)).unwrap(),
+            "2.5.0"
+        );
+        // Normal restart on same version -> false.
+        assert!(!detect_just_updated(Some(&tmp), "2.5.0", false));
+        // Explicit --updated flag -> true.
+        assert!(detect_just_updated(Some(&tmp), "2.5.0", true));
+        // Version bump -> true, then false on next restart.
+        assert!(detect_just_updated(Some(&tmp), "2.6.0", false));
+        assert!(!detect_just_updated(Some(&tmp), "2.6.0", false));
+
+        // Legacy upgrade (settings.json exists, last-version.txt missing) -> true.
+        let _ = std::fs::remove_file(tmp.join(LAST_VERSION_FILE));
+        std::fs::write(tmp.join("settings.json"), "{}").unwrap();
+        assert!(detect_just_updated(Some(&tmp), "2.5.0", false));
+        assert!(!detect_just_updated(Some(&tmp), "2.5.0", false));
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

@@ -23,7 +23,8 @@ use windows::Win32::Graphics::Direct2D::Common::{
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1CreateFactory, ID2D1DCRenderTarget, ID2D1Factory, ID2D1StrokeStyle,
-    D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_RENDER_TARGET_PROPERTIES,
+    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_DRAW_TEXT_OPTIONS_CLIP,
+    D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_RENDER_TARGET_PROPERTIES,
     D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1_RENDER_TARGET_USAGE_NONE, D2D1_ROUNDED_RECT,
     D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
 };
@@ -43,6 +44,63 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{UpdateLayeredWindow, ULW_ALPHA};
 
+/// Animation frame for the brief "Update complete" notification overlay on the first taskbar card.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UpdateFlashFrame {
+    /// Overlay opacity (`0.0..=1.0`).
+    pub alpha: f32,
+    /// Vertical slide offset in DIPs (`+7.0 -> 0.0` entering, `0.0 -> -6.0` exiting).
+    pub slide_y_dip: f32,
+    /// Subtle left-to-right shimmer highlight progress (`0.0..=1.0`) during the hold phase.
+    pub shimmer_t: f32,
+    /// Remaining bottom-edge accent bar fraction (`1.0 -> 0.0`) during the 1-second hold.
+    pub progress_remaining: f32,
+}
+
+const UPDATE_FLASH_ENTER_MS: u64 = 220;
+const UPDATE_FLASH_HOLD_MS: u64 = 1000;
+const UPDATE_FLASH_EXIT_MS: u64 = 240;
+const UPDATE_FLASH_TOTAL_MS: u64 =
+    UPDATE_FLASH_ENTER_MS + UPDATE_FLASH_HOLD_MS + UPDATE_FLASH_EXIT_MS;
+
+/// Compute the eased animation state for the first-card "Update complete" notification at
+/// `elapsed_ms` since it began, returning `None` once finished so normal rendering resumes.
+pub fn compute_update_flash_frame(elapsed_ms: u64) -> Option<UpdateFlashFrame> {
+    if elapsed_ms >= UPDATE_FLASH_TOTAL_MS {
+        return None;
+    }
+    if elapsed_ms < UPDATE_FLASH_ENTER_MS {
+        let t = (elapsed_ms as f32 / UPDATE_FLASH_ENTER_MS as f32).clamp(0.0, 1.0);
+        let eased = 1.0 - (1.0 - t).powi(3);
+        Some(UpdateFlashFrame {
+            alpha: eased,
+            slide_y_dip: (1.0 - eased) * 7.0,
+            shimmer_t: 0.0,
+            progress_remaining: 1.0,
+        })
+    } else if elapsed_ms < UPDATE_FLASH_ENTER_MS + UPDATE_FLASH_HOLD_MS {
+        let t = ((elapsed_ms - UPDATE_FLASH_ENTER_MS) as f32 / UPDATE_FLASH_HOLD_MS as f32)
+            .clamp(0.0, 1.0);
+        Some(UpdateFlashFrame {
+            alpha: 1.0,
+            slide_y_dip: 0.0,
+            shimmer_t: t,
+            progress_remaining: 1.0 - t,
+        })
+    } else {
+        let t = ((elapsed_ms - UPDATE_FLASH_ENTER_MS - UPDATE_FLASH_HOLD_MS) as f32
+            / UPDATE_FLASH_EXIT_MS as f32)
+            .clamp(0.0, 1.0);
+        let eased = t.powi(3);
+        Some(UpdateFlashFrame {
+            alpha: 1.0 - eased,
+            slide_y_dip: -eased * 6.0,
+            shimmer_t: 1.0,
+            progress_remaining: 0.0,
+        })
+    }
+}
+
 pub struct Renderer {
     d2d: ID2D1Factory,
     dwrite: IDWriteFactory,
@@ -54,6 +112,8 @@ pub struct Renderer {
     fmt_label_left: IDWriteTextFormat,
     fmt_reset_sub: IDWriteTextFormat,
     fmt_chip: IDWriteTextFormat,
+    fmt_flash: IDWriteTextFormat,
+    fmt_flash_compact: IDWriteTextFormat,
     fmt_sub: IDWriteTextFormat,
     fmt_title: IDWriteTextFormat,
     fmt_btn: IDWriteTextFormat,
@@ -419,6 +479,20 @@ impl Renderer {
                 8.5,
                 DWRITE_TEXT_ALIGNMENT_CENTER,
             )?;
+            let fmt_flash = make_text_format(
+                &dwrite,
+                w!("Segoe UI"),
+                DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                11.0,
+                DWRITE_TEXT_ALIGNMENT_LEADING,
+            )?;
+            let fmt_flash_compact = make_text_format(
+                &dwrite,
+                w!("Segoe UI"),
+                DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                9.5,
+                DWRITE_TEXT_ALIGNMENT_LEADING,
+            )?;
             let fmt_sub = make_text_format(
                 &dwrite,
                 w!("Segoe UI"),
@@ -454,6 +528,8 @@ impl Renderer {
                 fmt_label_left,
                 fmt_reset_sub,
                 fmt_chip,
+                fmt_flash,
+                fmt_flash_compact,
                 fmt_sub,
                 fmt_title,
                 fmt_btn,
@@ -805,6 +881,7 @@ impl Renderer {
         hovered_icon_pill: Option<usize>,
         hovered_hide_pill: Option<usize>,
         forced_contrast_backdrop: bool,
+        update_flash: Option<UpdateFlashFrame>,
     ) -> Result<()> {
         let scale = dpi as f32 / 96.0;
         let width_px = (layout.width_dip * scale).ceil() as i32;
@@ -812,7 +889,7 @@ impl Renderer {
         let pal = palette(theme);
 
         self.commit_layered(hwnd, (x, y), (width_px, height_px), dpi, |rt| {
-            // Subtle near-invisible full-strip hit backdrop so clicks between pills still open flyout.
+            // Subtle near-invisible full-strip hit backdrop.
             self.fill_rounded(
                 rt,
                 DipRect {
@@ -885,7 +962,7 @@ impl Renderer {
                     slots,
                     overflow_badge,
                 } => {
-                    for slot in slots {
+                    for (slot_pos, slot) in slots.iter().enumerate() {
                         if let Some(item) = snapshot.items.get(slot.item_index) {
                             let pill_hovered = hovered_pill == Some(slot.item_index);
                             let icon_hovered = hovered_icon_pill == Some(slot.item_index);
@@ -910,6 +987,11 @@ impl Renderer {
                                 snapshot.taskbar_meter_style,
                                 meter_now_ms,
                             )?;
+                            if slot_pos == 0 {
+                                if let Some(flash) = update_flash {
+                                    self.draw_update_complete_card(rt, slot.rect, theme, flash)?;
+                                }
+                            }
                         }
                     }
                     // Subtle 1px vertical hairline dividers centered between adjacent providers
@@ -1045,6 +1127,153 @@ impl Renderer {
             1.0,
             color,
         )
+    }
+
+    /// Paint the brief animated "Update complete" notification card right on top of the first
+    /// taskbar card, clipped strictly to its slot bounds.
+    fn draw_update_complete_card(
+        &self,
+        rt: &ID2D1DCRenderTarget,
+        slot_rect: DipRect,
+        theme: TaskbarTheme,
+        flash: UpdateFlashFrame,
+    ) -> Result<()> {
+        let a = flash.alpha.clamp(0.0, 1.0);
+        if a <= 0.01 {
+            return Ok(());
+        }
+        let dark = theme == TaskbarTheme::Dark;
+        let clip = D2D_RECT_F {
+            left: slot_rect.x,
+            top: slot_rect.y,
+            right: slot_rect.x + slot_rect.w,
+            bottom: slot_rect.y + slot_rect.h,
+        };
+        // SAFETY: PushAxisAlignedClip is always balanced by PopAxisAlignedClip right below.
+        unsafe {
+            rt.PushAxisAlignedClip(&clip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        }
+        let res = (|| -> Result<()> {
+            let card = DipRect {
+                x: slot_rect.x + 0.5,
+                y: slot_rect.y + flash.slide_y_dip + 0.5,
+                w: (slot_rect.w - 1.0).max(1.0),
+                h: (slot_rect.h - 1.0).max(1.0),
+            };
+            let base_bg = if dark {
+                rgba(18, 30, 26, 0.94 * a)
+            } else {
+                rgba(240, 252, 247, 0.96 * a)
+            };
+            let tint_bg = if dark {
+                rgba(16, 185, 129, 0.16 * a)
+            } else {
+                rgba(16, 185, 129, 0.12 * a)
+            };
+            let border = if dark {
+                rgba(52, 211, 153, 0.72 * a)
+            } else {
+                rgba(16, 185, 129, 0.62 * a)
+            };
+            self.fill_rounded(rt, card, 6.0, base_bg)?;
+            self.fill_rounded(rt, card, 6.0, tint_bg)?;
+
+            // Subtle left-to-right sheen sweep across the card during the 1-second hold.
+            if flash.shimmer_t > 0.0 && flash.shimmer_t < 1.0 {
+                let sweep_w = 34.0;
+                let sweep_x = card.x - sweep_w + (card.w + sweep_w * 2.0) * flash.shimmer_t;
+                let sweep_color = if dark {
+                    rgba(255, 255, 255, 0.11 * a)
+                } else {
+                    rgba(16, 185, 129, 0.14 * a)
+                };
+                self.fill_rounded(
+                    rt,
+                    DipRect {
+                        x: sweep_x,
+                        y: card.y + 1.0,
+                        w: sweep_w,
+                        h: (card.h - 2.0).max(1.0),
+                    },
+                    6.0,
+                    sweep_color,
+                )?;
+            }
+
+            self.stroke_rounded(rt, card, 6.0, 1.0, border)?;
+
+            // Thin emerald countdown bar along the bottom edge during the 1-second hold.
+            if flash.progress_remaining > 0.01 {
+                let max_bar_w = (card.w - 16.0).max(10.0);
+                let bar_w = max_bar_w * flash.progress_remaining.clamp(0.0, 1.0);
+                let bar_color = if dark {
+                    rgba(52, 211, 153, 0.88 * a)
+                } else {
+                    rgba(16, 185, 129, 0.85 * a)
+                };
+                self.fill_rounded(
+                    rt,
+                    DipRect {
+                        x: card.x + 8.0,
+                        y: card.y + card.h - 3.0,
+                        w: bar_w,
+                        h: 2.0,
+                    },
+                    1.0,
+                    bar_color,
+                )?;
+            }
+
+            // Centered emerald check badge + "Update complete" label (compact fallback on tight slots).
+            let compact = card.w < 130.0;
+            let (label, text_w, fmt) = if compact {
+                ("Updated", 50.0, &self.fmt_flash_compact)
+            } else {
+                ("Update complete", 96.0, &self.fmt_flash)
+            };
+            let badge_sz = if compact { 14.0 } else { 16.0 };
+            let gap = 6.0;
+            let content_w = badge_sz + gap + text_w;
+            let start_x = card.x + ((card.w - content_w) * 0.5).max(8.0);
+            let badge_rect = DipRect {
+                x: start_x,
+                y: card.y + (card.h - badge_sz) * 0.5 - 0.5,
+                w: badge_sz,
+                h: badge_sz,
+            };
+            self.fill_rounded(rt, badge_rect, badge_sz * 0.5, rgba(16, 185, 129, 0.95 * a))?;
+            self.draw_text(
+                rt,
+                "✓",
+                &self.fmt_chip,
+                badge_rect,
+                rgba(255, 255, 255, 0.98 * a),
+            )?;
+            let text_color = if dark {
+                rgba(244, 255, 250, 0.96 * a)
+            } else {
+                rgba(6, 78, 59, 0.96 * a)
+            };
+            let avail_text_w = (card.x + card.w - (start_x + badge_sz + gap) - 6.0).max(20.0);
+            self.draw_text(
+                rt,
+                label,
+                fmt,
+                DipRect {
+                    x: start_x + badge_sz + gap,
+                    y: card.y - 0.5,
+                    w: avail_text_w,
+                    h: card.h,
+                },
+                text_color,
+            )?;
+            Ok(())
+        })();
+        // SAFETY: matches PushAxisAlignedClip above.
+        unsafe {
+            rt.PopAxisAlignedClip();
+        }
+        res
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1854,5 +2083,30 @@ mod tests {
             format_meter_time(TaskbarMeterStyle::ResetAtBelow, &bar_5d, now).as_deref(),
             Some("→ Sat")
         );
+    }
+
+    #[test]
+    fn update_flash_animation_enters_holds_exits_and_completes() {
+        let start = compute_update_flash_frame(0).unwrap();
+        assert_eq!(start.alpha, 0.0);
+        assert!(start.slide_y_dip > 5.0);
+
+        let mid_enter = compute_update_flash_frame(110).unwrap();
+        assert!(mid_enter.alpha > 0.5 && mid_enter.alpha < 1.0);
+        assert!(mid_enter.slide_y_dip > 0.0 && mid_enter.slide_y_dip < 7.0);
+
+        let hold_mid = compute_update_flash_frame(UPDATE_FLASH_ENTER_MS + 500).unwrap();
+        assert_eq!(hold_mid.alpha, 1.0);
+        assert_eq!(hold_mid.slide_y_dip, 0.0);
+        assert!((hold_mid.shimmer_t - 0.5).abs() < 0.01);
+        assert!((hold_mid.progress_remaining - 0.5).abs() < 0.01);
+
+        let mid_exit =
+            compute_update_flash_frame(UPDATE_FLASH_ENTER_MS + UPDATE_FLASH_HOLD_MS + 120).unwrap();
+        assert!(mid_exit.alpha > 0.0 && mid_exit.alpha < 1.0);
+        assert!(mid_exit.slide_y_dip < 0.0);
+
+        assert!(compute_update_flash_frame(UPDATE_FLASH_TOTAL_MS).is_none());
+        assert!(compute_update_flash_frame(UPDATE_FLASH_TOTAL_MS + 500).is_none());
     }
 }
