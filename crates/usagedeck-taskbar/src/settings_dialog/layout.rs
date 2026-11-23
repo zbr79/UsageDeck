@@ -8,7 +8,7 @@ use crate::settings_dialog::theme::{
     calibration_text, format_share_pct, format_snooze_duration, format_usd, format_usd_rate,
     plan_badge_tone, spend_series, BadgeTone, SpendRange,
 };
-use usagedeck_core::store::{PanelTheme, Settings, ThemeMode, WidgetProvider};
+use usagedeck_core::store::{PanelTheme, Settings, TaskbarMeterStyle, ThemeMode, WidgetProvider};
 use usagedeck_core::view::{
     BarSeverity, BarView, ProviderKind, SettingsAccountRow, SettingsSnapshot,
 };
@@ -63,6 +63,7 @@ impl DipRect {
 pub enum PageId {
     General,
     Widget,
+    Style,
     Provider(ProviderKind),
 }
 
@@ -71,6 +72,7 @@ impl PageId {
         match self {
             Self::General => "General",
             Self::Widget => "Widget",
+            Self::Style => "Style",
             Self::Provider(p) => p.display_name(),
         }
     }
@@ -87,11 +89,13 @@ pub enum Action {
     OpenAccountFolder,
     OpenLogFolder,
     CopyDiagnostics,
+    QuitApp,
     ToggleStartAtLogin,
     ToggleHideInFullscreen,
     ToggleAutoHideExhausted,
     SetPanelTheme(PanelTheme),
     SetWidgetTheme(ThemeMode),
+    SetMeterStyle(TaskbarMeterStyle),
     MoveProviderUp(WidgetProvider),
     MoveProviderDown(WidgetProvider),
     ToggleProviderEnabled(WidgetProvider),
@@ -271,6 +275,14 @@ pub enum ContentItem {
         rows: Vec<AccountRowRender>,
     },
     SpendChart(SpendChartRender),
+    MeterStyleCard {
+        rect: DipRect,
+        style: TaskbarMeterStyle,
+        title: &'static str,
+        subtitle: &'static str,
+        selected: bool,
+        action: Action,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -414,7 +426,11 @@ pub fn build_layout(input: &LayoutInput<'_>) -> SettingsLayout {
     let mut ny = 14.0;
     let update_ready = input.update_ready_version.is_some();
 
-    for (page_id, show_dot) in [(PageId::General, update_ready), (PageId::Widget, false)] {
+    for (page_id, show_dot) in [
+        (PageId::General, update_ready),
+        (PageId::Widget, false),
+        (PageId::Style, false),
+    ] {
         let rect = DipRect::new(nav_x, ny, nav_w, 36.0);
         let action = Action::SelectPage(page_id);
         nav_rows.push(NavRow {
@@ -483,6 +499,7 @@ pub fn build_layout(input: &LayoutInput<'_>) -> SettingsLayout {
     match input.page {
         PageId::General => build_general_page(&mut builder, input),
         PageId::Widget => build_widget_page(&mut builder, input),
+        PageId::Style => build_style_page(&mut builder, input),
         PageId::Provider(ProviderKind::OpenCode) => build_opencode_page(&mut builder, input),
         PageId::Provider(kind) => build_provider_page(&mut builder, kind, input),
     }
@@ -1048,6 +1065,98 @@ fn build_general_page(b: &mut ContentBuilder, input: &LayoutInput<'_>) {
             ),
         ],
     );
+
+    // App control row (replaces taskbar right-click Quit).
+    b.y += 18.0;
+    let quit_h = 54.0;
+    let quit_card = DipRect::new(b.x, b.y, b.w, quit_h);
+    b.items.push(ContentItem::Card { rect: quit_card });
+    let quit_label = "Quit UsageDeck";
+    let quit_bw = estimate_btn_width(quit_label, ButtonStyle::Secondary);
+    let quit_rect = DipRect::new(
+        b.x + b.w - 16.0 - quit_bw,
+        b.y + (quit_h - 32.0) * 0.5,
+        quit_bw,
+        32.0,
+    );
+    b.items.push(ContentItem::Button {
+        rect: quit_rect,
+        label: quit_label.to_string(),
+        style: ButtonStyle::Secondary,
+        disabled: false,
+        action: Action::QuitApp,
+    });
+    b.add_hit(quit_rect, Action::QuitApp, true);
+    b.items.push(ContentItem::Text {
+        rect: DipRect::new(
+            b.x + 16.0,
+            b.y + (quit_h - 20.0) * 0.5,
+            (quit_rect.x - b.x - 28.0).max(80.0),
+            20.0,
+        ),
+        text: "Exit UsageDeck and close the taskbar widget".to_string(),
+        size: 13.5,
+        semi_bold: false,
+        muted: true,
+        warn: false,
+        align_right: false,
+        align_center: false,
+        mono: false,
+        wrap: false,
+    });
+    b.y += quit_h;
+}
+
+// ---- Page 2b: Style -------------------------------------------------------------------------
+
+fn build_style_page(b: &mut ContentBuilder, input: &LayoutInput<'_>) {
+    b.add_page_header(
+        None,
+        "Style",
+        Some("Choose how rolling (R), weekly (W), and monthly (M) meters look on your taskbar."),
+        &[],
+    );
+    b.add_section_heading("Taskbar meter design", 0.0);
+
+    let styles: [(TaskbarMeterStyle, &'static str, &'static str); 4] = [
+        (
+            TaskbarMeterStyle::ClockBelow,
+            "Digital clock",
+            "R / W / M + % on top, bar in the middle, crisp 4:33 · 5d countdown underneath.",
+        ),
+        (
+            TaskbarMeterStyle::MinimalBelow,
+            "Minimal rounded",
+            "Single-unit rounded time (4.5h · 5d) underneath — zero minute-by-minute jitter.",
+        ),
+        (
+            TaskbarMeterStyle::ResetAtBelow,
+            "Reset wall clock",
+            "Shows directly when quota resets (→ 8:40p · → Sat) — no countdown math.",
+        ),
+        (
+            TaskbarMeterStyle::PillChip,
+            "Compact pill chip",
+            "2-tier layout with a subtle [R] badge + 4:33 beside % and a thicker bar below.",
+        ),
+    ];
+
+    let card_h = 84.0;
+    for (style, title, subtitle) in styles {
+        let rect = DipRect::new(b.x, b.y, b.w, card_h);
+        let action = Action::SetMeterStyle(style);
+        let selected = input.settings.taskbar_meter_style == style;
+        b.items.push(ContentItem::MeterStyleCard {
+            rect,
+            style,
+            title,
+            subtitle,
+            selected,
+            action: action.clone(),
+        });
+        b.add_hit(rect, action, true);
+        b.y += card_h + 10.0;
+    }
 }
 
 // ---- Page 2: Widget -------------------------------------------------------------------------

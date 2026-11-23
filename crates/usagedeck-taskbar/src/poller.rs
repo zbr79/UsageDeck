@@ -42,6 +42,7 @@ impl SharedSnapshot {
                 is_demo: false,
                 theme_mode: ThemeMode::Auto,
                 snoozed_count: 0,
+                taskbar_meter_style: usagedeck_core::store::TaskbarMeterStyle::default(),
             }
         };
         Arc::new(Self {

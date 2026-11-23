@@ -13,6 +13,7 @@ use crate::settings_dialog::layout::{
     SIDEBAR_W_DIP,
 };
 use crate::settings_dialog::theme::{rgba, with_alpha, BadgeColors, SettingsPalette};
+use usagedeck_core::store::TaskbarMeterStyle;
 use usagedeck_core::view::{BarSeverity, ProviderKind};
 use windows::core::{w, Result};
 use windows::Win32::Foundation::{HWND, RECT};
@@ -848,8 +849,217 @@ impl SettingsRenderer {
                     rt, pal, chart, scroll, vp_top, vp_bot, viewport, chart_jobs,
                 )?;
             }
+            ContentItem::MeterStyleCard {
+                rect,
+                style,
+                title,
+                subtitle,
+                selected,
+                action,
+            } => {
+                let r = rect.offset_y(-scroll);
+                if visible(r) {
+                    let is_hover = hovered == Some(action);
+                    self.draw_meter_style_card(
+                        rt, pal, r, *style, title, subtitle, *selected, is_hover,
+                    )?;
+                }
+            }
         }
         Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_meter_style_card(
+        &self,
+        rt: &ID2D1DCRenderTarget,
+        pal: &SettingsPalette,
+        r: DipRect,
+        style: TaskbarMeterStyle,
+        title: &str,
+        subtitle: &str,
+        selected: bool,
+        hovered: bool,
+    ) -> Result<()> {
+        let bg = if selected {
+            with_alpha(pal.accent, 0.08)
+        } else if hovered {
+            pal.surface_hover
+        } else {
+            pal.card
+        };
+        let border = if selected {
+            pal.accent
+        } else if hovered {
+            pal.border
+        } else {
+            pal.card_border
+        };
+        let border_w = if selected { 1.5 } else { 1.0 };
+        self.fill_rounded(rt, r, 6.0, bg)?;
+        self.stroke_rounded(rt, r, 6.0, border_w, border)?;
+
+        // Radio indicator circle on the left.
+        let radio = DipRect::new(r.x + 16.0, r.y + (r.h - 16.0) * 0.5, 16.0, 16.0);
+        self.stroke_rounded(
+            rt,
+            radio,
+            8.0,
+            1.5,
+            if selected { pal.accent } else { pal.border },
+        )?;
+        if selected {
+            let dot = DipRect::new(radio.x + 4.0, radio.y + 4.0, 8.0, 8.0);
+            self.fill_rounded(rt, dot, 4.0, pal.accent)?;
+        }
+
+        // Right-aligned dark taskbar miniature preview (`188 × 44 DIP`).
+        let preview_w = 188.0;
+        let preview_h = 44.0;
+        let preview = DipRect::new(
+            r.x + r.w - 16.0 - preview_w,
+            r.y + (r.h - preview_h) * 0.5,
+            preview_w,
+            preview_h,
+        );
+        self.fill_rounded(rt, preview, 6.0, rgba(38, 28, 32, 0.96))?;
+        self.stroke_rounded(rt, preview, 6.0, 1.0, rgba(255, 255, 255, 0.14))?;
+
+        let sample_meters: [(&str, &str, f32, &str); 2] = match style {
+            TaskbarMeterStyle::ClockBelow => [("R", "3%", 0.08, "4:33"), ("W", "31%", 0.31, "5d")],
+            TaskbarMeterStyle::MinimalBelow => {
+                [("R", "3%", 0.08, "4.5h"), ("W", "31%", 0.31, "5d")]
+            }
+            TaskbarMeterStyle::ResetAtBelow => {
+                [("R", "3%", 0.08, "→ 8:40p"), ("W", "31%", 0.31, "→ Sat")]
+            }
+            TaskbarMeterStyle::PillChip => [("R", "3%", 0.08, "4:33"), ("W", "31%", 0.31, "5d")],
+        };
+
+        let col_w = 80.0;
+        let col_gap = 10.0;
+        let start_x = preview.x + (preview.w - (col_w * 2.0 + col_gap)) * 0.5;
+        let p_text = rgba(255, 255, 255, 0.96);
+        let p_muted = rgba(232, 232, 240, 0.80);
+        let p_sub = rgba(232, 232, 240, 0.64);
+        let p_track = rgba(255, 255, 255, 0.22);
+        let p_ok = rgba(0, 212, 146, 1.0);
+
+        for (idx, (tag, pct, frac, time_str)) in sample_meters.iter().enumerate() {
+            let mx = start_x + idx as f32 * (col_w + col_gap);
+            if style == TaskbarMeterStyle::PillChip {
+                let chip = DipRect::new(mx, preview.y + 8.0, 14.0, 13.0);
+                self.fill_rounded(rt, chip, 3.0, rgba(255, 255, 255, 0.14))?;
+                self.draw_dynamic_text(
+                    rt, tag, 8.5, true, false, false, true, false, chip, p_text,
+                )?;
+                self.draw_dynamic_text(
+                    rt,
+                    time_str,
+                    8.5,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    DipRect::new(mx + 18.0, preview.y + 8.0, col_w - 44.0, 13.0),
+                    p_sub,
+                )?;
+                self.draw_dynamic_text(
+                    rt,
+                    pct,
+                    9.5,
+                    true,
+                    false,
+                    true,
+                    false,
+                    false,
+                    DipRect::new(mx + col_w - 28.0, preview.y + 7.5, 28.0, 13.5),
+                    p_text,
+                )?;
+                let track = DipRect::new(mx, preview.y + 27.0, col_w, 4.5);
+                self.fill_rounded(rt, track, 2.25, p_track)?;
+                self.fill_rounded(
+                    rt,
+                    DipRect::new(track.x, track.y, (track.w * *frac).max(4.0), track.h),
+                    2.25,
+                    p_ok,
+                )?;
+            } else {
+                self.draw_dynamic_text(
+                    rt,
+                    tag,
+                    9.5,
+                    true,
+                    false,
+                    false,
+                    false,
+                    false,
+                    DipRect::new(mx, preview.y + 4.5, 20.0, 13.0),
+                    p_muted,
+                )?;
+                self.draw_dynamic_text(
+                    rt,
+                    pct,
+                    9.5,
+                    true,
+                    false,
+                    true,
+                    false,
+                    false,
+                    DipRect::new(mx + col_w - 28.0, preview.y + 4.5, 28.0, 13.0),
+                    p_text,
+                )?;
+                let track = DipRect::new(mx, preview.y + 19.5, col_w, 4.0);
+                self.fill_rounded(rt, track, 2.0, p_track)?;
+                self.fill_rounded(
+                    rt,
+                    DipRect::new(track.x, track.y, (track.w * *frac).max(4.0), track.h),
+                    2.0,
+                    p_ok,
+                )?;
+                self.draw_dynamic_text(
+                    rt,
+                    time_str,
+                    8.5,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    DipRect::new(mx, preview.y + 25.5, col_w, 12.0),
+                    p_sub,
+                )?;
+            }
+        }
+
+        // Title + subtitle on the left of the preview box.
+        let text_x = radio.x + radio.w + 14.0;
+        let text_w = (preview.x - text_x - 16.0).max(80.0);
+        self.draw_dynamic_text(
+            rt,
+            title,
+            14.0,
+            true,
+            false,
+            false,
+            false,
+            false,
+            DipRect::new(text_x, r.y + 18.0, text_w, 20.0),
+            pal.text,
+        )?;
+        self.draw_dynamic_text(
+            rt,
+            subtitle,
+            12.0,
+            false,
+            false,
+            false,
+            false,
+            true,
+            DipRect::new(text_x, r.y + 40.0, text_w, 34.0),
+            pal.muted,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -936,6 +936,7 @@ enum DeferredAction {
         is_dark: bool,
         current: Option<u32>,
     },
+    QuitApp,
 }
 
 fn execute_action(hwnd: HWND, action: Action) {
@@ -1087,6 +1088,24 @@ fn execute_action(hwnd: HWND, action: Action) {
                 state.invalidate();
                 deferred = DeferredAction::NotifyChanged(state.on_changed.clone());
             }
+        }
+        Action::SetMeterStyle(style) => {
+            if state.settings.taskbar_meter_style == style {
+                return;
+            }
+            if state
+                .save_settings(|mut s| {
+                    s.taskbar_meter_style = style;
+                    s
+                })
+                .is_ok()
+            {
+                state.show_toast("Taskbar style updated");
+                deferred = DeferredAction::NotifyChanged(state.on_changed.clone());
+            }
+        }
+        Action::QuitApp => {
+            deferred = DeferredAction::QuitApp;
         }
         Action::MoveProviderUp(wp) => {
             if let Some(pos) = state.settings.provider_order.iter().position(|p| *p == wp) {
@@ -1339,6 +1358,10 @@ fn execute_action(hwnd: HWND, action: Action) {
         DeferredAction::RunCustomUpdate(cb) => cb(hwnd),
         DeferredAction::RunBuiltinUpdate => run_builtin_update_check(),
         DeferredAction::PollSnapshot => spawn_settings_poll(),
+        DeferredAction::QuitApp => {
+            close_settings_window(hwnd);
+            crate::window::post_quit_app();
+        }
         DeferredAction::PromptAddOpenCode { is_dark } => {
             if let Some((email, key)) = modals::prompt_opencode_key(hwnd, is_dark, None) {
                 save_opencode_account(email, key, "Account added");

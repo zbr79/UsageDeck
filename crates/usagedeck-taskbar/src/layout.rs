@@ -143,6 +143,19 @@ impl StripLayout {
             StripMode::Hidden | StripMode::CompactSummary { .. } | StripMode::Empty { .. } => None,
         }
     }
+
+    /// True if `(px, py)` hits the `+N` overflow badge, compact summary, or empty status pill.
+    pub fn hit_test_overflow_or_empty(&self, px: f32, py: f32) -> bool {
+        match &self.mode {
+            StripMode::Pills { overflow_badge, .. } => {
+                overflow_badge.is_some_and(|(r, _)| r.contains(px, py))
+            }
+            StripMode::CompactSummary { rect, .. } | StripMode::Empty { rect, .. } => {
+                rect.contains(px, py)
+            }
+            StripMode::Hidden => false,
+        }
+    }
 }
 
 /// Compute whether a provider pill should use the extended compact layout
@@ -441,6 +454,7 @@ fn worse_severity(a: BarSeverity, b: BarSeverity) -> BarSeverity {
 
 // ---- Flyout layout -------------------------------------------------------------------------
 
+#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FlyoutAction {
     Refresh,
@@ -456,6 +470,7 @@ pub enum FlyoutAction {
     Quit,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq)]
 pub struct FlyoutButton {
     pub action: FlyoutAction,
@@ -463,6 +478,7 @@ pub struct FlyoutButton {
     pub label: &'static str,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq)]
 pub struct FlyoutCardSlot {
     pub item_index: usize,
@@ -477,6 +493,7 @@ pub struct FlyoutCardSlot {
     pub right_content_x: f32,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq)]
 pub struct FlyoutLayout {
     pub width_dip: f32,
@@ -487,6 +504,7 @@ pub struct FlyoutLayout {
     pub bar_rects: Vec<(DipRect, usize, usize)>,
 }
 
+#[allow(dead_code)]
 impl FlyoutLayout {
     pub fn hit_test(&self, px: f32, py: f32) -> Option<FlyoutAction> {
         for btn in &self.header_buttons {
@@ -560,6 +578,7 @@ pub fn exhausted_until_ms(item: &ProviderItem, now_ms: i64) -> Option<u64> {
 }
 
 /// Compute the anchored flyout panel layout and interactive hit rects.
+#[allow(dead_code)]
 pub fn compute_flyout_layout(snapshot: &TaskbarSnapshot) -> FlyoutLayout {
     let w = FLYOUT_WIDTH_DIP;
     let inner_w = w - FLYOUT_PAD_DIP * 2.0;

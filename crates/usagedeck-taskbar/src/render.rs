@@ -12,7 +12,10 @@ use crate::layout::{
     WIDE_ICON_GAP_DIP, WIDE_PAD_X_DIP, WIDE_RATE_ICON_COL_DIP,
 };
 use crate::taskbar::TaskbarTheme;
-use usagedeck_core::view::{BarSeverity, BarView, ProviderItem, ProviderKind, TaskbarSnapshot};
+use usagedeck_core::store::TaskbarMeterStyle;
+use usagedeck_core::view::{
+    parse_iso_ms, BarSeverity, BarView, ProviderItem, ProviderKind, TaskbarSnapshot,
+};
 use windows::core::{w, Result};
 use windows::Win32::Foundation::{COLORREF, HWND, POINT, RECT, SIZE};
 use windows::Win32::Graphics::Direct2D::Common::{
@@ -50,6 +53,7 @@ pub struct Renderer {
     fmt_rate_center: IDWriteTextFormat,
     fmt_label_left: IDWriteTextFormat,
     fmt_reset_sub: IDWriteTextFormat,
+    fmt_chip: IDWriteTextFormat,
     fmt_sub: IDWriteTextFormat,
     fmt_title: IDWriteTextFormat,
     fmt_btn: IDWriteTextFormat,
@@ -137,11 +141,90 @@ fn palette(theme: TaskbarTheme) -> Palette {
     }
 }
 
-fn meter_bar_label(label: &str) -> &str {
+/// Compact single-letter window tag used across all providers (`R` for every rolling/5h window,
+/// `W` for Weekly, `M` for Monthly).
+fn meter_window_tag(label: &str) -> &str {
     match label {
-        "Rolling" => "5h",
+        "5h" | "Rolling" => "R",
+        "Weekly" => "W",
+        "Monthly" => "M",
         other => other,
     }
+}
+
+/// Convert a local reset label like `"Today 8:40 PM"`, `"Tomorrow 9:00 AM"`, or `"Sat 2:00 PM"`
+/// into a compact taskbar clock token (`"→ 8:40p"`, `"→ 9:00a"`, `"→ Sat"`).
+fn format_reset_at_compact(local: &str) -> Option<String> {
+    let trimmed = local.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let rest = trimmed
+        .strip_prefix("Today ")
+        .or_else(|| trimmed.strip_prefix("Tomorrow "));
+    if let Some(clock) = rest {
+        let short = clock
+            .replace(" AM", "a")
+            .replace(" PM", "p")
+            .replace(" am", "a")
+            .replace(" pm", "p");
+        return Some(format!("→ {short}"));
+    }
+    let first = trimmed.split_whitespace().next()?;
+    Some(format!("→ {first}"))
+}
+
+/// Format remaining reset time for a taskbar meter according to the user's selected
+/// [`TaskbarMeterStyle`].
+fn format_meter_time(style: TaskbarMeterStyle, bar: &BarView, now_ms: i64) -> Option<String> {
+    if style == TaskbarMeterStyle::ResetAtBelow {
+        if let Some(ref local) = bar.reset_at_local {
+            if let Some(compact) = format_reset_at_compact(local) {
+                return Some(compact);
+            }
+        }
+    }
+
+    let rem_ms = bar
+        .resets_at
+        .as_deref()
+        .and_then(parse_iso_ms)
+        .map(|ms| ms - now_ms)
+        .filter(|&d| d > 0);
+
+    if let Some(rem) = rem_ms {
+        let mins = ((rem + 59_999) / 60_000).max(1);
+        if mins < 60 {
+            return Some(format!("{mins}m"));
+        }
+        if mins >= 24 * 60 {
+            let days = mins / (24 * 60);
+            return Some(format!("{days}d"));
+        }
+        return match style {
+            TaskbarMeterStyle::MinimalBelow => {
+                let tenths = ((mins as f64 / 60.0) * 10.0).round() as i64;
+                if tenths % 10 == 0 {
+                    Some(format!("{}h", tenths / 10))
+                } else {
+                    Some(format!("{}.{}h", tenths / 10, tenths % 10))
+                }
+            }
+            TaskbarMeterStyle::ClockBelow
+            | TaskbarMeterStyle::PillChip
+            | TaskbarMeterStyle::ResetAtBelow => {
+                let h = mins / 60;
+                let m = mins % 60;
+                Some(format!("{h}:{m:02}"))
+            }
+        };
+    }
+
+    bar.reset_short
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 fn provider_badge_style(
@@ -329,6 +412,13 @@ impl Renderer {
                 8.5,
                 DWRITE_TEXT_ALIGNMENT_LEADING,
             )?;
+            let fmt_chip = make_text_format(
+                &dwrite,
+                w!("Segoe UI"),
+                DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                8.5,
+                DWRITE_TEXT_ALIGNMENT_CENTER,
+            )?;
             let fmt_sub = make_text_format(
                 &dwrite,
                 w!("Segoe UI"),
@@ -363,6 +453,7 @@ impl Renderer {
                 fmt_rate_center,
                 fmt_label_left,
                 fmt_reset_sub,
+                fmt_chip,
                 fmt_sub,
                 fmt_title,
                 fmt_btn,
@@ -799,6 +890,13 @@ impl Renderer {
                             let pill_hovered = hovered_pill == Some(slot.item_index);
                             let icon_hovered = hovered_icon_pill == Some(slot.item_index);
                             let hide_hovered = hovered_hide_pill == Some(slot.item_index);
+                            let meter_now_ms = if snapshot.is_demo {
+                                snapshot.updated_at_ms
+                            } else {
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map_or(snapshot.updated_at_ms, |d| d.as_millis() as i64)
+                            };
                             self.draw_provider_pill(
                                 rt,
                                 item,
@@ -809,6 +907,8 @@ impl Renderer {
                                 icon_hovered,
                                 hide_hovered,
                                 forced_contrast_backdrop,
+                                snapshot.taskbar_meter_style,
+                                meter_now_ms,
                             )?;
                         }
                     }
@@ -959,6 +1059,8 @@ impl Renderer {
         icon_hovered: bool,
         hide_hovered: bool,
         forced_contrast_backdrop: bool,
+        meter_style: TaskbarMeterStyle,
+        now_ms: i64,
     ) -> Result<()> {
         match slot.style {
             PillStyle::WideMeters => self.draw_wide_meter_pill(
@@ -971,6 +1073,8 @@ impl Renderer {
                 icon_hovered,
                 hide_hovered,
                 forced_contrast_backdrop,
+                meter_style,
+                now_ms,
             ),
             PillStyle::CompactStacked => self.draw_compact_stacked_pill(
                 rt,
@@ -998,6 +1102,8 @@ impl Renderer {
         icon_hovered: bool,
         hide_hovered: bool,
         forced_contrast_backdrop: bool,
+        meter_style: TaskbarMeterStyle,
+        now_ms: i64,
     ) -> Result<()> {
         let r = slot.rect;
         // Option 1 borderless at rest (unless theme mismatches taskbar); subtle Fluent rounded plate on hover.
@@ -1058,7 +1164,6 @@ impl Renderer {
             )?;
         }
 
-        // Option 3 side-by-side meter columns: `label reset_time` + `%` on top, progress bar below.
         if slot.meter_rects.is_empty() {
             let fallback_x = icon_col_x
                 + if item.spend_rate_text.is_some() {
@@ -1093,23 +1198,10 @@ impl Renderer {
             return Ok(());
         }
 
+        let dark = theme == TaskbarTheme::Dark;
         for (m, bar) in slot.meter_rects.iter().zip(item.taskbar_bars.iter()) {
-            let lbl = meter_bar_label(&bar.label);
-            let pct_w = 29.0;
-            let left_w = (m.w - pct_w).max(20.0);
-            self.draw_text(
-                rt,
-                lbl,
-                &self.fmt_label_left,
-                DipRect {
-                    x: m.x,
-                    y: m.y + 1.5,
-                    w: left_w,
-                    h: 13.0,
-                },
-                pal.muted,
-            )?;
-
+            let tag = meter_window_tag(&bar.label);
+            let time_text = format_meter_time(meter_style, bar, now_ms);
             let pct_color = if bar.percent.is_some_and(|p| p.round() >= 100.0)
                 || bar.severity == BarSeverity::Danger
             {
@@ -1119,44 +1211,115 @@ impl Renderer {
             } else {
                 pal.text
             };
-            self.draw_text(
-                rt,
-                &bar.percent_label(),
-                &self.fmt_pct,
-                DipRect {
-                    x: m.x + m.w - pct_w,
-                    y: m.y + 1.5,
-                    w: pct_w,
-                    h: 13.0,
-                },
-                pct_color,
-            )?;
-
-            let track_rect = DipRect {
-                x: m.x,
-                y: m.y + 16.0,
-                w: m.w,
-                h: 4.0,
+            let reset_color = D2D1_COLOR_F {
+                a: pal.muted.a * 0.82,
+                ..pal.muted
             };
-            self.draw_bar_fill(rt, track_rect, 2.0, bar, pal)?;
 
-            if let Some(rs) = bar.reset_short.as_deref().filter(|s| !s.is_empty()) {
-                let reset_color = D2D1_COLOR_F {
-                    a: pal.muted.a * 0.85,
-                    ..pal.muted
+            if meter_style == TaskbarMeterStyle::PillChip {
+                // 2-tier layout: `[R] 4:33  3%` on top, thicker progress bar below.
+                let chip_w = if tag.len() <= 1 { 15.0 } else { 22.0 };
+                let chip_rect = DipRect {
+                    x: m.x,
+                    y: m.y + 4.0,
+                    w: chip_w,
+                    h: 13.0,
                 };
+                let chip_bg = if dark {
+                    rgba(255, 255, 255, 0.13)
+                } else {
+                    rgba(0, 0, 0, 0.08)
+                };
+                self.fill_rounded(rt, chip_rect, 3.0, chip_bg)?;
+                self.draw_text(rt, tag, &self.fmt_chip, chip_rect, pal.text)?;
+
+                let pct_w = 29.0;
+                if let Some(ref ts) = time_text {
+                    let time_x = chip_rect.x + chip_rect.w + 4.0;
+                    let time_w = (m.x + m.w - pct_w - time_x).max(0.0);
+                    if time_w >= 14.0 {
+                        self.draw_text(
+                            rt,
+                            ts,
+                            &self.fmt_reset_sub,
+                            DipRect {
+                                x: time_x,
+                                y: m.y + 4.0,
+                                w: time_w,
+                                h: 13.0,
+                            },
+                            reset_color,
+                        )?;
+                    }
+                }
                 self.draw_text(
                     rt,
-                    &format!("↺ {rs}"),
-                    &self.fmt_reset_sub,
+                    &bar.percent_label(),
+                    &self.fmt_pct,
+                    DipRect {
+                        x: m.x + m.w - pct_w,
+                        y: m.y + 3.5,
+                        w: pct_w,
+                        h: 13.5,
+                    },
+                    pct_color,
+                )?;
+                let track_rect = DipRect {
+                    x: m.x,
+                    y: m.y + 22.0,
+                    w: m.w,
+                    h: 4.5,
+                };
+                self.draw_bar_fill(rt, track_rect, 2.25, bar, pal)?;
+            } else {
+                // 3-tier layout: `R  3%` on top, bar middle, crisp time token underneath.
+                let pct_w = 29.0;
+                let left_w = (m.w - pct_w).max(20.0);
+                self.draw_text(
+                    rt,
+                    tag,
+                    &self.fmt_label_left,
                     DipRect {
                         x: m.x,
-                        y: m.y + 21.5,
-                        w: m.w,
-                        h: 12.0,
+                        y: m.y + 1.5,
+                        w: left_w,
+                        h: 13.0,
                     },
-                    reset_color,
+                    pal.muted,
                 )?;
+                self.draw_text(
+                    rt,
+                    &bar.percent_label(),
+                    &self.fmt_pct,
+                    DipRect {
+                        x: m.x + m.w - pct_w,
+                        y: m.y + 1.5,
+                        w: pct_w,
+                        h: 13.0,
+                    },
+                    pct_color,
+                )?;
+                let track_rect = DipRect {
+                    x: m.x,
+                    y: m.y + 16.0,
+                    w: m.w,
+                    h: 4.0,
+                };
+                self.draw_bar_fill(rt, track_rect, 2.0, bar, pal)?;
+                if let Some(ref ts) = time_text {
+                    self.draw_text(
+                        rt,
+                        ts,
+                        &self.fmt_reset_sub,
+                        DipRect {
+                            x: m.x,
+                            y: m.y + 21.5,
+                            w: m.w,
+                            h: 12.0,
+                        },
+                        reset_color,
+                    )?;
+                }
             }
         }
 
@@ -1317,7 +1480,7 @@ impl Renderer {
     }
 
     /// Paint the anchored Windows 11 Fluent flyout above the taskbar strip.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(dead_code, clippy::too_many_arguments)]
     pub fn render_flyout(
         &self,
         hwnd: HWND,
@@ -1633,5 +1796,63 @@ impl Renderer {
 
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{DateTime, Utc};
+
+    #[test]
+    fn maps_every_rolling_window_to_r_and_weekly_monthly_to_w_m() {
+        assert_eq!(meter_window_tag("5h"), "R");
+        assert_eq!(meter_window_tag("Rolling"), "R");
+        assert_eq!(meter_window_tag("Weekly"), "W");
+        assert_eq!(meter_window_tag("Monthly"), "M");
+        assert_eq!(meter_window_tag("1P"), "1P");
+        assert_eq!(meter_window_tag("API"), "API");
+    }
+
+    #[test]
+    fn formats_meter_time_for_all_four_styles() {
+        let now = 1_700_000_000_000i64;
+        let iso = |mins: i64| {
+            DateTime::<Utc>::from_timestamp_millis(now + mins * 60_000).map(|dt| dt.to_rfc3339())
+        };
+        let mut bar_4h33 = BarView::new("fiveHour", "5h", Some(12.0), iso(4 * 60 + 33), now, false);
+        bar_4h33.reset_at_local = Some("Today 8:40 PM".to_string());
+
+        assert_eq!(
+            format_meter_time(TaskbarMeterStyle::ClockBelow, &bar_4h33, now).as_deref(),
+            Some("4:33")
+        );
+        assert_eq!(
+            format_meter_time(TaskbarMeterStyle::PillChip, &bar_4h33, now).as_deref(),
+            Some("4:33")
+        );
+        assert_eq!(
+            format_meter_time(TaskbarMeterStyle::MinimalBelow, &bar_4h33, now).as_deref(),
+            Some("4.6h")
+        );
+        assert_eq!(
+            format_meter_time(TaskbarMeterStyle::ResetAtBelow, &bar_4h33, now).as_deref(),
+            Some("→ 8:40p")
+        );
+
+        let mut bar_5d = BarView::new("weekly", "Weekly", Some(31.0), iso(5 * 24 * 60), now, false);
+        bar_5d.reset_at_local = Some("Sat 2:00 PM".to_string());
+        assert_eq!(
+            format_meter_time(TaskbarMeterStyle::ClockBelow, &bar_5d, now).as_deref(),
+            Some("5d")
+        );
+        assert_eq!(
+            format_meter_time(TaskbarMeterStyle::MinimalBelow, &bar_5d, now).as_deref(),
+            Some("5d")
+        );
+        assert_eq!(
+            format_meter_time(TaskbarMeterStyle::ResetAtBelow, &bar_5d, now).as_deref(),
+            Some("→ Sat")
+        );
     }
 }

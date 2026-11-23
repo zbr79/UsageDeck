@@ -48,8 +48,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, LoadCursorW, PostMessageW, RegisterClassExW,
     SetCursor, SetWindowPos, ShowWindow, UpdateLayeredWindow, HWND_TOPMOST, IDC_ARROW, IDC_HAND,
     SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE, ULW_ALPHA,
-    WM_APP, WM_LBUTTONUP, WM_MOUSEMOVE, WM_RBUTTONUP, WM_SETCURSOR, WNDCLASSEXW, WS_EX_LAYERED,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    WM_APP, WM_LBUTTONUP, WM_MOUSEMOVE, WM_SETCURSOR, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 const WM_NCHITTEST: u32 = 0x0084;
@@ -65,8 +65,6 @@ pub const WM_APP_HOVER_CARD_MOVE: u32 = WM_APP + 5;
 pub const WM_APP_HOVER_CARD_LEAVE: u32 = WM_APP + 6;
 /// Posted to the strip window on left-click release inside an interactive hover card.
 pub const WM_APP_HOVER_CARD_CLICK: u32 = WM_APP + 7;
-/// Posted to the strip window on right-click release inside an interactive hover card.
-pub const WM_APP_HOVER_CARD_RCLICK: u32 = WM_APP + 8;
 
 static TOOLTIP_INTERACTIVE: AtomicBool = AtomicBool::new(false);
 static TOOLTIP_OVER_BUTTON: AtomicBool = AtomicBool::new(false);
@@ -615,19 +613,6 @@ unsafe extern "system" fn tooltip_wnd_proc(
             if owner != 0 {
                 let owner_hwnd = HWND(owner as *mut std::ffi::c_void);
                 let _ = PostMessageW(Some(owner_hwnd), WM_APP_HOVER_CARD_CLICK, WPARAM(0), lparam);
-            }
-            LRESULT(0)
-        }
-        WM_RBUTTONUP if interactive => {
-            let owner = TOOLTIP_OWNER_RAW.load(Ordering::Acquire);
-            if owner != 0 {
-                let owner_hwnd = HWND(owner as *mut std::ffi::c_void);
-                let _ = PostMessageW(
-                    Some(owner_hwnd),
-                    WM_APP_HOVER_CARD_RCLICK,
-                    WPARAM(0),
-                    lparam,
-                );
             }
             LRESULT(0)
         }

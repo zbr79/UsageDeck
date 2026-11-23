@@ -55,6 +55,7 @@ impl TaskbarMetrics {
 
     /// Physical-pixel `(x, y)` for an anchored flyout directly above the right-hand taskbar strip,
     /// clamped inside the taskbar's monitor.
+    #[allow(dead_code)]
     pub fn flyout_origin_px(
         &self,
         strip_x: i32,
