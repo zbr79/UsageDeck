@@ -1,10 +1,10 @@
 //! Pure-Rust background auto-updater.
 //!
-//! Queries GitHub's latest release 15 s after start and every hour thereafter (plus manual
-//! checks on demand), verifies the `UsageDeck-Setup.exe` asset size and SHA-256 digest using
-//! `usagedeck_core::updater::{release, status}`, downloads it to `%TEMP%`, and launches it
-//! silently with `/S /R /UPDATE` before exiting so the installer can replace the executable and
-//! relaunch UsageDeck.
+//! Queries GitHub's latest release 5 s after start and every 60 s thereafter using conditional
+//! `If-None-Match` ETag requests (plus manual checks on demand), verifies the `UsageDeck-Setup.exe`
+//! asset size and SHA-256 digest using `usagedeck_core::updater::{release, status}`, downloads it
+//! to `%TEMP%`, and launches it silently with `/S /R /UPDATE` before exiting so the installer can
+//! replace the executable and relaunch UsageDeck automatically.
 //!
 //! Safety rules (parity with v1):
 //! - Debug and Cargo-target builds never run background checks or auto-install themselves
@@ -30,12 +30,12 @@ pub const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/zbr79/UsageDe
 /// GitHub's API rejects requests without a User-Agent.
 const USER_AGENT: &str = "UsageDeck-updater";
 
-const FIRST_CHECK: Duration = Duration::from_secs(8);
-const CHECK_INTERVAL: Duration = Duration::from_secs(2 * 60);
+const FIRST_CHECK: Duration = Duration::from_secs(5);
+const CHECK_INTERVAL: Duration = Duration::from_secs(60);
 const API_TIMEOUT: Duration = Duration::from_secs(30);
 const DOWNLOAD_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
-const AUTO_INSTALL_POLL: Duration = Duration::from_secs(5);
+const AUTO_INSTALL_POLL: Duration = Duration::from_secs(1);
 
 /// Silent NSIS flags: `/S` silent mode (closes running UsageDeck without prompting), `/R`
 /// relaunches the app after install, `/UPDATE` preserves API keys and the Run entry.
@@ -43,6 +43,9 @@ pub const INSTALLER_ARGS: [&str; 3] = ["/S", "/R", "/UPDATE"];
 
 /// Callback invoked whenever [`UpdateStatus`] changes.
 pub type StatusCallback = Arc<dyn Fn(&UpdateStatus) + Send + Sync>;
+
+/// Callback invoked whenever a new update starts downloading (both background and manual checks).
+pub type UpdateStartingCallback = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// Callback invoked to exit the application once the verified installer has been spawned.
 /// Defaults to `std::process::exit(0)` when not provided.
@@ -55,6 +58,7 @@ pub struct UpdaterOptions {
     /// Shared flag set to `true` while Settings is open so auto-install does not close it.
     pub pause_auto_install: Arc<AtomicBool>,
     pub on_status_change: Option<StatusCallback>,
+    pub on_update_starting: Option<UpdateStartingCallback>,
     pub on_exit_for_update: Option<ExitCallback>,
 }
 
@@ -65,13 +69,16 @@ impl Default for UpdaterOptions {
             dev_build: crate::autostart::is_dev_build(),
             pause_auto_install: Arc::new(AtomicBool::new(false)),
             on_status_change: None,
+            on_update_starting: None,
             on_exit_for_update: None,
         }
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UpdaterCmd {
-    RunCheck,
+    RunCheck { bypass_etag: bool },
+    PollAutoInstall,
     Stop,
 }
 
@@ -85,6 +92,7 @@ struct UpdaterInner {
     dev_build: bool,
     cmd_tx: UnboundedSender<UpdaterCmd>,
     on_status_change: Option<StatusCallback>,
+    on_update_starting: Option<UpdateStartingCallback>,
     on_exit_for_update: Option<ExitCallback>,
 }
 
@@ -180,6 +188,77 @@ impl UpdaterInner {
         }
         Ok(())
     }
+
+    fn etag_for_check(&self, bypass_etag: bool) -> Option<String> {
+        if bypass_etag || self.lock_machine().ready_version().is_some() {
+            return None;
+        }
+        self.last_etag
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    fn apply_check_reply(&self, reply: Result<CheckReply, UpdateError>) -> bool {
+        let mut ready = false;
+        let outcome = match reply {
+            Ok(CheckReply::Ready {
+                version, installer, ..
+            }) => {
+                // Never cache the ETag of a newer release while still running an older version:
+                // otherwise a subsequent 304 Not Modified would look "up to date" and wipe Ready.
+                *self
+                    .last_etag
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+                log::info!("update {version} downloaded to {}", installer.display());
+                ready = true;
+                Outcome::Ready {
+                    version: version.to_string(),
+                    installer,
+                }
+            }
+            Ok(CheckReply::UpToDate { etag }) => {
+                if let Some(tag) = etag {
+                    *self
+                        .last_etag
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(tag);
+                }
+                log::info!(
+                    "update check: {} is the latest version",
+                    self.current_version
+                );
+                Outcome::UpToDate
+            }
+            Ok(CheckReply::NotModified) => {
+                // If an installer is already Ready on disk, preserve it rather than wiping to Idle.
+                let existing = {
+                    let m = self.lock_machine();
+                    match (m.ready_version(), m.installer()) {
+                        (Some(v), Some(p)) => Some((v.to_string(), p.to_path_buf())),
+                        _ => None,
+                    }
+                };
+                if let Some((version, installer)) = existing {
+                    ready = true;
+                    Outcome::Ready { version, installer }
+                } else {
+                    log::debug!(
+                        "update check: 304 Not Modified ({} is up to date)",
+                        self.current_version
+                    );
+                    Outcome::UpToDate
+                }
+            }
+            Err(e) => {
+                log::warn!("update check failed: {e}");
+                Outcome::Failed(e.to_string())
+            }
+        };
+        self.update(|m| m.finish(outcome, now_ms()));
+        ready
+    }
 }
 
 /// Cloneable handle to the running background updater.
@@ -209,7 +288,12 @@ impl UpdaterHandle {
     pub fn check_now(&self) -> UpdateStatus {
         log::info!("manual update check requested");
         if self.inner.update(|m| m.begin(Trigger::Manual)) {
-            if self.inner.cmd_tx.send(UpdaterCmd::RunCheck).is_err() {
+            if self
+                .inner
+                .cmd_tx
+                .send(UpdaterCmd::RunCheck { bypass_etag: true })
+                .is_err()
+            {
                 log::warn!("updater background thread is not running");
                 self.inner.update(|m| {
                     m.finish(
@@ -238,10 +322,13 @@ impl UpdaterHandle {
     }
 
     /// Pause or resume automatic installation (set `true` while Settings is open).
+    /// When unpausing (`true` → `false`), wakes the auto-installer immediately so any
+    /// waiting update installs without delay.
     pub fn set_pause_auto_install(&self, paused: bool) {
-        self.inner
-            .pause_auto_install
-            .store(paused, Ordering::Release);
+        let prev = self.inner.pause_auto_install.swap(paused, Ordering::AcqRel);
+        if prev && !paused {
+            let _ = self.inner.cmd_tx.send(UpdaterCmd::PollAutoInstall);
+        }
     }
 
     /// Stop the background updater thread cleanly.
@@ -270,6 +357,7 @@ pub fn start_updater_with_options(options: UpdaterOptions) -> UpdaterHandle {
         dev_build: options.dev_build,
         cmd_tx,
         on_status_change: options.on_status_change,
+        on_update_starting: options.on_update_starting,
         on_exit_for_update: options.on_exit_for_update,
     });
 
@@ -297,7 +385,7 @@ pub fn start_updater_with_options(options: UpdaterOptions) -> UpdaterHandle {
                         tokio::time::sleep(FIRST_CHECK).await;
                         loop {
                             if bg_inner.update(|m| m.begin(Trigger::Background)) {
-                                run_check(&bg_inner).await;
+                                run_check(&bg_inner, false).await;
                             } else {
                                 log::info!("update check already in progress");
                             }
@@ -316,11 +404,14 @@ pub fn start_updater_with_options(options: UpdaterOptions) -> UpdaterHandle {
 
                 while let Some(cmd) = cmd_rx.recv().await {
                     match cmd {
-                        UpdaterCmd::RunCheck => {
+                        UpdaterCmd::RunCheck { bypass_etag } => {
                             let check_inner = Arc::clone(&thread_inner);
                             tokio::spawn(async move {
-                                run_check(&check_inner).await;
+                                run_check(&check_inner, bypass_etag).await;
                             });
+                        }
+                        UpdaterCmd::PollAutoInstall => {
+                            thread_inner.poll_auto_install();
                         }
                         UpdaterCmd::Stop => break,
                     }
@@ -377,60 +468,22 @@ enum CheckReply {
     Ready {
         version: Version,
         installer: PathBuf,
-        etag: Option<String>,
     },
 }
 
-async fn run_check(inner: &UpdaterInner) {
+async fn run_check(inner: &UpdaterInner, bypass_etag: bool) {
     let current = inner.current_version;
-    let cached_etag = inner
-        .last_etag
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clone();
+    let cached_etag = inner.etag_for_check(bypass_etag);
     let on_release = |version: Version| inner.update(|m| m.saw_release(version.to_string()));
-    let on_download = |version: Version| inner.update(|m| m.downloading(version.to_string()));
-    let mut ready = false;
-    let outcome = match check_latest(current, cached_etag.as_deref(), on_release, on_download).await
-    {
-        Ok(CheckReply::Ready {
-            version,
-            installer,
-            etag,
-        }) => {
-            if let Some(tag) = etag {
-                *inner
-                    .last_etag
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(tag);
-            }
-            log::info!("update {version} downloaded to {}", installer.display());
-            ready = true;
-            Outcome::Ready {
-                version: version.to_string(),
-                installer,
-            }
+    let on_download = |version: Version| {
+        let ver = version.to_string();
+        if let Some(cb) = &inner.on_update_starting {
+            cb(&ver);
         }
-        Ok(CheckReply::UpToDate { etag }) => {
-            if let Some(tag) = etag {
-                *inner
-                    .last_etag
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(tag);
-            }
-            log::info!("update check: {current} is the latest version");
-            Outcome::UpToDate
-        }
-        Ok(CheckReply::NotModified) => {
-            log::debug!("update check: 304 Not Modified ({current} is up to date)");
-            Outcome::UpToDate
-        }
-        Err(e) => {
-            log::warn!("update check failed: {e}");
-            Outcome::Failed(e.to_string())
-        }
+        inner.update(|m| m.downloading(ver));
     };
-    inner.update(|m| m.finish(outcome, now_ms()));
+    let reply = check_latest(current, cached_etag.as_deref(), on_release, on_download).await;
+    let ready = inner.apply_check_reply(reply);
     if ready {
         inner.poll_auto_install();
     }
@@ -481,7 +534,6 @@ async fn check_latest(
     Ok(CheckReply::Ready {
         version: release.version,
         installer: path,
-        etag,
     })
 }
 
@@ -565,6 +617,7 @@ mod tests {
             dev_build,
             cmd_tx,
             on_status_change,
+            on_update_starting: None,
             on_exit_for_update: Some(Arc::new(|| {})),
         };
         (inner, cmd_rx)
@@ -694,5 +747,50 @@ mod tests {
         let pause = Arc::new(AtomicBool::new(false));
         let (inner, _rx) = test_inner(false, pause, None);
         assert!(inner.install_now().is_err());
+    }
+
+    #[test]
+    fn ready_update_never_caches_etag_or_gets_wiped_by_304() {
+        let pause = Arc::new(AtomicBool::new(true));
+        let (inner, mut rx) = test_inner(false, Arc::clone(&pause), None);
+
+        // First check sees current version -> caches ETag.
+        assert!(inner.update(|m| m.begin(Trigger::Background)));
+        assert!(!inner.apply_check_reply(Ok(CheckReply::UpToDate {
+            etag: Some("W/\"etag-v200\"".into()),
+        })));
+        assert_eq!(
+            inner.etag_for_check(false).as_deref(),
+            Some("W/\"etag-v200\"")
+        );
+        // Manual check bypasses ETag.
+        assert_eq!(inner.etag_for_check(true), None);
+
+        // Next check discovers v2.1.0 -> Ready, clears ETag so subsequent checks never 304 to UpToDate.
+        assert!(inner.update(|m| m.begin(Trigger::Background)));
+        assert!(inner.apply_check_reply(Ok(CheckReply::Ready {
+            version: v(2, 1, 0),
+            installer: PathBuf::from("C:/Temp/UsageDeck-2.1.0-setup.exe"),
+        })));
+        assert_eq!(inner.etag_for_check(false), None);
+        assert!(matches!(
+            inner.status().phase,
+            Phase::Ready { ref version, .. } if version == "2.1.0"
+        ));
+
+        // Even if a 304 NotModified arrives while Ready, Ready MUST be preserved.
+        assert!(inner.update(|m| m.begin(Trigger::Background)));
+        assert!(inner.apply_check_reply(Ok(CheckReply::NotModified)));
+        assert!(matches!(
+            inner.status().phase,
+            Phase::Ready { ref version, .. } if version == "2.1.0"
+        ));
+
+        // Unpausing auto-install immediately dispatches PollAutoInstall.
+        let handle = UpdaterHandle {
+            inner: Arc::new(inner),
+        };
+        handle.set_pause_auto_install(false);
+        assert_eq!(rx.try_recv().ok(), Some(UpdaterCmd::PollAutoInstall));
     }
 }

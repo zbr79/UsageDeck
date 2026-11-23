@@ -101,14 +101,13 @@ fn main() {
     let pause_flag = Arc::new(AtomicBool::new(false));
     let updater_handle = updater::start_updater_with_options(updater::UpdaterOptions {
         pause_auto_install: pause_flag,
+        on_update_starting: Some(Arc::new(|version| {
+            window::post_toast_from_any_thread(format!("Updating to v{version}…"));
+        })),
         on_status_change: Some(Arc::new(|status| {
             let text = format_update_status(status);
             settings_dialog::set_update_status_text(&text);
             let ready_ver = match &status.phase {
-                updater::Phase::Downloading { version } => {
-                    window::post_toast_from_any_thread(format!("Updating to v{version}…"));
-                    None
-                }
                 updater::Phase::Ready { version, .. } => Some(version.as_str()),
                 _ => None,
             };
