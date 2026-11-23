@@ -31,7 +31,7 @@ use render::SettingsRenderer;
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
-use std::sync::{Arc, Mutex, Once};
+use std::sync::{Arc, Mutex, Once, OnceLock};
 use theme::{apply_titlebar_theme, resolve_is_dark, SettingsPalette, SpendRange};
 use usagedeck_core::providers::{SeenAccounts, UsageCache};
 use usagedeck_core::store::{
@@ -39,7 +39,9 @@ use usagedeck_core::store::{
     WidgetProvider, OPENCODE_KEY_PREFIXES, SEEN_ACCOUNTS_FILE, USAGE_CACHE_FILE,
 };
 use usagedeck_core::updater::release::{is_newer, parse_release, Version};
-use usagedeck_core::view::{poll_settings_snapshot, ProviderKind, SettingsSnapshot};
+use usagedeck_core::view::{
+    cached_settings_snapshot, poll_settings_snapshot, ProviderKind, SettingsSnapshot,
+};
 use usagedeck_core::{default_data_dir, default_log_dir, Core};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
@@ -105,6 +107,8 @@ static PENDING_UPDATE_READY: Mutex<Option<Option<String>>> = Mutex::new(None);
 static LATEST_UPDATE_READY: Mutex<Option<String>> = Mutex::new(None);
 static LATEST_UPDATE_STATUS: Mutex<Option<String>> = Mutex::new(None);
 static PENDING_SETTINGS_DATA: Mutex<Option<SettingsSnapshot>> = Mutex::new(None);
+static LAST_SETTINGS_SNAPSHOT: Mutex<Option<SettingsSnapshot>> = Mutex::new(None);
+static SHARED_SETTINGS_CORE: OnceLock<Option<Arc<Core>>> = OnceLock::new();
 
 struct SettingsState {
     hwnd: HWND,
@@ -412,12 +416,21 @@ fn open_settings_dialog_on_target_page(
         .unwrap_or_default();
 
     let app_version = env!("CARGO_PKG_VERSION");
+    let initial_snapshot = LAST_SETTINGS_SNAPSHOT
+        .lock()
+        .ok()
+        .and_then(|g| g.clone())
+        .map(|mut snap| {
+            snap.settings = settings.clone();
+            snap
+        })
+        .or_else(|| default_data_dir().map(|dir| cached_settings_snapshot(&dir, settings.clone())));
     let initial_layout = build_layout(&LayoutInput {
         client_w: client_w_dip,
         client_h: client_h_dip,
         page: initial_page,
         settings: &settings,
-        snapshot: None,
+        snapshot: initial_snapshot.as_ref(),
         loading: true,
         app_version,
         update_status_text: &update_status_text,
@@ -440,7 +453,7 @@ fn open_settings_dialog_on_target_page(
         store,
         rt,
         settings,
-        snapshot: None,
+        snapshot: initial_snapshot,
         loading: true,
         page: initial_page,
         expanded_snoozed: None,
@@ -696,6 +709,17 @@ unsafe fn compute_initial_placement(
 
 // ---- Background Polling & Built-in Update Check ---------------------------------------------
 
+fn shared_settings_core() -> Option<Arc<Core>> {
+    SHARED_SETTINGS_CORE
+        .get_or_init(|| {
+            let data_dir = default_data_dir()?;
+            let core = Arc::new(Core::new(Store::new(data_dir, Box::new(CredentialVault))));
+            usagedeck_core::claude_logs::start_scanner(core.spend.clone());
+            Some(core)
+        })
+        .clone()
+}
+
 fn spawn_settings_poll() {
     if POLL_IN_FLIGHT.swap(true, Ordering::AcqRel) {
         return;
@@ -704,18 +728,20 @@ fn spawn_settings_poll() {
         .name("usagedeck-settings-poll".into())
         .spawn(|| {
             let snap = (|| -> Option<SettingsSnapshot> {
-                let data_dir = default_data_dir()?;
+                let core = shared_settings_core()?;
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
                     .ok()?;
-                let core = Core::new(Store::new(data_dir, Box::new(CredentialVault)));
                 Some(rt.block_on(poll_settings_snapshot(&core)))
             })();
 
             POLL_IN_FLIGHT.store(false, Ordering::Release);
 
             if let Some(snapshot) = snap {
+                if let Ok(mut last) = LAST_SETTINGS_SNAPSHOT.lock() {
+                    *last = Some(snapshot.clone());
+                }
                 if let Ok(mut slot) = PENDING_SETTINGS_DATA.lock() {
                     *slot = Some(snapshot);
                 }
@@ -2336,7 +2362,13 @@ unsafe extern "system" fn settings_wnd_proc(
             SETTINGS_HWND.store(0, Ordering::Release);
             SETTINGS_STATE.with(|cell| {
                 if let Ok(mut borrow) = cell.try_borrow_mut() {
-                    let _ = borrow.take();
+                    if let Some(st) = borrow.take() {
+                        if let Some(snap) = st.snapshot {
+                            if let Ok(mut last) = LAST_SETTINGS_SNAPSHOT.lock() {
+                                *last = Some(snap);
+                            }
+                        }
+                    }
                 }
             });
             DefWindowProcW(hwnd, msg, wparam, lparam)
