@@ -111,10 +111,6 @@ pub fn with_alpha(c: D2D1_COLOR_F, alpha_scale: f32) -> D2D1_COLOR_F {
 }
 
 impl SettingsPalette {
-    pub fn for_mode(is_dark: bool) -> Self {
-        Self::for_mode_and_skin(is_dark, active_app_skin())
-    }
-
     pub fn for_mode_and_skin(is_dark: bool, skin: AppSkin) -> Self {
         set_active_app_skin(skin);
         match (is_dark, skin) {
