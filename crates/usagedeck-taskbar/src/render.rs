@@ -275,7 +275,11 @@ fn format_meter_time(style: TaskbarMeterStyle, bar: &BarView, now_ms: i64) -> Op
             | TaskbarMeterStyle::ResetAtBelow => {
                 let h = mins / 60;
                 let m = mins % 60;
-                Some(format!("{h}:{m:02}"))
+                if m == 0 {
+                    Some(format!("{h}h"))
+                } else {
+                    Some(format!("{h}h {m}m"))
+                }
             }
         };
     }
@@ -1446,8 +1450,8 @@ impl Renderer {
             };
 
             if meter_style == TaskbarMeterStyle::PillChip {
-                // 2-tier layout: `[R] 4:33  3%` on top, thicker progress bar below.
-                let chip_w = if tag.len() <= 1 { 15.0 } else { 22.0 };
+                // 2-tier layout: `[R] 4h 33m  3%` on top, thicker progress bar below.
+                let chip_w = if tag.len() <= 1 { 14.0 } else { 20.0 };
                 let chip_rect = DipRect {
                     x: m.x,
                     y: m.y + 4.0,
@@ -1462,9 +1466,9 @@ impl Renderer {
                 self.fill_rounded(rt, chip_rect, 3.0, chip_bg)?;
                 self.draw_text(rt, tag, &self.fmt_chip, chip_rect, pal.text)?;
 
-                let pct_w = 29.0;
+                let pct_w = 27.0;
                 if let Some(ref ts) = time_text {
-                    let time_x = chip_rect.x + chip_rect.w + 4.0;
+                    let time_x = chip_rect.x + chip_rect.w + 3.0;
                     let time_w = (m.x + m.w - pct_w - time_x).max(0.0);
                     if time_w >= 14.0 {
                         self.draw_text(
@@ -2054,11 +2058,16 @@ mod tests {
 
         assert_eq!(
             format_meter_time(TaskbarMeterStyle::ClockBelow, &bar_4h33, now).as_deref(),
-            Some("4:33")
+            Some("4h 33m")
         );
         assert_eq!(
             format_meter_time(TaskbarMeterStyle::PillChip, &bar_4h33, now).as_deref(),
-            Some("4:33")
+            Some("4h 33m")
+        );
+        let bar_2h = BarView::new("fiveHour", "5h", Some(10.0), iso(120), now, false);
+        assert_eq!(
+            format_meter_time(TaskbarMeterStyle::ClockBelow, &bar_2h, now).as_deref(),
+            Some("2h")
         );
         assert_eq!(
             format_meter_time(TaskbarMeterStyle::MinimalBelow, &bar_4h33, now).as_deref(),

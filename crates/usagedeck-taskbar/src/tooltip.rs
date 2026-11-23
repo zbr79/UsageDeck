@@ -1,20 +1,17 @@
 //! Native Direct2D/DirectWrite layered hover popup window for UsageDeck.
 //!
 //! Supports two Fluent Windows 11 presentation modes without stealing focus
-//! (`WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_TRANSPARENT`):
+//! (`WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST`):
 //!
 //! 1. **Compact toast / micro-tooltip** (`show`): crisp rounded pill for status toasts
-//!    (`"Key copied"`, `"Hidden until reset"`) and flyout per-bar breakdown tooltips.
-//! 2. **Rich Fluent Hover Detail Card** (`show_provider_card`): structured multi-section
-//!    provider breakdown anchored above taskbar pills, showing full usage bars, exact local
-//!    reset timestamps, pace ticks, Fable shading, per-model breakdowns, and extra details
-//!    in the active Dark or Light theme.
+//!    (`"Key copied"`, `"Hidden until reset"`).
+//! 2. **Clean Fluent Hover Card** (`show_provider_card`): provider header with inline rate/reset
+//!    badges and top-right Settings button, plus enabled usage bars in the active Dark or Light theme.
 
 use crate::icons::IconAtlas;
 use crate::layout::DipRect;
 use crate::taskbar::{TaskbarMetrics, TaskbarTheme};
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 use usagedeck_core::view::{BarSeverity, BarView, ProviderItem, ProviderKind};
 use windows::core::{w, Result, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
@@ -32,9 +29,9 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
     DWRITE_FONT_WEIGHT, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_WEIGHT_NORMAL,
     DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
-    DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_TEXT_ALIGNMENT, DWRITE_TEXT_ALIGNMENT_CENTER,
-    DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TEXT_METRICS,
-    DWRITE_WORD_WRAPPING_NO_WRAP, DWRITE_WORD_WRAPPING_WRAP,
+    DWRITE_TEXT_ALIGNMENT, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING,
+    DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TEXT_METRICS, DWRITE_WORD_WRAPPING_NO_WRAP,
+    DWRITE_WORD_WRAPPING_WRAP,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Gdi::{
@@ -71,11 +68,10 @@ static TOOLTIP_OVER_BUTTON: AtomicBool = AtomicBool::new(false);
 static TOOLTIP_TRACKING_LEAVE: AtomicBool = AtomicBool::new(false);
 static TOOLTIP_OWNER_RAW: AtomicIsize = AtomicIsize::new(0);
 
-/// Clickable action embedded in the rich provider hover card footer.
+/// Clickable action embedded in the provider hover card.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HoverCardAction {
     OpenSettings(ProviderKind),
-    Refresh,
     HideUntilReset {
         provider: ProviderKind,
         account_id: String,
@@ -99,7 +95,7 @@ const CARD_WIDTH_DIP: f32 = 352.0;
 const CARD_MIN_WIDTH_DIP: f32 = 220.0;
 const CARD_PAD_X_DIP: f32 = 14.0;
 const CARD_PAD_Y_DIP: f32 = 12.0;
-const CARD_BOTTOM_PAD_DIP: f32 = 10.0;
+const CARD_BOTTOM_PAD_DIP: f32 = 12.0;
 const CARD_RADIUS_DIP: f32 = 10.0;
 const CARD_GAP_DIP: f32 = 8.0;
 const CARD_MARGIN_DIP: f32 = 8.0;
@@ -108,7 +104,7 @@ const HEADER_ROW_H_DIP: f32 = 24.0;
 const HEADER_ICON_DIP: f32 = 20.0;
 const HEADER_ICON_GAP_DIP: f32 = 8.0;
 const HEADER_SUB_H_DIP: f32 = 14.0;
-const HEADER_MIN_TITLE_W_DIP: f32 = 72.0;
+const HEADER_MIN_TITLE_W_DIP: f32 = 52.0;
 
 const BADGE_H_DIP: f32 = 18.0;
 const BADGE_PAD_X_DIP: f32 = 6.5;
@@ -124,18 +120,6 @@ const BAR_TRACK_H_DIP: f32 = 6.0;
 const BAR_TRACK_RADIUS_DIP: f32 = 3.0;
 const BAR_PACE_TICK_W_DIP: f32 = 1.5;
 const BAR_PACE_TICK_H_DIP: f32 = 10.0;
-const BAR_BREAKDOWN_TOP_GAP_DIP: f32 = 5.0;
-const BAR_BREAKDOWN_MIN_LINE_H_DIP: f32 = 14.0;
-const BAR_BREAKDOWN_LINE_GAP_DIP: f32 = 2.0;
-const BAR_BREAKDOWN_INDENT_DIP: f32 = 9.0;
-
-const WELL_RADIUS_DIP: f32 = 6.0;
-const WELL_PAD_X_DIP: f32 = 8.0;
-const WELL_PAD_Y_DIP: f32 = 6.0;
-const WELL_KEY_W_DIP: f32 = 72.0;
-const WELL_COL_GAP_DIP: f32 = 8.0;
-const WELL_ROW_GAP_DIP: f32 = 4.0;
-const WELL_MIN_ROW_H_DIP: f32 = 14.0;
 
 const FOOTER_DIVIDER_GAP_DIP: f32 = 7.0;
 const FOOTER_MIN_H_DIP: f32 = 24.0;
@@ -149,8 +133,6 @@ struct HoverPalette {
     card_bg: D2D1_COLOR_F,
     card_border: D2D1_COLOR_F,
     top_highlight: D2D1_COLOR_F,
-    well_bg: D2D1_COLOR_F,
-    well_border: D2D1_COLOR_F,
     text_primary: D2D1_COLOR_F,
     text_muted: D2D1_COLOR_F,
     text_caption: D2D1_COLOR_F,
@@ -173,8 +155,6 @@ impl HoverPalette {
                 card_bg: rgba(24, 25, 30, 0.97),
                 card_border: rgba(255, 255, 255, 0.14),
                 top_highlight: rgba(255, 255, 255, 0.06),
-                well_bg: rgba(255, 255, 255, 0.045),
-                well_border: rgba(255, 255, 255, 0.07),
                 text_primary: rgba(244, 244, 246, 0.98),
                 text_muted: rgba(161, 161, 170, 0.92),
                 text_caption: rgba(113, 113, 122, 0.95),
@@ -193,8 +173,6 @@ impl HoverPalette {
                 card_bg: rgba(250, 251, 253, 0.98),
                 card_border: rgba(0, 0, 0, 0.12),
                 top_highlight: rgba(255, 255, 255, 0.85),
-                well_bg: rgba(0, 0, 0, 0.032),
-                well_border: rgba(0, 0, 0, 0.06),
                 text_primary: rgba(20, 20, 24, 0.96),
                 text_muted: rgba(82, 82, 91, 0.90),
                 text_caption: rgba(113, 113, 122, 0.95),
@@ -373,7 +351,6 @@ fn pick_header_subtitle(
     title: &str,
     display_email: Option<&str>,
     subtitle: Option<&str>,
-    hover_details: &[(String, String)],
 ) -> Option<String> {
     let title_norm = title.trim();
     if let Some(email) = display_email
@@ -384,37 +361,8 @@ fn pick_header_subtitle(
     }
     subtitle
         .map(str::trim)
-        .filter(|s| {
-            !s.is_empty()
-                && !s.eq_ignore_ascii_case(title_norm)
-                && !hover_details
-                    .iter()
-                    .any(|(_, v)| v.trim().eq_ignore_ascii_case(s))
-        })
+        .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case(title_norm))
         .map(str::to_string)
-}
-
-fn now_epoch_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as i64)
-}
-
-fn format_updated_ago(updated_at_ms: i64, now_ms: i64) -> Option<String> {
-    if updated_at_ms <= 0 {
-        return None;
-    }
-    let age_sec = (now_ms - updated_at_ms).max(0) / 1000;
-    let label = if age_sec < 45 {
-        "Updated just now".to_string()
-    } else if age_sec < 3600 {
-        format!("Updated {}m ago", (age_sec + 30) / 60)
-    } else if age_sec < 86_400 {
-        format!("Updated {}h ago", age_sec / 3600)
-    } else {
-        format!("Updated {}d ago", age_sec / 86_400)
-    };
-    Some(label)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -426,12 +374,7 @@ enum FooterStyle {
     Muted,
 }
 
-fn resolve_footer(
-    item: &ProviderItem,
-    updated_at_ms: i64,
-    now_ms: i64,
-    footer_hint: Option<&str>,
-) -> (String, FooterStyle) {
+fn resolve_footer(item: &ProviderItem, footer_hint: Option<&str>) -> (String, FooterStyle) {
     if let Some(hint) = footer_hint.map(str::trim).filter(|s| !s.is_empty()) {
         let lower = hint.to_ascii_lowercase();
         let style = if hint.contains('×') || lower.contains("hide") {
@@ -448,8 +391,7 @@ fn resolve_footer(
         return ("Limit full".to_string(), FooterStyle::Exhausted);
     }
 
-    let text = format_updated_ago(updated_at_ms, now_ms).unwrap_or_default();
-    (text, FooterStyle::Muted)
+    (String::new(), FooterStyle::Muted)
 }
 
 fn make_text_format(
@@ -459,7 +401,6 @@ fn make_text_format(
     size: f32,
     align: DWRITE_TEXT_ALIGNMENT,
     wrap: bool,
-    top_align: bool,
 ) -> Result<IDWriteTextFormat> {
     let no_coll: Option<&IDWriteFontCollection> = None;
     // SAFETY: DirectWrite COM factory call with valid static strings.
@@ -474,11 +415,7 @@ fn make_text_format(
             w!("en-us"),
         )?;
         fmt.SetTextAlignment(align)?;
-        fmt.SetParagraphAlignment(if top_align {
-            DWRITE_PARAGRAPH_ALIGNMENT_NEAR
-        } else {
-            DWRITE_PARAGRAPH_ALIGNMENT_CENTER
-        })?;
+        fmt.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
         fmt.SetWordWrapping(if wrap {
             DWRITE_WORD_WRAPPING_WRAP
         } else {
@@ -678,14 +615,6 @@ struct MeasuredBar<'a> {
     label: String,
     label_w: f32,
     reset_text: Option<String>,
-    breakdown_lines: Vec<(String, f32, f32)>,
-}
-
-struct MeasuredDetail {
-    key: String,
-    value: String,
-    y: f32,
-    h: f32,
 }
 
 struct CardLayout<'a> {
@@ -699,16 +628,14 @@ struct CardLayout<'a> {
     subtitle: Option<(String, DipRect)>,
     badges: Vec<HeaderBadge>,
     bars: Vec<MeasuredBar<'a>>,
-    well_rect: Option<DipRect>,
-    details: Vec<MeasuredDetail>,
-    divider_y: f32,
+    divider_y: Option<f32>,
     footer_text: String,
     footer_style: FooterStyle,
     footer_rect: DipRect,
     buttons: Vec<HoverCardButton>,
 }
 
-/// Native Win32/Direct2D hover popup anchored above taskbar pills and flyout bars.
+/// Native Win32/Direct2D hover popup anchored above taskbar pills.
 pub struct TooltipWindow {
     hwnd: HWND,
     d2d: ID2D1Factory,
@@ -721,9 +648,6 @@ pub struct TooltipWindow {
     fmt_bar_label: IDWriteTextFormat,
     fmt_bar_reset: IDWriteTextFormat,
     fmt_bar_pct: IDWriteTextFormat,
-    fmt_breakdown: IDWriteTextFormat,
-    fmt_detail_key: IDWriteTextFormat,
-    fmt_detail_val: IDWriteTextFormat,
     fmt_footer: IDWriteTextFormat,
     fmt_footer_bold: IDWriteTextFormat,
     fmt_button: IDWriteTextFormat,
@@ -750,7 +674,6 @@ impl TooltipWindow {
                 11.5,
                 DWRITE_TEXT_ALIGNMENT_LEADING,
                 true,
-                false,
             )?;
             let fmt_icon_fallback = make_text_format(
                 &dwrite,
@@ -758,7 +681,6 @@ impl TooltipWindow {
                 DWRITE_FONT_WEIGHT_BOLD,
                 11.5,
                 DWRITE_TEXT_ALIGNMENT_CENTER,
-                false,
                 false,
             )?;
             let fmt_title = make_text_format(
@@ -768,7 +690,6 @@ impl TooltipWindow {
                 13.0,
                 DWRITE_TEXT_ALIGNMENT_LEADING,
                 false,
-                false,
             )?;
             let fmt_subtitle = make_text_format(
                 &dwrite,
@@ -776,7 +697,6 @@ impl TooltipWindow {
                 DWRITE_FONT_WEIGHT_NORMAL,
                 10.0,
                 DWRITE_TEXT_ALIGNMENT_LEADING,
-                false,
                 false,
             )?;
             let fmt_badge = make_text_format(
@@ -786,7 +706,6 @@ impl TooltipWindow {
                 9.5,
                 DWRITE_TEXT_ALIGNMENT_CENTER,
                 false,
-                false,
             )?;
             let fmt_bar_label = make_text_format(
                 &dwrite,
@@ -794,7 +713,6 @@ impl TooltipWindow {
                 DWRITE_FONT_WEIGHT_SEMI_BOLD,
                 11.0,
                 DWRITE_TEXT_ALIGNMENT_LEADING,
-                false,
                 false,
             )?;
             let fmt_bar_reset = make_text_format(
@@ -804,7 +722,6 @@ impl TooltipWindow {
                 10.0,
                 DWRITE_TEXT_ALIGNMENT_TRAILING,
                 false,
-                false,
             )?;
             let fmt_bar_pct = make_text_format(
                 &dwrite,
@@ -813,34 +730,6 @@ impl TooltipWindow {
                 11.5,
                 DWRITE_TEXT_ALIGNMENT_TRAILING,
                 false,
-                false,
-            )?;
-            let fmt_breakdown = make_text_format(
-                &dwrite,
-                w!("Segoe UI"),
-                DWRITE_FONT_WEIGHT_NORMAL,
-                10.0,
-                DWRITE_TEXT_ALIGNMENT_LEADING,
-                true,
-                true,
-            )?;
-            let fmt_detail_key = make_text_format(
-                &dwrite,
-                w!("Segoe UI"),
-                DWRITE_FONT_WEIGHT_SEMI_BOLD,
-                10.0,
-                DWRITE_TEXT_ALIGNMENT_LEADING,
-                true,
-                true,
-            )?;
-            let fmt_detail_val = make_text_format(
-                &dwrite,
-                w!("Segoe UI"),
-                DWRITE_FONT_WEIGHT_NORMAL,
-                10.0,
-                DWRITE_TEXT_ALIGNMENT_LEADING,
-                true,
-                true,
             )?;
             let fmt_footer = make_text_format(
                 &dwrite,
@@ -848,7 +737,6 @@ impl TooltipWindow {
                 DWRITE_FONT_WEIGHT_NORMAL,
                 10.0,
                 DWRITE_TEXT_ALIGNMENT_LEADING,
-                false,
                 false,
             )?;
             let fmt_footer_bold = make_text_format(
@@ -858,7 +746,6 @@ impl TooltipWindow {
                 10.0,
                 DWRITE_TEXT_ALIGNMENT_LEADING,
                 false,
-                false,
             )?;
             let fmt_button = make_text_format(
                 &dwrite,
@@ -866,7 +753,6 @@ impl TooltipWindow {
                 DWRITE_FONT_WEIGHT_SEMI_BOLD,
                 10.5,
                 DWRITE_TEXT_ALIGNMENT_CENTER,
-                false,
                 false,
             )?;
 
@@ -908,9 +794,6 @@ impl TooltipWindow {
                 fmt_bar_label,
                 fmt_bar_reset,
                 fmt_bar_pct,
-                fmt_breakdown,
-                fmt_detail_key,
-                fmt_detail_val,
                 fmt_footer,
                 fmt_footer_bold,
                 fmt_button,
@@ -938,7 +821,7 @@ impl TooltipWindow {
         }
     }
 
-    /// Hit-test interactive footer buttons using client physical coordinates from `WM_MOUSEMOVE`/`WM_LBUTTONUP`.
+    /// Hit-test interactive hover card buttons using client physical coordinates from `WM_MOUSEMOVE`/`WM_LBUTTONUP`.
     pub fn hit_test_button_px(&self, x_px: f32, y_px: f32) -> Option<HoverCardAction> {
         let scale = self.card_scale.max(0.5);
         let dx = x_px / scale;
@@ -949,7 +832,7 @@ impl TooltipWindow {
             .map(|btn| btn.action.clone())
     }
 
-    /// Update hovered footer button state. Returns `true` if visual hover state changed.
+    /// Update hovered button state. Returns `true` if visual hover state changed.
     pub fn set_hovered_button(&mut self, next: Option<HoverCardAction>) -> bool {
         TOOLTIP_OVER_BUTTON.store(next.is_some(), Ordering::Release);
         if self.hovered_button != next {
@@ -1002,7 +885,7 @@ impl TooltipWindow {
         self.reveal_topmost();
     }
 
-    /// Show or update the interactive Windows 11 Fluent Hover Detail Card for `item` anchored cleanly
+    /// Show or update the interactive Windows 11 Fluent Hover Card for `item` anchored cleanly
     /// above `anchor_rect_px` (physical screen pixels) in the active `theme`.
     #[allow(clippy::too_many_arguments)]
     pub fn show_provider_card(
@@ -1012,13 +895,11 @@ impl TooltipWindow {
         anchor_rect_px: RECT,
         metrics: &TaskbarMetrics,
         theme: TaskbarTheme,
-        updated_at_ms: i64,
         footer_hint: Option<&str>,
     ) {
         let anchor_cx = (anchor_rect_px.left + anchor_rect_px.right) / 2;
         let anchor_top = anchor_rect_px.top.min(metrics.tray_rect.top);
-        let now_ms = now_epoch_ms();
-        let (footer_text, footer_style) = resolve_footer(item, updated_at_ms, now_ms, footer_hint);
+        let (footer_text, footer_style) = resolve_footer(item, footer_hint);
 
         let key = TooltipCacheKey::ProviderCard {
             item: Box::new(item.clone()),
@@ -1356,7 +1237,25 @@ impl TooltipWindow {
         };
         let title_x = content_x + HEADER_ICON_DIP + HEADER_ICON_GAP_DIP;
 
-        // Collect right-aligned header badges in display order (left -> right).
+        // Top-right Settings button.
+        let (settings_tw, _) =
+            self.measure_text("Settings", &self.fmt_button, 120.0, FOOTER_BTN_H_DIP)?;
+        let settings_bw = (settings_tw.ceil() + FOOTER_BTN_PAD_X_DIP * 2.0).max(58.0);
+        let settings_btn = HoverCardButton {
+            label: "Settings".to_string(),
+            rect: DipRect {
+                x: content_x + content_w - settings_bw,
+                y: header_y + (HEADER_ROW_H_DIP - FOOTER_BTN_H_DIP) * 0.5,
+                w: settings_bw,
+                h: FOOTER_BTN_H_DIP,
+            },
+            action: HoverCardAction::OpenSettings(item.provider),
+            tone: HoverButtonTone::Accent,
+        };
+        let header_right_limit = settings_btn.rect.x - 8.0;
+
+        // Collect inline header badges placed directly to the right of the provider name:
+        // price/spend rate -> reset badge -> status badge.
         let mut badge_specs: Vec<BadgeSpec> = Vec::new();
         if let Some(rate) = item
             .spend_rate_text
@@ -1418,20 +1317,46 @@ impl TooltipWindow {
             });
         }
 
-        let mut badges: Vec<HeaderBadge> = Vec::with_capacity(badge_specs.len());
-        let mut right_edge = content_x + content_w;
-        let badge_y = header_y + (HEADER_ROW_H_DIP - BADGE_H_DIP) * 0.5;
-        for spec in badge_specs.into_iter().rev() {
+        let mut measured_specs: Vec<(BadgeSpec, f32)> = Vec::with_capacity(badge_specs.len());
+        for spec in badge_specs {
             let (tw, _) = self.measure_text(&spec.text, &self.fmt_badge, 140.0, BADGE_H_DIP)?;
             let bw = (tw.ceil() + BADGE_PAD_X_DIP * 2.0).max(26.0);
-            let bx = right_edge - bw;
-            if bx < title_x + HEADER_MIN_TITLE_W_DIP + 6.0 {
-                continue;
+            measured_specs.push((spec, bw));
+        }
+        let total_badges_w: f32 = measured_specs
+            .iter()
+            .enumerate()
+            .map(|(i, (_, bw))| bw + if i > 0 { BADGE_GAP_DIP } else { 0.0 })
+            .sum();
+
+        let avail_left_w = (header_right_limit - title_x).max(HEADER_MIN_TITLE_W_DIP);
+        let max_title_w = if total_badges_w > 0.0 {
+            (avail_left_w - total_badges_w - 6.0).max(HEADER_MIN_TITLE_W_DIP)
+        } else {
+            avail_left_w
+        };
+        let title_text = self.truncate_to_width(&item.title, &self.fmt_title, max_title_w);
+        let (actual_tw, _) =
+            self.measure_text(&title_text, &self.fmt_title, max_title_w, HEADER_ROW_H_DIP)?;
+        let title_w = (actual_tw.ceil() + 2.0).min(max_title_w);
+        let title_rect = DipRect {
+            x: title_x,
+            y: header_y,
+            w: title_w,
+            h: HEADER_ROW_H_DIP,
+        };
+
+        let mut badges: Vec<HeaderBadge> = Vec::with_capacity(measured_specs.len());
+        let badge_y = header_y + (HEADER_ROW_H_DIP - BADGE_H_DIP) * 0.5;
+        let mut badge_x = title_x + title_w + 6.0;
+        for (spec, bw) in measured_specs {
+            if badge_x + bw > header_right_limit + 1.0 {
+                break;
             }
             badges.push(HeaderBadge {
                 text: spec.text,
                 rect: DipRect {
-                    x: bx,
+                    x: badge_x,
                     y: badge_y,
                     w: bw,
                     h: BADGE_H_DIP,
@@ -1440,93 +1365,36 @@ impl TooltipWindow {
                 border: spec.border,
                 fg: spec.fg,
             });
-            right_edge = bx - BADGE_GAP_DIP;
+            badge_x += bw + BADGE_GAP_DIP;
         }
-        badges.reverse();
 
-        let avail_title_w = if badges.is_empty() {
-            (content_x + content_w - title_x).max(40.0)
-        } else {
-            (badges[0].rect.x - title_x - 6.0).max(40.0)
-        };
-
+        // Optional subtitle below header (email only when show_provider_names is false, or re-auth).
         let raw_sub = pick_header_subtitle(
             &item.title,
             item.display_email.as_deref(),
             item.subtitle.as_deref(),
-            &item.hover_details,
         );
-        let (raw_title_w, _) =
-            self.measure_text(&item.title, &self.fmt_title, 400.0, HEADER_ROW_H_DIP)?;
-
-        let (title_text, title_rect, subtitle, mut cursor_y) = if let Some(sub) = raw_sub {
-            let (raw_sub_w, _) =
-                self.measure_text(&sub, &self.fmt_subtitle, 400.0, HEADER_ROW_H_DIP)?;
-            let inline_title_w = raw_title_w.ceil() + 2.0;
-            if inline_title_w + 6.0 + raw_sub_w.ceil() <= avail_title_w {
-                let sub_x = title_x + inline_title_w + 6.0;
-                let sub_w = (avail_title_w - inline_title_w - 6.0).max(0.0);
-                (
-                    item.title.clone(),
-                    DipRect {
-                        x: title_x,
-                        y: header_y,
-                        w: inline_title_w,
-                        h: HEADER_ROW_H_DIP,
-                    },
-                    Some((
-                        sub,
-                        DipRect {
-                            x: sub_x,
-                            y: header_y + 1.0,
-                            w: sub_w,
-                            h: HEADER_ROW_H_DIP,
-                        },
-                    )),
-                    header_y + HEADER_ROW_H_DIP,
-                )
-            } else {
-                let trunc_title =
-                    self.truncate_to_width(&item.title, &self.fmt_title, avail_title_w);
-                let sub_max_w = (content_x + content_w - title_x).max(40.0);
-                let trunc_sub = self.truncate_to_width(&sub, &self.fmt_subtitle, sub_max_w);
-                let sub_y = header_y + HEADER_ROW_H_DIP - 2.0;
-                (
-                    trunc_title,
-                    DipRect {
-                        x: title_x,
-                        y: header_y,
-                        w: avail_title_w,
-                        h: HEADER_ROW_H_DIP,
-                    },
-                    Some((
-                        trunc_sub,
-                        DipRect {
-                            x: title_x,
-                            y: sub_y,
-                            w: sub_max_w,
-                            h: HEADER_SUB_H_DIP,
-                        },
-                    )),
-                    sub_y + HEADER_SUB_H_DIP,
-                )
-            }
-        } else {
-            let trunc_title = self.truncate_to_width(&item.title, &self.fmt_title, avail_title_w);
+        let (subtitle, mut cursor_y) = if let Some(sub) = raw_sub {
+            let sub_max_w = (header_right_limit - title_x).max(40.0);
+            let trunc_sub = self.truncate_to_width(&sub, &self.fmt_subtitle, sub_max_w);
+            let sub_y = header_y + HEADER_ROW_H_DIP - 1.0;
             (
-                trunc_title,
-                DipRect {
-                    x: title_x,
-                    y: header_y,
-                    w: avail_title_w,
-                    h: HEADER_ROW_H_DIP,
-                },
-                None,
-                header_y + HEADER_ROW_H_DIP,
+                Some((
+                    trunc_sub,
+                    DipRect {
+                        x: title_x,
+                        y: sub_y,
+                        w: sub_max_w,
+                        h: HEADER_SUB_H_DIP,
+                    },
+                )),
+                sub_y + HEADER_SUB_H_DIP,
             )
+        } else {
+            (None, header_y + HEADER_ROW_H_DIP)
         };
 
-        // Usage Bars section.
+        // Usage Bars section (already filtered by settings.hidden_bars; no per-model splits).
         let active_bars = if !item.hover_bars.is_empty() {
             &item.hover_bars
         } else {
@@ -1536,7 +1404,6 @@ impl TooltipWindow {
         if !active_bars.is_empty() {
             cursor_y += SECTION_GAP_DIP;
             let usable_meta_w = (content_w - BAR_PCT_W_DIP - 6.0).max(60.0);
-            let breakdown_max_w = (content_w - BAR_BREAKDOWN_INDENT_DIP).max(60.0);
 
             for (idx, bar) in active_bars.iter().enumerate() {
                 if idx > 0 {
@@ -1567,91 +1434,22 @@ impl TooltipWindow {
 
                 cursor_y += BAR_META_H_DIP + BAR_TRACK_GAP_DIP + BAR_TRACK_H_DIP;
 
-                let mut breakdown_lines: Vec<(String, f32, f32)> = Vec::new();
-                let non_empty_lines: Vec<&str> = bar
-                    .tooltip_lines
-                    .iter()
-                    .map(String::as_str)
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .collect();
-                if !non_empty_lines.is_empty() {
-                    cursor_y += BAR_BREAKDOWN_TOP_GAP_DIP;
-                    for (line_idx, line) in non_empty_lines.into_iter().enumerate() {
-                        if line_idx > 0 {
-                            cursor_y += BAR_BREAKDOWN_LINE_GAP_DIP;
-                        }
-                        let (_, lh) =
-                            self.measure_text(line, &self.fmt_breakdown, breakdown_max_w, 60.0)?;
-                        let line_h = lh.ceil().max(BAR_BREAKDOWN_MIN_LINE_H_DIP);
-                        breakdown_lines.push((line.to_string(), cursor_y, line_h));
-                        cursor_y += line_h;
-                    }
-                }
-
                 bars.push(MeasuredBar {
                     bar,
                     y: bar_y,
                     label,
                     label_w,
                     reset_text,
-                    breakdown_lines,
                 });
             }
         }
 
-        // Extra Details Well (`item.hover_details`).
-        let mut details: Vec<MeasuredDetail> = Vec::new();
-        let mut well_rect: Option<DipRect> = None;
-        let valid_details: Vec<(&str, &str)> = item
-            .hover_details
-            .iter()
-            .map(|(k, v)| (k.trim(), v.trim()))
-            .filter(|(k, v)| !k.is_empty() || !v.is_empty())
-            .collect();
-        if !valid_details.is_empty() {
-            cursor_y += SECTION_GAP_DIP;
-            let well_top = cursor_y;
-            let mut row_y = well_top + WELL_PAD_Y_DIP;
-            let val_w =
-                (content_w - WELL_PAD_X_DIP * 2.0 - WELL_KEY_W_DIP - WELL_COL_GAP_DIP).max(60.0);
-
-            for (idx, (k, v)) in valid_details.into_iter().enumerate() {
-                if idx > 0 {
-                    row_y += WELL_ROW_GAP_DIP;
-                }
-                let (_, kh) = self.measure_text(k, &self.fmt_detail_key, WELL_KEY_W_DIP, 48.0)?;
-                let (_, vh) = self.measure_text(v, &self.fmt_detail_val, val_w, 120.0)?;
-                let row_h = kh.max(vh).ceil().max(WELL_MIN_ROW_H_DIP);
-                details.push(MeasuredDetail {
-                    key: k.to_string(),
-                    value: v.to_string(),
-                    y: row_y,
-                    h: row_h,
-                });
-                row_y += row_h;
-            }
-
-            let well_h = (row_y + WELL_PAD_Y_DIP) - well_top;
-            well_rect = Some(DipRect {
-                x: content_x,
-                y: well_top,
-                w: content_w,
-                h: well_h,
-            });
-            cursor_y = well_top + well_h;
-        }
-
-        // Footer Row (1px divider hairline + left status caption + right-aligned action buttons).
-        cursor_y += SECTION_GAP_DIP;
-        let divider_y = cursor_y;
-        cursor_y += 1.0 + FOOTER_DIVIDER_GAP_DIP;
-        let footer_h = FOOTER_MIN_H_DIP.max(FOOTER_BTN_H_DIP);
-
-        let mut btn_specs: Vec<(String, HoverCardAction, HoverButtonTone)> = Vec::with_capacity(3);
+        // Contextual footer row (only shown when a contextual action or hint is present).
+        let mut buttons: Vec<HoverCardButton> = vec![settings_btn];
+        let mut footer_btn_specs: Vec<(String, HoverCardAction, HoverButtonTone)> = Vec::new();
         if item.exhausted {
             if let Some(until_ms) = item.exhausted_until_ms {
-                btn_specs.push((
+                footer_btn_specs.push((
                     "Hide".to_string(),
                     HoverCardAction::HideUntilReset {
                         provider: item.provider,
@@ -1663,72 +1461,73 @@ impl TooltipWindow {
                 ));
             }
         } else if item.provider == ProviderKind::OpenCode {
-            btn_specs.push((
+            footer_btn_specs.push((
                 "Copy key".to_string(),
                 HoverCardAction::CopyOpenCodeKey(item.account_id.clone()),
                 HoverButtonTone::Neutral,
             ));
         } else if item.provider == ProviderKind::Cursor && item.can_open_cursor {
-            btn_specs.push((
+            footer_btn_specs.push((
                 "Sign in".to_string(),
                 HoverCardAction::OpenCursor,
                 HoverButtonTone::Warn,
             ));
         }
-        btn_specs.push((
-            "Refresh".to_string(),
-            HoverCardAction::Refresh,
-            HoverButtonTone::Neutral,
-        ));
-        btn_specs.push((
-            "Settings".to_string(),
-            HoverCardAction::OpenSettings(item.provider),
-            HoverButtonTone::Accent,
-        ));
 
-        let mut buttons: Vec<HoverCardButton> = Vec::with_capacity(btn_specs.len());
-        let mut btn_right = content_x + content_w;
-        let btn_y = cursor_y + (footer_h - FOOTER_BTN_H_DIP) * 0.5;
-        for (label, action, tone) in btn_specs.into_iter().rev() {
-            let (tw, _) = self.measure_text(&label, &self.fmt_button, 120.0, FOOTER_BTN_H_DIP)?;
-            let bw = (tw.ceil() + FOOTER_BTN_PAD_X_DIP * 2.0).max(46.0);
-            let bx = btn_right - bw;
-            if bx < content_x + 4.0 && !buttons.is_empty() {
-                continue;
-            }
-            buttons.push(HoverCardButton {
-                label,
-                rect: DipRect {
-                    x: bx,
-                    y: btn_y,
-                    w: bw,
-                    h: FOOTER_BTN_H_DIP,
-                },
-                action,
-                tone,
-            });
-            btn_right = bx - FOOTER_BTN_GAP_DIP;
-        }
-        buttons.reverse();
+        let (divider_y, footer_text, footer_rect) =
+            if !footer_btn_specs.is_empty() || !footer_text.is_empty() {
+                cursor_y += SECTION_GAP_DIP;
+                let div_y = cursor_y;
+                cursor_y += 1.0 + FOOTER_DIVIDER_GAP_DIP;
+                let footer_h = FOOTER_MIN_H_DIP.max(FOOTER_BTN_H_DIP);
 
-        let footer_avail_w = (btn_right - content_x).max(0.0);
-        let footer_fmt = if footer_style == FooterStyle::Muted {
-            &self.fmt_footer
-        } else {
-            &self.fmt_footer_bold
-        };
-        let footer_text = if footer_avail_w >= 28.0 && !footer_text.is_empty() {
-            self.truncate_to_width(&footer_text, footer_fmt, footer_avail_w)
-        } else {
-            String::new()
-        };
-        let footer_rect = DipRect {
-            x: content_x,
-            y: cursor_y,
-            w: footer_avail_w,
-            h: footer_h,
-        };
-        cursor_y += footer_h;
+                let mut footer_buttons: Vec<HoverCardButton> =
+                    Vec::with_capacity(footer_btn_specs.len());
+                let mut btn_right = content_x + content_w;
+                let btn_y = cursor_y + (footer_h - FOOTER_BTN_H_DIP) * 0.5;
+                for (label, action, tone) in footer_btn_specs.into_iter().rev() {
+                    let (tw, _) =
+                        self.measure_text(&label, &self.fmt_button, 120.0, FOOTER_BTN_H_DIP)?;
+                    let bw = (tw.ceil() + FOOTER_BTN_PAD_X_DIP * 2.0).max(46.0);
+                    let bx = btn_right - bw;
+                    footer_buttons.push(HoverCardButton {
+                        label,
+                        rect: DipRect {
+                            x: bx,
+                            y: btn_y,
+                            w: bw,
+                            h: FOOTER_BTN_H_DIP,
+                        },
+                        action,
+                        tone,
+                    });
+                    btn_right = bx - FOOTER_BTN_GAP_DIP;
+                }
+                footer_buttons.reverse();
+                buttons.extend(footer_buttons);
+
+                let footer_avail_w = (btn_right - content_x).max(0.0);
+                let footer_fmt = if footer_style == FooterStyle::Muted {
+                    &self.fmt_footer
+                } else {
+                    &self.fmt_footer_bold
+                };
+                let trunc_footer = if footer_avail_w >= 28.0 && !footer_text.is_empty() {
+                    self.truncate_to_width(&footer_text, footer_fmt, footer_avail_w)
+                } else {
+                    String::new()
+                };
+                let frect = DipRect {
+                    x: content_x,
+                    y: cursor_y,
+                    w: footer_avail_w,
+                    h: footer_h,
+                };
+                cursor_y += footer_h;
+                (Some(div_y), trunc_footer, frect)
+            } else {
+                (None, String::new(), DipRect::default())
+            };
 
         let card_h_dip = cursor_y + CARD_BOTTOM_PAD_DIP;
 
@@ -1743,8 +1542,6 @@ impl TooltipWindow {
             subtitle,
             badges,
             bars,
-            well_rect,
-            details,
             divider_y,
             footer_text,
             footer_style,
@@ -1890,96 +1687,22 @@ impl TooltipWindow {
                     h: BAR_TRACK_H_DIP,
                 };
                 draw_card_bar_track(rt, track_rect, mb.bar, theme, pal)?;
-
-                // Per-model breakdown lines beneath the bar.
-                let text_x = layout.content_x + BAR_BREAKDOWN_INDENT_DIP;
-                let text_w = (layout.content_w - BAR_BREAKDOWN_INDENT_DIP).max(40.0);
-                for (line, line_y, line_h) in &mb.breakdown_lines {
-                    fill_rounded(
-                        rt,
-                        DipRect {
-                            x: layout.content_x + 2.0,
-                            y: line_y + 5.5,
-                            w: 3.0,
-                            h: 3.0,
-                        },
-                        1.5,
-                        pal.text_caption,
-                    )?;
-                    draw_text(
-                        rt,
-                        line,
-                        &self.fmt_breakdown,
-                        DipRect {
-                            x: text_x,
-                            y: *line_y,
-                            w: text_w,
-                            h: *line_h,
-                        },
-                        pal.text_muted,
-                    )?;
-                }
             }
 
-            // 3. Extra Details Well.
-            if let Some(well) = layout.well_rect {
-                fill_rounded(rt, well, WELL_RADIUS_DIP, pal.well_bg)?;
-                stroke_rounded(
+            // 3. Optional Footer Row: 1px horizontal divider hairline + left status caption.
+            if let Some(div_y) = layout.divider_y {
+                fill_rounded(
                     rt,
                     DipRect {
-                        x: well.x + 0.5,
-                        y: well.y + 0.5,
-                        w: (well.w - 1.0).max(1.0),
-                        h: (well.h - 1.0).max(1.0),
+                        x: layout.content_x,
+                        y: div_y,
+                        w: layout.content_w,
+                        h: 1.0,
                     },
-                    WELL_RADIUS_DIP,
-                    1.0,
-                    pal.well_border,
+                    0.5,
+                    pal.divider,
                 )?;
-
-                let key_x = well.x + WELL_PAD_X_DIP;
-                let val_x = key_x + WELL_KEY_W_DIP + WELL_COL_GAP_DIP;
-                let val_w = (well.x + well.w - WELL_PAD_X_DIP - val_x).max(40.0);
-                for row in &layout.details {
-                    draw_text(
-                        rt,
-                        &row.key,
-                        &self.fmt_detail_key,
-                        DipRect {
-                            x: key_x,
-                            y: row.y,
-                            w: WELL_KEY_W_DIP,
-                            h: row.h,
-                        },
-                        pal.text_muted,
-                    )?;
-                    draw_text(
-                        rt,
-                        &row.value,
-                        &self.fmt_detail_val,
-                        DipRect {
-                            x: val_x,
-                            y: row.y,
-                            w: val_w,
-                            h: row.h,
-                        },
-                        pal.text_primary,
-                    )?;
-                }
             }
-
-            // 4. Footer Row: 1px horizontal divider hairline + left status + clickable buttons.
-            fill_rounded(
-                rt,
-                DipRect {
-                    x: layout.content_x,
-                    y: layout.divider_y,
-                    w: layout.content_w,
-                    h: 1.0,
-                },
-                0.5,
-                pal.divider,
-            )?;
 
             if !layout.footer_text.is_empty() && layout.footer_rect.w >= 28.0 {
                 let (footer_fmt, footer_color) = match layout.footer_style {
@@ -2217,39 +1940,15 @@ mod tests {
     }
 
     #[test]
-    fn format_updated_ago_covers_scales() {
-        assert_eq!(format_updated_ago(0, 100_000), None);
+    fn pick_header_subtitle_prefers_distinct_email_and_hides_when_absent() {
         assert_eq!(
-            format_updated_ago(100_000, 120_000).as_deref(),
-            Some("Updated just now")
-        );
-        assert_eq!(
-            format_updated_ago(100_000, 145_000).as_deref(),
-            Some("Updated 1m ago")
-        );
-        assert_eq!(
-            format_updated_ago(100_000, 100_000 + 7_200_000).as_deref(),
-            Some("Updated 2h ago")
-        );
-        assert_eq!(
-            format_updated_ago(100_000, 100_000 + 172_800_000).as_deref(),
-            Some("Updated 2d ago")
-        );
-    }
-
-    #[test]
-    fn pick_header_subtitle_prefers_distinct_email_and_avoids_redundant_details() {
-        let details = vec![("Plan".to_string(), "Pro".to_string())];
-        assert_eq!(
-            pick_header_subtitle("Claude", Some("a@b.com"), Some("Pro"), &details).as_deref(),
+            pick_header_subtitle("Claude", Some("a@b.com"), None).as_deref(),
             Some("a@b.com")
         );
+        assert_eq!(pick_header_subtitle("Claude", None, None), None);
+        assert_eq!(pick_header_subtitle("a@b.com", Some("a@b.com"), None), None);
         assert_eq!(
-            pick_header_subtitle("a@b.com", Some("a@b.com"), Some("Pro"), &details),
-            None
-        );
-        assert_eq!(
-            pick_header_subtitle("Cursor", None, Some("re-auth"), &details).as_deref(),
+            pick_header_subtitle("Cursor", None, Some("re-auth")).as_deref(),
             Some("re-auth")
         );
     }

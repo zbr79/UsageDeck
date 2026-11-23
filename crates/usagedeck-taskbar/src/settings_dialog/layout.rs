@@ -1124,8 +1124,8 @@ fn build_style_page(b: &mut ContentBuilder, input: &LayoutInput<'_>) {
     let styles: [(TaskbarMeterStyle, &'static str, &'static str); 4] = [
         (
             TaskbarMeterStyle::ClockBelow,
-            "Digital clock",
-            "R / W / M + % on top, bar in the middle, crisp 4:33 · 5d countdown underneath.",
+            "Hours & minutes",
+            "R / W / M + % on top, bar in the middle, clear 4h 33m · 5d countdown underneath.",
         ),
         (
             TaskbarMeterStyle::MinimalBelow,
@@ -1140,7 +1140,7 @@ fn build_style_page(b: &mut ContentBuilder, input: &LayoutInput<'_>) {
         (
             TaskbarMeterStyle::PillChip,
             "Compact pill chip",
-            "2-tier layout with a subtle [R] badge + 4:33 beside % and a thicker bar below.",
+            "2-tier layout with a subtle [R] badge + 4h 33m beside % and a thicker bar below.",
         ),
     ];
 

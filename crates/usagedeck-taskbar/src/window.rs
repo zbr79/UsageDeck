@@ -16,7 +16,7 @@ use crate::layout::{compute_strip_layout, exhausted_until_ms, PillStyle, StripLa
 use crate::poller::{PollerCmd, SharedSnapshot, WM_APP_SNAPSHOT};
 use crate::render::{compute_update_flash_frame, Renderer};
 use crate::settings_dialog;
-use crate::taskbar::{query_taskbar, TaskbarMetrics, TaskbarTheme};
+use crate::taskbar::{query_taskbar, StableStripAnchor, TaskbarMetrics, TaskbarTheme};
 use crate::tooltip::{
     pill_screen_rect_px, HoverCardAction, TooltipWindow, WM_APP_HOVER_CARD_CLICK,
     WM_APP_HOVER_CARD_LEAVE, WM_APP_HOVER_CARD_MOVE,
@@ -98,6 +98,7 @@ struct AppState {
     strip_hwnd: HWND,
     tray_icon: HICON,
     metrics: Option<TaskbarMetrics>,
+    strip_anchor: StableStripAnchor,
     strip_layout: Option<StripLayout>,
     strip_pos: (i32, i32, i32, i32),
     strip_hovered: bool,
@@ -304,14 +305,6 @@ fn open_settings_on_page_ui(provider: Option<ProviderKind>) {
     );
 }
 
-fn request_refresh_ui() {
-    try_with_state(|state| {
-        if let Some(ref tx) = state.poller_tx {
-            let _ = tx.send(PollerCmd::RefreshNow);
-        }
-    });
-}
-
 fn open_cursor_and_watch_ui() {
     let strip_hwnd_raw = try_with_state(|s| s.strip_hwnd.0 as isize).unwrap_or(0);
     match usagedeck_core::providers::cursor::open_cursor() {
@@ -512,7 +505,6 @@ fn update_active_tooltip(state: &mut AppState) {
             anchor,
             &metrics,
             theme,
-            snapshot.updated_at_ms,
             footer_hint.as_deref(),
         );
     }
@@ -583,13 +575,14 @@ fn sync_and_paint_strip_ui() {
             return StripWindowOp::None;
         }
 
-        let layout = compute_strip_layout(&snapshot, metrics.available_width_dip, loading);
+        let (stable_right_px, stable_avail_dip) = state.strip_anchor.resolve(&metrics);
+        let layout = compute_strip_layout(&snapshot, stable_avail_dip, loading);
         if matches!(layout.mode, StripMode::Hidden) {
             log_status_if_changed(
                 state,
                 format!(
                     "hidden (insufficient width: {:.0} DIP, dpi={}, tray={}..{}, notify={}..{})",
-                    metrics.available_width_dip,
+                    stable_avail_dip,
                     metrics.dpi,
                     metrics.tray_rect.left,
                     metrics.tray_rect.right,
@@ -608,7 +601,7 @@ fn sync_and_paint_strip_ui() {
 
         let width_px = (layout.width_dip * metrics.scale).ceil() as i32;
         let height_px = (layout.height_dip * metrics.scale).ceil() as i32;
-        let (x, y) = metrics.strip_origin_px(width_px, height_px);
+        let (x, y) = metrics.strip_origin_for_right_px(stable_right_px, width_px, height_px);
         state.strip_pos = (x, y, width_px, height_px);
 
         let mode_label = match &layout.mode {
@@ -1084,9 +1077,6 @@ unsafe extern "system" fn strip_wnd_proc(
                         open_settings_on_page_ui(Some(provider));
                         sync_and_paint_strip_ui();
                     }
-                    HoverCardAction::Refresh => {
-                        request_refresh_ui();
-                    }
                     HoverCardAction::HideUntilReset {
                         provider,
                         account_id,
@@ -1355,6 +1345,7 @@ pub fn run_ui(
                 strip_hwnd,
                 tray_icon,
                 metrics: None,
+                strip_anchor: StableStripAnchor::default(),
                 strip_layout: None,
                 strip_pos: (0, 0, 0, 0),
                 strip_hovered: false,
