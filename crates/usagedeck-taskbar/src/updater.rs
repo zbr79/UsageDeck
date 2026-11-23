@@ -30,12 +30,12 @@ pub const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/zbr79/UsageDe
 /// GitHub's API rejects requests without a User-Agent.
 const USER_AGENT: &str = "UsageDeck-updater";
 
-const FIRST_CHECK: Duration = Duration::from_secs(15);
-const CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
+const FIRST_CHECK: Duration = Duration::from_secs(8);
+const CHECK_INTERVAL: Duration = Duration::from_secs(2 * 60);
 const API_TIMEOUT: Duration = Duration::from_secs(30);
 const DOWNLOAD_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
-const AUTO_INSTALL_POLL: Duration = Duration::from_secs(30);
+const AUTO_INSTALL_POLL: Duration = Duration::from_secs(5);
 
 /// Silent NSIS flags: `/S` silent mode (closes running UsageDeck without prompting), `/R`
 /// relaunches the app after install, `/UPDATE` preserves API keys and the Run entry.
@@ -78,6 +78,7 @@ enum UpdaterCmd {
 struct UpdaterInner {
     machine: Mutex<Machine>,
     auto_install: Mutex<Option<AutoInstall>>,
+    last_etag: Mutex<Option<String>>,
     pause_auto_install: Arc<AtomicBool>,
     installing: AtomicBool,
     current_version: Version,
@@ -223,6 +224,19 @@ impl UpdaterHandle {
         self.inner.status()
     }
 
+    /// Version string of a downloaded, verified update waiting to install, if any.
+    pub fn ready_version(&self) -> Option<String> {
+        self.inner
+            .lock_machine()
+            .ready_version()
+            .map(str::to_string)
+    }
+
+    /// Launch the downloaded verified update installer immediately and exit for restart.
+    pub fn install_now(&self) -> Result<(), String> {
+        self.inner.install_now()
+    }
+
     /// Pause or resume automatic installation (set `true` while Settings is open).
     pub fn set_pause_auto_install(&self, paused: bool) {
         self.inner
@@ -249,6 +263,7 @@ pub fn start_updater_with_options(options: UpdaterOptions) -> UpdaterHandle {
     let inner = Arc::new(UpdaterInner {
         machine: Mutex::new(Machine::new(options.current_version)),
         auto_install: Mutex::new(None),
+        last_etag: Mutex::new(None),
         pause_auto_install: options.pause_auto_install,
         installing: AtomicBool::new(false),
         current_version: parsed_version,
@@ -354,20 +369,60 @@ fn now_ms() -> u64 {
         .map_or(0, |d| d.as_millis() as u64)
 }
 
+enum CheckReply {
+    NotModified,
+    UpToDate {
+        etag: Option<String>,
+    },
+    Ready {
+        version: Version,
+        installer: PathBuf,
+        etag: Option<String>,
+    },
+}
+
 async fn run_check(inner: &UpdaterInner) {
     let current = inner.current_version;
+    let cached_etag = inner
+        .last_etag
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
     let on_release = |version: Version| inner.update(|m| m.saw_release(version.to_string()));
     let on_download = |version: Version| inner.update(|m| m.downloading(version.to_string()));
-    let outcome = match check_latest(current, on_release, on_download).await {
-        Ok(Some((version, installer))) => {
+    let mut ready = false;
+    let outcome = match check_latest(current, cached_etag.as_deref(), on_release, on_download).await
+    {
+        Ok(CheckReply::Ready {
+            version,
+            installer,
+            etag,
+        }) => {
+            if let Some(tag) = etag {
+                *inner
+                    .last_etag
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(tag);
+            }
             log::info!("update {version} downloaded to {}", installer.display());
+            ready = true;
             Outcome::Ready {
                 version: version.to_string(),
                 installer,
             }
         }
-        Ok(None) => {
+        Ok(CheckReply::UpToDate { etag }) => {
+            if let Some(tag) = etag {
+                *inner
+                    .last_etag
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(tag);
+            }
             log::info!("update check: {current} is the latest version");
+            Outcome::UpToDate
+        }
+        Ok(CheckReply::NotModified) => {
+            log::debug!("update check: 304 Not Modified ({current} is up to date)");
             Outcome::UpToDate
         }
         Err(e) => {
@@ -376,32 +431,45 @@ async fn run_check(inner: &UpdaterInner) {
         }
     };
     inner.update(|m| m.finish(outcome, now_ms()));
+    if ready {
+        inner.poll_auto_install();
+    }
 }
 
 async fn check_latest(
     current: Version,
+    cached_etag: Option<&str>,
     on_release: impl FnOnce(Version),
     on_download: impl FnOnce(Version),
-) -> Result<Option<(Version, PathBuf)>, UpdateError> {
+) -> Result<CheckReply, UpdateError> {
     let client = reqwest::Client::builder()
         .user_agent(USER_AGENT)
         .connect_timeout(DOWNLOAD_CONNECT_TIMEOUT)
         .timeout(DOWNLOAD_TIMEOUT)
         .build()?;
-    let body = client
+    let mut req = client
         .get(LATEST_RELEASE_URL)
         .header(reqwest::header::ACCEPT, "application/vnd.github+json")
         // Dedicated timeout for the metadata call; the client's 10 min limit is for the download.
-        .timeout(API_TIMEOUT)
-        .send()
-        .await?
-        .error_for_status()?
-        .text()
-        .await?;
+        .timeout(API_TIMEOUT);
+    if let Some(etag) = cached_etag {
+        req = req.header(reqwest::header::IF_NONE_MATCH, etag);
+    }
+    let resp = req.send().await?;
+    if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
+        return Ok(CheckReply::NotModified);
+    }
+    let resp = resp.error_for_status()?;
+    let etag = resp
+        .headers()
+        .get(reqwest::header::ETAG)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let body = resp.text().await?;
     let release = parse_release(&body)?;
     on_release(release.version);
     if !is_newer(current, release.version) {
-        return Ok(None);
+        return Ok(CheckReply::UpToDate { etag });
     }
     let path = installer_path_for(release.version);
     // Reuse an already-downloaded installer only if it still passes size + SHA-256 verification.
@@ -410,7 +478,11 @@ async fn check_latest(
         on_download(release.version);
         download(&client, &release, &path).await?;
     }
-    Ok(Some((release.version, path)))
+    Ok(CheckReply::Ready {
+        version: release.version,
+        installer: path,
+        etag,
+    })
 }
 
 fn has_verified_cache(path: &Path, release: &Release) -> bool {
@@ -486,6 +558,7 @@ mod tests {
         let inner = UpdaterInner {
             machine: Mutex::new(Machine::new("2.0.0".into())),
             auto_install: Mutex::new(None),
+            last_etag: Mutex::new(None),
             pause_auto_install,
             installing: AtomicBool::new(false),
             current_version: v(2, 0, 0),

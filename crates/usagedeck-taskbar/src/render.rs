@@ -49,6 +49,7 @@ pub struct Renderer {
     fmt_rate: IDWriteTextFormat,
     fmt_rate_center: IDWriteTextFormat,
     fmt_label_left: IDWriteTextFormat,
+    fmt_reset_sub: IDWriteTextFormat,
     fmt_sub: IDWriteTextFormat,
     fmt_title: IDWriteTextFormat,
     fmt_btn: IDWriteTextFormat,
@@ -136,11 +137,9 @@ fn palette(theme: TaskbarTheme) -> Palette {
     }
 }
 
-fn short_bar_label(label: &str) -> &str {
+fn meter_bar_label(label: &str) -> &str {
     match label {
-        "Weekly" => "W",
-        "Rolling" => "R",
-        "Monthly" => "M",
+        "Rolling" => "5h",
         other => other,
     }
 }
@@ -319,8 +318,15 @@ impl Renderer {
             let fmt_label_left = make_text_format(
                 &dwrite,
                 w!("Segoe UI"),
-                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_WEIGHT_MEDIUM,
                 9.5,
+                DWRITE_TEXT_ALIGNMENT_LEADING,
+            )?;
+            let fmt_reset_sub = make_text_format(
+                &dwrite,
+                w!("Segoe UI"),
+                DWRITE_FONT_WEIGHT_NORMAL,
+                8.5,
                 DWRITE_TEXT_ALIGNMENT_LEADING,
             )?;
             let fmt_sub = make_text_format(
@@ -356,6 +362,7 @@ impl Renderer {
                 fmt_rate,
                 fmt_rate_center,
                 fmt_label_left,
+                fmt_reset_sub,
                 fmt_sub,
                 fmt_title,
                 fmt_btn,
@@ -1087,20 +1094,16 @@ impl Renderer {
         }
 
         for (m, bar) in slot.meter_rects.iter().zip(item.taskbar_bars.iter()) {
-            let short_lbl = short_bar_label(&bar.label);
-            let left_text = match bar.reset_short.as_deref() {
-                Some(rs) if !rs.is_empty() => format!("{short_lbl} {rs}"),
-                _ => short_lbl.to_string(),
-            };
-            let pct_w = 27.0;
-            let left_w = (m.w - pct_w + 2.0).max(20.0);
+            let lbl = meter_bar_label(&bar.label);
+            let pct_w = 29.0;
+            let left_w = (m.w - pct_w).max(20.0);
             self.draw_text(
                 rt,
-                &left_text,
+                lbl,
                 &self.fmt_label_left,
                 DipRect {
                     x: m.x,
-                    y: m.y + 4.0,
+                    y: m.y + 1.5,
                     w: left_w,
                     h: 13.0,
                 },
@@ -1122,7 +1125,7 @@ impl Renderer {
                 &self.fmt_pct,
                 DipRect {
                     x: m.x + m.w - pct_w,
-                    y: m.y + 4.0,
+                    y: m.y + 1.5,
                     w: pct_w,
                     h: 13.0,
                 },
@@ -1131,11 +1134,30 @@ impl Renderer {
 
             let track_rect = DipRect {
                 x: m.x,
-                y: m.y + 22.0,
+                y: m.y + 16.0,
                 w: m.w,
-                h: 4.5,
+                h: 4.0,
             };
-            self.draw_bar_fill(rt, track_rect, 2.25, bar, pal)?;
+            self.draw_bar_fill(rt, track_rect, 2.0, bar, pal)?;
+
+            if let Some(rs) = bar.reset_short.as_deref().filter(|s| !s.is_empty()) {
+                let reset_color = D2D1_COLOR_F {
+                    a: pal.muted.a * 0.85,
+                    ..pal.muted
+                };
+                self.draw_text(
+                    rt,
+                    &format!("↺ {rs}"),
+                    &self.fmt_reset_sub,
+                    DipRect {
+                        x: m.x,
+                        y: m.y + 21.5,
+                        w: m.w,
+                        h: 12.0,
+                    },
+                    reset_color,
+                )?;
+            }
         }
 
         if hovered {

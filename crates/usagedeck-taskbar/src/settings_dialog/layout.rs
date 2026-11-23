@@ -466,9 +466,9 @@ pub fn build_layout(input: &LayoutInput<'_>) -> SettingsLayout {
             enabled: true,
         });
         let label = if ver.is_empty() {
-            "Update available".to_string()
+            "Install update".to_string()
         } else {
-            format!("Update available (v{ver})")
+            format!("Install v{ver}")
         };
         (rect, label)
     });
@@ -870,8 +870,13 @@ fn build_general_page(b: &mut ContentBuilder, input: &LayoutInput<'_>) {
         rect: DipRect::new(b.x + 16.0, b.y + (row_h - 20.0) * 0.5, 20.0, 20.0),
     });
 
-    let (btn_label, btn_style, btn_disabled) = if input.update_ready_version.is_some() {
-        ("Update available".to_string(), ButtonStyle::Primary, false)
+    let (btn_label, btn_style, btn_disabled) = if let Some(ver) = input.update_ready_version {
+        let label = if ver.is_empty() {
+            "Install update".to_string()
+        } else {
+            format!("Install v{ver}")
+        };
+        (label, ButtonStyle::Primary, false)
     } else if input.update_checking {
         ("Checking…".to_string(), ButtonStyle::Secondary, true)
     } else {
@@ -2060,7 +2065,7 @@ fn build_claude_pace_section(b: &mut ContentBuilder, input: &LayoutInput<'_>) {
             (b.w - cal_val_w - 48.0).max(120.0),
             18.0,
         ),
-        text: "Dollars spent ÷ weekly percentage points gained in this weekly window".to_string(),
+        text: "Dollars spent ÷ weekly % gained in this weekly window".to_string(),
         size: 12.0,
         semi_bold: false,
         muted: true,

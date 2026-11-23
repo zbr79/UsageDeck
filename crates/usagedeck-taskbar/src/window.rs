@@ -269,6 +269,14 @@ fn post_toast(strip_hwnd_raw: isize, text: impl Into<String>, anchor: Option<REC
     }
 }
 
+/// Post a brief taskbar toast anchored above the strip from any background thread.
+pub fn post_toast_from_any_thread(text: impl Into<String>) {
+    let strip_hwnd_raw = STRIP_HWND_RAW.load(Ordering::Acquire);
+    if strip_hwnd_raw != 0 {
+        post_toast(strip_hwnd_raw, text, None);
+    }
+}
+
 fn log_status_if_changed(state: &mut AppState, summary: String) {
     if state.last_status_log.as_deref() != Some(summary.as_str()) {
         log::info!("taskbar strip: {summary}");
@@ -303,16 +311,28 @@ fn open_settings_on_page_ui(provider: Option<ProviderKind>) {
             }
         }),
         Some(Box::new(move |_hwnd| {
-            let _ = updater_for_btn.check_now();
+            if updater_for_btn.ready_version().is_some() {
+                if let Err(e) = updater_for_btn.install_now() {
+                    log::warn!("install_now failed: {e}");
+                    let _ = updater_for_btn.check_now();
+                }
+            } else {
+                let _ = updater_for_btn.check_now();
+            }
         })),
     );
 }
 
 fn show_context_menu_ui(target: Option<HideTarget>) {
-    let Some((strip_hwnd, flyout_visible, snoozed_count)) = try_with_state(|state| {
+    let Some((strip_hwnd, flyout_visible, snoozed_count, ready_update)) = try_with_state(|state| {
         clear_hover_card_state(state);
         let (snap, _) = state.shared.get();
-        (state.strip_hwnd, state.flyout_visible, snap.snoozed_count)
+        (
+            state.strip_hwnd,
+            state.flyout_visible,
+            snap.snoozed_count,
+            state.updater.ready_version(),
+        )
     }) else {
         return;
     };
@@ -327,6 +347,10 @@ fn show_context_menu_ui(target: Option<HideTarget>) {
         wide(&format!("Show {snoozed_count} hidden cards"))
     } else {
         wide("Show hidden cards")
+    };
+    let update_label = match ready_update {
+        Some(ref ver) => wide(&format!("Install update v{ver} now")),
+        None => wide("Check for updates"),
     };
 
     // SAFETY: standard Win32 popup menu anchored at the current cursor position.
@@ -359,7 +383,12 @@ fn show_context_menu_ui(target: Option<HideTarget>) {
         );
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(menu, MF_STRING, MENU_SETTINGS, w!("Settings..."));
-        let _ = AppendMenuW(menu, MF_STRING, MENU_CHECK_UPDATES, w!("Check for updates"));
+        let _ = AppendMenuW(
+            menu,
+            MF_STRING,
+            MENU_CHECK_UPDATES,
+            PCWSTR(update_label.as_ptr()),
+        );
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(menu, MF_STRING, MENU_OPEN_DATA, w!("Open data folder"));
         let _ = AppendMenuW(menu, MF_STRING, MENU_OPEN_LOGS, w!("Open log folder"));
@@ -393,10 +422,17 @@ fn show_context_menu_ui(target: Option<HideTarget>) {
         MENU_SHOW_HIDDEN => clear_snoozed_cards_ui(),
         MENU_SETTINGS => open_settings_ui(),
         MENU_CHECK_UPDATES => {
-            open_settings_ui();
-            try_with_state(|s| {
-                let _ = s.updater.check_now();
-            });
+            if let Some(updater) = try_with_state(|s| s.updater.clone()) {
+                if updater.ready_version().is_some() {
+                    if let Err(e) = updater.install_now() {
+                        log::warn!("install_now failed: {e}");
+                        post_toast_from_any_thread("Could not start installer");
+                    }
+                } else {
+                    post_toast_from_any_thread("Checking for updates…");
+                    let _ = updater.check_now();
+                }
+            }
         }
         MENU_OPEN_DATA => open_folder(default_data_dir()),
         MENU_OPEN_LOGS => open_folder(default_log_dir()),
