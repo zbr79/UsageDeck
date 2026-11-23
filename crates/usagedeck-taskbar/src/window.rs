@@ -67,6 +67,8 @@ const TIMER_HOVER_CLOSE_ID: usize = 3;
 const TIMER_HOVER_CLOSE_MS: u32 = 80;
 const TIMER_ANIM_ID: usize = 4;
 const TIMER_ANIM_MS: u32 = 16;
+const TIMER_HOVER_OPEN_ID: usize = 5;
+const HOVER_OPEN_DELAY_MS: u32 = 1000;
 const HOVER_DISMISS_GRACE: Duration = Duration::from_millis(260);
 const TOAST_DURATION: Duration = Duration::from_millis(2200);
 
@@ -107,6 +109,8 @@ struct AppState {
     strip_hovered_hide_pill: Option<usize>,
     strip_hovered_system: bool,
     strip_tracking_leave: bool,
+    pending_hover_pill: Option<usize>,
+    pending_hover_system: bool,
     active_hover_pill: Option<usize>,
     active_hover_system: bool,
     hover_card_hovered: bool,
@@ -449,6 +453,8 @@ fn hide_tooltip(state: &mut AppState) {
 }
 
 fn clear_hover_card_state(state: &mut AppState) {
+    state.pending_hover_pill = None;
+    state.pending_hover_system = false;
     state.active_hover_pill = None;
     state.active_hover_system = false;
     state.hover_card_hovered = false;
@@ -499,7 +505,7 @@ fn update_active_tooltip(state: &mut AppState) {
         state.toast = None;
     }
 
-    // 2. Taskbar strip hover: interactive Fluent Detail Card for either a provider pill or System.
+    // 2. Taskbar strip hover: only show hover cards once activated (after 1s dwell or direct click).
     if !state.strip_visible {
         clear_hover_card_state(state);
         return;
@@ -510,7 +516,7 @@ fn update_active_tooltip(state: &mut AppState) {
     };
     let (sx, sy, _, _) = state.strip_pos;
 
-    if let Some(pill_idx) = state.strip_hovered_pill.or(state.active_hover_pill) {
+    if let Some(pill_idx) = state.active_hover_pill {
         let (Some(item), Some(pill_rect)) =
             (snapshot.items.get(pill_idx), layout.pill_rect(pill_idx))
         else {
@@ -549,7 +555,7 @@ fn update_active_tooltip(state: &mut AppState) {
         return;
     }
 
-    if state.strip_hovered_system || state.active_hover_system {
+    if state.active_hover_system {
         if let (Some(sys), Some(sys_rect)) = (snapshot.system.as_ref(), layout.system_rect()) {
             let anchor = pill_screen_rect_px(sx, sy, sys_rect, metrics.scale);
             if let Some(ref mut tip) = state.tooltip {
@@ -559,7 +565,11 @@ fn update_active_tooltip(state: &mut AppState) {
         }
     }
 
-    clear_hover_card_state(state);
+    state.active_hover_pill = None;
+    state.active_hover_system = false;
+    state.hover_card_hovered = false;
+    state.hover_dismiss_at = None;
+    hide_tooltip(state);
 }
 
 enum AnimTimerOp {
@@ -935,6 +945,7 @@ fn hide_target_with_toast(target: HideTarget, anchor: Option<RECT>) {
 
 enum StripClickAction {
     None,
+    OpenHoverCard,
     OpenSettings,
     CopyOpenCodeKey {
         email: String,
@@ -988,6 +999,47 @@ unsafe extern "system" fn strip_wnd_proc(
         }
         WM_TIMER if wparam.0 == TIMER_ZORDER_ID => {
             ensure_strip_above_tray_now();
+            LRESULT(0)
+        }
+        WM_TIMER if wparam.0 == TIMER_HOVER_OPEN_ID => {
+            let _ = KillTimer(Some(hwnd), TIMER_HOVER_OPEN_ID);
+            let opened = try_with_state(|s| {
+                if !s.strip_visible {
+                    s.pending_hover_pill = None;
+                    s.pending_hover_system = false;
+                    return false;
+                }
+                if let Some(idx) = s.pending_hover_pill.take() {
+                    if s.strip_hovered_pill == Some(idx) {
+                        if let Some(ref mut tip) = s.tooltip {
+                            let _ = tip.set_hovered_button(None);
+                        }
+                        s.active_hover_pill = Some(idx);
+                        s.active_hover_system = false;
+                        s.hover_card_hovered = false;
+                        s.hover_dismiss_at = None;
+                        return true;
+                    }
+                } else if s.pending_hover_system {
+                    s.pending_hover_system = false;
+                    if s.strip_hovered_system {
+                        if let Some(ref mut tip) = s.tooltip {
+                            let _ = tip.set_hovered_button(None);
+                        }
+                        s.active_hover_pill = None;
+                        s.active_hover_system = true;
+                        s.hover_card_hovered = false;
+                        s.hover_dismiss_at = None;
+                        return true;
+                    }
+                }
+                false
+            })
+            .unwrap_or(false);
+            if opened {
+                let _ = KillTimer(Some(hwnd), TIMER_HOVER_CLOSE_ID);
+                sync_and_paint_strip_ui();
+            }
             LRESULT(0)
         }
         WM_TIMER if wparam.0 == TIMER_HOVER_CLOSE_ID => {
@@ -1185,7 +1237,13 @@ unsafe extern "system" fn strip_wnd_proc(
             LRESULT(0)
         }
         WM_MOUSEMOVE => {
-            let (needs_repaint, arm_close_timer, cancel_close_timer) = try_with_state(|s| {
+            #[derive(Clone, Copy)]
+            enum TimerOp {
+                None,
+                Arm,
+                Cancel,
+            }
+            let (needs_repaint, open_op, close_op) = try_with_state(|s| {
                 if !s.strip_tracking_leave {
                     track_mouse_leave(hwnd);
                     s.strip_tracking_leave = true;
@@ -1198,37 +1256,64 @@ unsafe extern "system" fn strip_wnd_proc(
                 let hit_hide = layout.and_then(|l| l.hit_test_pill_hide(dx, dy));
                 let hit_system = layout.is_some_and(|l| l.hit_test_system(dx, dy));
 
-                let mut arm_timer = false;
-                let mut cancel_timer = false;
+                let mut open_op = TimerOp::None;
+                let mut close_op = TimerOp::None;
                 let prev_active = s.active_hover_pill;
                 let prev_active_sys = s.active_hover_system;
+                let card_already_open = prev_active.is_some() || prev_active_sys;
+
                 if let Some(idx) = hit_pill {
-                    if prev_active != Some(idx) || prev_active_sys {
-                        if let Some(ref mut tip) = s.tooltip {
-                            let _ = tip.set_hovered_button(None);
+                    if card_already_open {
+                        // Card already open: switch cleanly to adjacent pill with 0ms delay.
+                        if prev_active != Some(idx) || prev_active_sys {
+                            if let Some(ref mut tip) = s.tooltip {
+                                let _ = tip.set_hovered_button(None);
+                            }
                         }
+                        s.pending_hover_pill = None;
+                        s.pending_hover_system = false;
+                        s.active_hover_pill = Some(idx);
+                        s.active_hover_system = false;
+                        s.hover_card_hovered = false;
+                        s.hover_dismiss_at = None;
+                        open_op = TimerOp::Cancel;
+                        close_op = TimerOp::Cancel;
+                    } else if s.pending_hover_pill != Some(idx) || s.pending_hover_system {
+                        // First entry onto a pill: wait HOVER_OPEN_DELAY_MS before opening card.
+                        s.pending_hover_pill = Some(idx);
+                        s.pending_hover_system = false;
+                        open_op = TimerOp::Arm;
                     }
-                    s.active_hover_pill = Some(idx);
-                    s.active_hover_system = false;
-                    s.hover_card_hovered = false;
-                    s.hover_dismiss_at = None;
-                    cancel_timer = true;
                 } else if hit_system {
-                    if !prev_active_sys || prev_active.is_some() {
-                        if let Some(ref mut tip) = s.tooltip {
-                            let _ = tip.set_hovered_button(None);
+                    if card_already_open {
+                        if !prev_active_sys || prev_active.is_some() {
+                            if let Some(ref mut tip) = s.tooltip {
+                                let _ = tip.set_hovered_button(None);
+                            }
                         }
+                        s.pending_hover_pill = None;
+                        s.pending_hover_system = false;
+                        s.active_hover_pill = None;
+                        s.active_hover_system = true;
+                        s.hover_card_hovered = false;
+                        s.hover_dismiss_at = None;
+                        open_op = TimerOp::Cancel;
+                        close_op = TimerOp::Cancel;
+                    } else if !s.pending_hover_system || s.pending_hover_pill.is_some() {
+                        s.pending_hover_pill = None;
+                        s.pending_hover_system = true;
+                        open_op = TimerOp::Arm;
                     }
-                    s.active_hover_pill = None;
-                    s.active_hover_system = true;
-                    s.hover_card_hovered = false;
-                    s.hover_dismiss_at = None;
-                    cancel_timer = true;
-                } else if (s.active_hover_pill.is_some() || s.active_hover_system)
-                    && !s.hover_card_hovered
-                {
-                    s.hover_dismiss_at = Some(Instant::now() + HOVER_DISMISS_GRACE);
-                    arm_timer = true;
+                } else {
+                    if s.pending_hover_pill.is_some() || s.pending_hover_system {
+                        s.pending_hover_pill = None;
+                        s.pending_hover_system = false;
+                        open_op = TimerOp::Cancel;
+                    }
+                    if card_already_open && !s.hover_card_hovered {
+                        s.hover_dismiss_at = Some(Instant::now() + HOVER_DISMISS_GRACE);
+                        close_op = TimerOp::Arm;
+                    }
                 }
 
                 let changed = !s.strip_hovered
@@ -1245,13 +1330,26 @@ unsafe extern "system" fn strip_wnd_proc(
                     s.strip_hovered_hide_pill = hit_hide;
                     s.strip_hovered_system = hit_system;
                 }
-                (changed, arm_timer, cancel_timer)
+                (changed, open_op, close_op)
             })
-            .unwrap_or((false, false, false));
-            if cancel_close_timer {
-                let _ = KillTimer(Some(hwnd), TIMER_HOVER_CLOSE_ID);
-            } else if arm_close_timer {
-                SetTimer(Some(hwnd), TIMER_HOVER_CLOSE_ID, TIMER_HOVER_CLOSE_MS, None);
+            .unwrap_or((false, TimerOp::None, TimerOp::None));
+            match open_op {
+                TimerOp::None => {}
+                TimerOp::Cancel => {
+                    let _ = KillTimer(Some(hwnd), TIMER_HOVER_OPEN_ID);
+                }
+                TimerOp::Arm => {
+                    SetTimer(Some(hwnd), TIMER_HOVER_OPEN_ID, HOVER_OPEN_DELAY_MS, None);
+                }
+            }
+            match close_op {
+                TimerOp::None => {}
+                TimerOp::Cancel => {
+                    let _ = KillTimer(Some(hwnd), TIMER_HOVER_CLOSE_ID);
+                }
+                TimerOp::Arm => {
+                    SetTimer(Some(hwnd), TIMER_HOVER_CLOSE_ID, TIMER_HOVER_CLOSE_MS, None);
+                }
             }
             if needs_repaint {
                 sync_and_paint_strip_ui();
@@ -1259,8 +1357,11 @@ unsafe extern "system" fn strip_wnd_proc(
             LRESULT(0)
         }
         WM_MOUSELEAVE => {
+            let _ = KillTimer(Some(hwnd), TIMER_HOVER_OPEN_ID);
             let (needs_repaint, arm_close_timer) = try_with_state(|s| {
                 s.strip_tracking_leave = false;
+                s.pending_hover_pill = None;
+                s.pending_hover_system = false;
                 let arm_timer = if (s.active_hover_pill.is_some() || s.active_hover_system)
                     && !s.hover_card_hovered
                 {
@@ -1349,13 +1450,44 @@ unsafe extern "system" fn strip_wnd_proc(
                     return StripClickAction::OpenSettings;
                 }
 
-                // Normal pill clicks keep the hover panel open (hover -> panel -> Settings).
+                // 4. Clicking a provider or System pill opens its hover card immediately without waiting 1s.
+                if let Some(idx) = s
+                    .strip_layout
+                    .as_ref()
+                    .and_then(|l| l.hit_test_pill(dx, dy))
+                {
+                    s.pending_hover_pill = None;
+                    s.pending_hover_system = false;
+                    s.active_hover_pill = Some(idx);
+                    s.active_hover_system = false;
+                    s.hover_card_hovered = false;
+                    s.hover_dismiss_at = None;
+                    return StripClickAction::OpenHoverCard;
+                }
+                if s.strip_layout
+                    .as_ref()
+                    .is_some_and(|l| l.hit_test_system(dx, dy))
+                {
+                    s.pending_hover_pill = None;
+                    s.pending_hover_system = false;
+                    s.active_hover_pill = None;
+                    s.active_hover_system = true;
+                    s.hover_card_hovered = false;
+                    s.hover_dismiss_at = None;
+                    return StripClickAction::OpenHoverCard;
+                }
+
                 StripClickAction::None
             })
             .unwrap_or(StripClickAction::None);
 
             match action {
                 StripClickAction::None => {}
+                StripClickAction::OpenHoverCard => {
+                    let _ = KillTimer(Some(hwnd), TIMER_HOVER_OPEN_ID);
+                    let _ = KillTimer(Some(hwnd), TIMER_HOVER_CLOSE_ID);
+                    sync_and_paint_strip_ui();
+                }
                 StripClickAction::OpenSettings => open_settings_ui(),
                 StripClickAction::CopyOpenCodeKey { email, anchor } => {
                     copy_opencode_key(email, anchor);
@@ -1456,6 +1588,8 @@ pub fn run_ui(
                 strip_hovered_hide_pill: None,
                 strip_hovered_system: false,
                 strip_tracking_leave: false,
+                pending_hover_pill: None,
+                pending_hover_system: false,
                 active_hover_pill: None,
                 active_hover_system: false,
                 hover_card_hovered: false,
