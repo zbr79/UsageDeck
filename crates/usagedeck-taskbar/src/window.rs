@@ -31,7 +31,7 @@ use usagedeck_core::default_data_dir;
 use usagedeck_core::store::{CredentialVault, Store, ThemeMode};
 use usagedeck_core::view::ProviderKind;
 use usagedeck_core::win::fullscreen;
-use windows::core::{w, Result};
+use windows::core::{w, Result, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
@@ -40,14 +40,16 @@ use windows::Win32::UI::Shell::{
     Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateIconFromResourceEx, CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyWindow,
-    DispatchMessageW, GetCursorPos, GetMessageW, GetWindow, KillTimer, LoadCursorW, LoadIconW,
-    PostMessageW, PostQuitMessage, RegisterClassExW, RegisterWindowMessageW, SetTimer,
-    SetWindowPos, ShowWindow, TranslateMessage, GW_HWNDPREV, HICON, HWND_TOPMOST, IDC_HAND,
-    IDI_APPLICATION, LR_DEFAULTCOLOR, MSG, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
-    SW_HIDE, SW_SHOWNOACTIVATE, WM_APP, WM_DESTROY, WM_LBUTTONUP, WM_MOUSEMOVE, WM_SETTINGCHANGE,
-    WM_TIMER, WM_WINDOWPOSCHANGED, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_POPUP,
+    AppendMenuW, CreateIconFromResourceEx, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
+    DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW,
+    GetWindow, KillTimer, LoadCursorW, LoadIconW, PostMessageW, PostQuitMessage, RegisterClassExW,
+    RegisterWindowMessageW, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow,
+    TrackPopupMenu, TranslateMessage, GW_HWNDPREV, HICON, HWND_TOPMOST, IDC_HAND, IDI_APPLICATION,
+    LR_DEFAULTCOLOR, MF_SEPARATOR, MF_STRING, MSG, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RETURNCMD,
+    TPM_RIGHTBUTTON, WM_APP, WM_CONTEXTMENU, WM_DESTROY, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NULL,
+    WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMER, WM_WINDOWPOSCHANGED, WNDCLASSEXW, WS_EX_LAYERED,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 const WM_MOUSELEAVE: u32 = 0x02A3;
@@ -71,6 +73,11 @@ const TIMER_HOVER_OPEN_ID: usize = 5;
 const HOVER_OPEN_DELAY_MS: u32 = 1000;
 const HOVER_DISMISS_GRACE: Duration = Duration::from_millis(260);
 const TOAST_DURATION: Duration = Duration::from_millis(2200);
+
+const MENU_QUICK_SETTINGS: usize = 5001;
+const MENU_QUICK_REFRESH: usize = 5002;
+const MENU_QUICK_UPDATE: usize = 5003;
+const MENU_QUICK_QUIT: usize = 5004;
 
 const APP_ICON_BYTES: &[u8] = include_bytes!("../assets/icon.ico");
 
@@ -1499,9 +1506,21 @@ unsafe extern "system" fn strip_wnd_proc(
             }
             LRESULT(0)
         }
+        WM_RBUTTONUP => {
+            let _ = KillTimer(Some(hwnd), TIMER_HOVER_OPEN_ID);
+            let _ = KillTimer(Some(hwnd), TIMER_HOVER_CLOSE_ID);
+            show_quick_context_menu(hwnd);
+            LRESULT(0)
+        }
         WM_TRAY_ICON => {
-            if lparam.0 as u32 == WM_LBUTTONUP {
-                open_settings_ui();
+            match lparam.0 as u32 {
+                WM_LBUTTONUP => open_settings_ui(),
+                WM_RBUTTONUP | WM_CONTEXTMENU => {
+                    let _ = KillTimer(Some(hwnd), TIMER_HOVER_OPEN_ID);
+                    let _ = KillTimer(Some(hwnd), TIMER_HOVER_CLOSE_ID);
+                    show_quick_context_menu(hwnd);
+                }
+                _ => {}
             }
             LRESULT(0)
         }
@@ -1513,6 +1532,89 @@ unsafe extern "system" fn strip_wnd_proc(
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
+}
+
+/// Show a native Win32 context menu at the cursor (for right-clicking the System Tray icon
+/// or right-clicking the taskbar strip) offering Settings, Refresh, Update, and Quit.
+///
+/// Must ALWAYS be invoked strictly outside any `STATE` `RefCell` borrow.
+fn show_quick_context_menu(hwnd: HWND) {
+    let Some((poller_tx, updater, ready_ver)) = try_with_state(|s| {
+        clear_hover_card_state(s);
+        let ready = s.updater.ready_version();
+        (s.poller_tx.clone(), s.updater.clone(), ready)
+    }) else {
+        return;
+    };
+
+    let update_label: Vec<u16> = match ready_ver {
+        Some(ref ver) => format!("Install update v{ver}\0").encode_utf16().collect(),
+        None => "Check for updates\0".encode_utf16().collect(),
+    };
+
+    // SAFETY: TrackPopupMenu runs strictly outside any STATE RefCell borrow.
+    let cmd = unsafe {
+        let Ok(menu) = CreatePopupMenu() else {
+            return;
+        };
+        let _ = AppendMenuW(menu, MF_STRING, MENU_QUICK_SETTINGS, w!("Settings…"));
+        let _ = AppendMenuW(menu, MF_STRING, MENU_QUICK_REFRESH, w!("Refresh now"));
+        let _ = AppendMenuW(
+            menu,
+            MF_STRING,
+            MENU_QUICK_UPDATE,
+            PCWSTR(update_label.as_ptr()),
+        );
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+        let _ = AppendMenuW(menu, MF_STRING, MENU_QUICK_QUIT, w!("Quit UsageDeck"));
+
+        let mut pt = POINT::default();
+        let _ = GetCursorPos(&mut pt);
+        let _ = SetForegroundWindow(hwnd);
+        let picked = TrackPopupMenu(
+            menu,
+            TPM_RETURNCMD | TPM_LEFTALIGN | TPM_BOTTOMALIGN | TPM_RIGHTBUTTON,
+            pt.x,
+            pt.y,
+            Some(0),
+            hwnd,
+            None,
+        )
+        .0 as usize;
+        // Microsoft Win32 requirement for tray popup menus so clicking outside dismisses cleanly.
+        let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
+        let _ = DestroyMenu(menu);
+        picked
+    };
+
+    match cmd {
+        MENU_QUICK_SETTINGS => open_settings_ui(),
+        MENU_QUICK_REFRESH => {
+            if let Some(ref tx) = poller_tx {
+                let _ = tx.send(PollerCmd::RefreshNow);
+            }
+            post_toast_from_any_thread("Refreshing usage…".to_string());
+        }
+        MENU_QUICK_UPDATE => {
+            if updater.ready_version().is_some() {
+                if let Err(e) = updater.install_now() {
+                    log::warn!("install_now from quick menu failed: {e}");
+                    let _ = updater.check_now();
+                }
+            } else {
+                let _ = updater.check_now();
+                post_toast_from_any_thread("Checking for updates…".to_string());
+            }
+        }
+        MENU_QUICK_QUIT => {
+            quit_app_ui();
+            return;
+        }
+        _ => {}
+    }
+
+    ensure_strip_above_tray_now();
+    post_ensure_zorder();
 }
 
 /// Create the taskbar strip window, interactive hover card window, and tray icon,
