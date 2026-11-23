@@ -271,10 +271,44 @@ impl Store {
     /// Drop per-account settings when an OpenCode account is removed.
     pub async fn forget_account(&self, email: &str) -> Result<Settings, StoreError> {
         let lower = email.to_lowercase();
+        let scoped = format!("opencode:{lower}");
         self.update_settings(|mut s| {
-            s.display_names.retain(|k, _| k.to_lowercase() != lower);
-            s.disabled_accounts.retain(|e| *e != lower);
-            s.snoozed_until.remove(&format!("opencode:{lower}"));
+            s.display_names
+                .retain(|k, _| !k.eq_ignore_ascii_case(&lower) && !k.eq_ignore_ascii_case(&scoped));
+            s.disabled_accounts
+                .retain(|e| !e.eq_ignore_ascii_case(&lower) && !e.eq_ignore_ascii_case(&scoped));
+            s.unsubscribed_accounts
+                .retain(|e| !e.eq_ignore_ascii_case(&lower) && !e.eq_ignore_ascii_case(&scoped));
+            s.subscription_ends_at
+                .retain(|k, _| !k.eq_ignore_ascii_case(&lower) && !k.eq_ignore_ascii_case(&scoped));
+            s.snoozed_until.remove(&scoped);
+            s
+        })
+        .await
+    }
+
+    /// Drop per-account settings when a tracked provider account (Claude, Codex, Cursor, Grok,
+    /// Antigravity) is removed from the remembered list.
+    pub async fn forget_tracked_account(
+        &self,
+        provider_prefix: &str,
+        account_id: &str,
+    ) -> Result<Settings, StoreError> {
+        let scoped = format!(
+            "{}:{}",
+            provider_prefix.trim().to_lowercase(),
+            account_id.trim().to_lowercase()
+        );
+        self.update_settings(|mut s| {
+            s.display_names
+                .retain(|k, _| !k.eq_ignore_ascii_case(&scoped));
+            s.disabled_accounts
+                .retain(|e| !e.eq_ignore_ascii_case(&scoped));
+            s.unsubscribed_accounts
+                .retain(|e| !e.eq_ignore_ascii_case(&scoped));
+            s.subscription_ends_at
+                .retain(|k, _| !k.eq_ignore_ascii_case(&scoped));
+            s.snoozed_until.remove(&scoped);
             s
         })
         .await
@@ -546,6 +580,12 @@ pub struct Settings {
     /// show live local CPU & Memory monitor pill on the taskbar
     #[serde(rename = "systemMonitorEnabled", default = "default_true")]
     pub system_monitor_enabled: bool,
+    /// lower-cased account keys explicitly declared unsubscribed by the user
+    #[serde(rename = "unsubscribedAccounts", default)]
+    pub unsubscribed_accounts: Vec<String>,
+    /// optional user-recorded subscription end date (`YYYY-MM-DD`) per lower-cased account key
+    #[serde(rename = "subscriptionEndsAt", default)]
+    pub subscription_ends_at: BTreeMap<String, String>,
 }
 
 impl Default for Settings {
@@ -573,6 +613,8 @@ impl Default for Settings {
             auto_hide_exhausted: false,
             taskbar_meter_style: TaskbarMeterStyle::default(),
             system_monitor_enabled: true,
+            unsubscribed_accounts: Vec::new(),
+            subscription_ends_at: BTreeMap::new(),
         }
     }
 }
@@ -733,6 +775,57 @@ pub fn merge_hidden_bars(
     out
 }
 
+/// Parse and normalize a calendar date string (`YYYY-MM-DD`, `YYYY/MM/DD`, or ISO prefix) into
+/// canonical `"YYYY-MM-DD"`. Returns `None` for invalid or out-of-range dates.
+pub fn normalize_ymd_date(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let prefix = trimmed.split(['T', ' ']).next().unwrap_or(trimmed).trim();
+    let normalized = prefix.replace('/', "-");
+    let date = chrono::NaiveDate::parse_from_str(&normalized, "%Y-%m-%d").ok()?;
+    let year = chrono::Datelike::year(&date);
+    if !(2020..=2100).contains(&year) {
+        return None;
+    }
+    Some(date.format("%Y-%m-%d").to_string())
+}
+
+/// Merge user-recorded subscription end dates (`"provider:id"` -> `"YYYY-MM-DD"`, `null`/empty clears).
+pub fn merge_subscription_ends_at(
+    current: &BTreeMap<String, String>,
+    changes: Option<&Value>,
+) -> BTreeMap<String, String> {
+    let mut out = current.clone();
+    if let Some(changes) = changes.and_then(Value::as_object) {
+        for (key, value) in changes {
+            let norm_key = key.trim().to_lowercase();
+            if norm_key.is_empty()
+                || js_len(&norm_key) > MAX_KEY_LENGTH
+                || FORBIDDEN_KEYS.contains(&norm_key.as_str())
+            {
+                continue;
+            }
+            match value {
+                Value::Null => {
+                    out.remove(&norm_key);
+                }
+                Value::String(s) if s.trim().is_empty() => {
+                    out.remove(&norm_key);
+                }
+                Value::String(s) => {
+                    if let Some(ymd) = normalize_ymd_date(s) {
+                        out.insert(norm_key, ymd);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    out.into_iter().take(MAX_ENTRIES).collect()
+}
+
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -808,6 +901,12 @@ pub fn apply_settings_patch_at(current: &Settings, patch: &Value, now_ms: u64) -
     {
         next.disabled_accounts = disabled;
     }
+    if let Some(unsub) = obj
+        .get("unsubscribedAccounts")
+        .and_then(sanitize_disabled_accounts)
+    {
+        next.unsubscribed_accounts = unsub;
+    }
     if let Some(order @ Value::Array(_)) = obj.get("providerOrder") {
         next.provider_order = normalize_provider_order(order);
     }
@@ -823,6 +922,8 @@ pub fn apply_settings_patch_at(current: &Settings, patch: &Value, now_ms: u64) -
     next.snoozed_until =
         merge_snoozed_until(&current.snoozed_until, obj.get("snoozedUntil"), now_ms);
     next.hidden_bars = merge_hidden_bars(&current.hidden_bars, obj.get("hiddenBars"));
+    next.subscription_ends_at =
+        merge_subscription_ends_at(&current.subscription_ends_at, obj.get("subscriptionEndsAt"));
     next
 }
 
@@ -1484,6 +1585,84 @@ mod tests {
             *writes.lock().unwrap_or_else(|e| e.into_inner()),
             vec!["b@x.com"]
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn subscription_end_and_unsubscribed_patch_and_forget_tracked_account() {
+        assert_eq!(
+            normalize_ymd_date("2026-12-31").as_deref(),
+            Some("2026-12-31")
+        );
+        assert_eq!(
+            normalize_ymd_date(" 2026/05/09 ").as_deref(),
+            Some("2026-05-09")
+        );
+        assert_eq!(
+            normalize_ymd_date("2026-11-29T00:00:00.000Z").as_deref(),
+            Some("2026-11-29")
+        );
+        assert_eq!(normalize_ymd_date("2026-02-30"), None);
+        assert_eq!(normalize_ymd_date("not-a-date"), None);
+
+        let patched = apply_settings_patch(
+            &Settings::default(),
+            &json!({
+                "unsubscribedAccounts": ["Claude:Old@Example.com", "claude:old@example.com", ""],
+                "subscriptionEndsAt": {
+                    "Claude:Old@Example.com": "2026-12-01",
+                    "claude:bad": "2026-99-99",
+                    "__proto__": "2026-12-01"
+                }
+            }),
+        );
+        assert_eq!(
+            patched.unsubscribed_accounts,
+            vec!["claude:old@example.com"]
+        );
+        assert_eq!(
+            patched
+                .subscription_ends_at
+                .get("claude:old@example.com")
+                .map(String::as_str),
+            Some("2026-12-01")
+        );
+        assert!(!patched.subscription_ends_at.contains_key("claude:bad"));
+
+        // Removing via null clears the date.
+        let cleared = apply_settings_patch(
+            &patched,
+            &json!({ "subscriptionEndsAt": { "claude:old@example.com": null } }),
+        );
+        assert!(cleared.subscription_ends_at.is_empty());
+
+        // forget_tracked_account cleans up all per-account keys for that provider:id.
+        let dir = temp_dir("forget-tracked");
+        let store = Store::new(dir.clone(), Box::new(MemoryVault::default()));
+        store
+            .update_settings(|mut s| {
+                s.display_names
+                    .insert("claude:old@example.com".into(), Value::String("Old".into()));
+                s.disabled_accounts.push("claude:old@example.com".into());
+                s.unsubscribed_accounts
+                    .push("claude:old@example.com".into());
+                s.subscription_ends_at
+                    .insert("claude:old@example.com".into(), "2026-12-01".into());
+                s.snoozed_until
+                    .insert("claude:old@example.com".into(), 9_999_999_999_999);
+                s
+            })
+            .await
+            .unwrap();
+        let after = store
+            .forget_tracked_account("claude", "OLD@example.com")
+            .await
+            .unwrap();
+        assert!(after.display_names.is_empty());
+        assert!(after.disabled_accounts.is_empty());
+        assert!(after.unsubscribed_accounts.is_empty());
+        assert!(after.subscription_ends_at.is_empty());
+        assert!(after.snoozed_until.is_empty());
         let _ = std::fs::remove_dir_all(dir);
     }
 }

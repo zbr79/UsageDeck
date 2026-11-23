@@ -331,6 +331,26 @@ impl UsageCache {
         }
         true
     }
+
+    /// Delete one cached entry from memory and disk (used when forgetting/removing an account).
+    pub async fn remove(&self, section: &str, key: &str) {
+        let mut state = self.state.lock().await;
+        if let Some(mine) = state.as_mut() {
+            if let Some(Value::Object(entries)) = mine.get_mut(section) {
+                entries.remove(key);
+            }
+        }
+        let mut disk = self.read_disk();
+        let removed = disk
+            .get_mut(section)
+            .and_then(Value::as_object_mut)
+            .is_some_and(|entries| entries.remove(key).is_some());
+        if removed {
+            if let Err(e) = write_json_atomic(&self.file, &disk) {
+                log::warn!("usage cache remove write failed: {e}");
+            }
+        }
+    }
 }
 
 // ---- cached provider (lib/provider-cache.ts) ------------------------------------------------

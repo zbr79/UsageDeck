@@ -18,6 +18,7 @@ pub enum BadgeTone {
     Green,
     Violet,
     Amber,
+    Muted,
 }
 
 #[derive(Clone, Copy)]
@@ -203,6 +204,11 @@ impl SettingsPalette {
                     fg: rgb(0x97, 0x3c, 0x00),
                     border: rgb(0xff, 0xd2, 0x30),
                 },
+                BadgeTone::Muted => BadgeColors {
+                    bg: rgba(0, 0, 0, 0.05),
+                    fg: rgba(82, 82, 91, 0.90),
+                    border: rgba(0, 0, 0, 0.14),
+                },
             }
         } else {
             match tone {
@@ -226,6 +232,11 @@ impl SettingsPalette {
                     fg: rgb(0xff, 0xd2, 0x30),
                     border: rgba(251, 191, 36, 0.30),
                 },
+                BadgeTone::Muted => BadgeColors {
+                    bg: rgba(255, 255, 255, 0.06),
+                    fg: rgba(161, 161, 170, 0.92),
+                    border: rgba(255, 255, 255, 0.14),
+                },
             }
         }
     }
@@ -233,7 +244,9 @@ impl SettingsPalette {
 
 pub fn plan_badge_tone(plan: &str) -> BadgeTone {
     let lower = plan.to_ascii_lowercase();
-    if lower == "free" || lower == "go" {
+    if lower.contains("unsubscribed") || lower.contains("expired") {
+        BadgeTone::Muted
+    } else if lower == "free" || lower == "go" {
         BadgeTone::Green
     } else if lower.contains("ultra") || lower.contains("max") {
         BadgeTone::Amber
