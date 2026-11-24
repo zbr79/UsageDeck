@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 use usagedeck_core::default_data_dir;
 use usagedeck_core::store::{CredentialVault, Store, ThemeMode};
 use usagedeck_core::view::ProviderKind;
-use usagedeck_core::win::fullscreen;
+use usagedeck_core::win::{fullscreen, launch};
 use windows::core::{w, Result, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -44,12 +44,13 @@ use windows::Win32::UI::WindowsAndMessaging::{
     DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW,
     GetWindow, KillTimer, LoadCursorW, LoadIconW, PostMessageW, PostQuitMessage, RegisterClassExW,
     RegisterWindowMessageW, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow,
-    TrackPopupMenu, TranslateMessage, GW_HWNDPREV, HICON, HWND_TOPMOST, IDC_HAND, IDI_APPLICATION,
-    LR_DEFAULTCOLOR, MF_SEPARATOR, MF_STRING, MSG, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RETURNCMD,
-    TPM_RIGHTBUTTON, WM_APP, WM_CONTEXTMENU, WM_DESTROY, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NULL,
-    WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMER, WM_WINDOWPOSCHANGED, WNDCLASSEXW, WS_EX_LAYERED,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    TrackPopupMenu, TranslateMessage, CS_DBLCLKS, GW_HWNDPREV, HICON, HWND_TOPMOST, IDC_HAND,
+    IDI_APPLICATION, LR_DEFAULTCOLOR, MF_SEPARATOR, MF_STRING, MSG, SWP_NOACTIVATE, SWP_NOMOVE,
+    SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
+    TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_CONTEXTMENU, WM_DESTROY, WM_LBUTTONDBLCLK,
+    WM_LBUTTONUP, WM_MOUSEMOVE, WM_NULL, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMER,
+    WM_WINDOWPOSCHANGED, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_POPUP,
 };
 
 const WM_MOUSELEAVE: u32 = 0x02A3;
@@ -122,6 +123,7 @@ struct AppState {
     active_hover_system: bool,
     hover_card_hovered: bool,
     hover_dismiss_at: Option<Instant>,
+    suppress_next_lbuttonup: bool,
     fullscreen_debounce: fullscreen::Debounce,
     strip_visible: bool,
     toast: Option<ToastNotice>,
@@ -368,6 +370,56 @@ fn open_cursor_and_watch_ui() {
             }
         }
     }
+}
+
+fn launch_provider_from_strip(provider: ProviderKind, watch_cursor: bool, anchor: Option<RECT>) {
+    let strip_hwnd_raw = try_with_state(|s| s.strip_hwnd.0 as isize).unwrap_or(0);
+    let poller_tx = if watch_cursor {
+        try_with_state(|s| s.poller_tx.clone()).flatten()
+    } else {
+        None
+    };
+    std::thread::spawn(move || match launch::open_provider_app_or_web(provider) {
+        Ok(outcome) => {
+            if let Some(tx) = poller_tx {
+                let _ = tx.send(PollerCmd::WatchCursorSignIn);
+            }
+            if let launch::LaunchOutcome::OpenedWeb(_) = outcome {
+                if strip_hwnd_raw != 0 {
+                    post_toast(
+                        strip_hwnd_raw,
+                        format!("Opened {} dashboard", provider.display_name()),
+                        anchor,
+                    );
+                }
+            }
+        }
+        Err(e) => {
+            log::warn!(
+                "double-click launch {} failed: {e}",
+                provider.display_name()
+            );
+            if strip_hwnd_raw != 0 {
+                post_toast(
+                    strip_hwnd_raw,
+                    format!("Could not open {}", provider.display_name()),
+                    anchor,
+                );
+            }
+        }
+    });
+}
+
+fn launch_task_manager_from_strip(anchor: Option<RECT>) {
+    let strip_hwnd_raw = try_with_state(|s| s.strip_hwnd.0 as isize).unwrap_or(0);
+    std::thread::spawn(move || {
+        if let Err(e) = launch::open_task_manager() {
+            log::warn!("double-click Task Manager failed: {e}");
+            if strip_hwnd_raw != 0 {
+                post_toast(strip_hwnd_raw, "Could not open Task Manager", anchor);
+            }
+        }
+    });
 }
 
 fn hide_card_until_reset_ui(provider: ProviderKind, account_id: String, until_ms: u64) {
@@ -1403,8 +1455,111 @@ unsafe extern "system" fn strip_wnd_proc(
             }
             LRESULT(0)
         }
+        WM_LBUTTONDBLCLK => {
+            enum DblClickAction {
+                None,
+                LaunchProvider {
+                    provider: ProviderKind,
+                    watch_cursor: bool,
+                    anchor: Option<RECT>,
+                },
+                LaunchTaskManager {
+                    anchor: Option<RECT>,
+                },
+            }
+
+            let action = try_with_state(|s| {
+                let scale = s.metrics.map_or(1.0, |m| m.scale);
+                let (dx, dy) = cursor_dip(lparam, scale);
+                let (sx, sy, _, _) = s.strip_pos;
+
+                // Never treat a double-click on the tiny exhausted `×` chip as an app launch.
+                if s.strip_layout
+                    .as_ref()
+                    .and_then(|l| l.hit_test_pill_hide(dx, dy))
+                    .is_some()
+                {
+                    return DblClickAction::None;
+                }
+
+                if let Some(item_idx) = s
+                    .strip_layout
+                    .as_ref()
+                    .and_then(|l| l.hit_test_pill(dx, dy))
+                {
+                    let (snapshot, _) = s.shared.get();
+                    if let Some(item) = snapshot.items.get(item_idx) {
+                        let anchor = s
+                            .strip_layout
+                            .as_ref()
+                            .and_then(|l| l.pill_rect(item_idx))
+                            .map(|r| pill_screen_rect_px(sx, sy, r, scale));
+                        s.pending_hover_pill = None;
+                        s.pending_hover_system = false;
+                        s.active_hover_pill = None;
+                        s.active_hover_system = false;
+                        s.hover_card_hovered = false;
+                        s.hover_dismiss_at = None;
+                        s.suppress_next_lbuttonup = true;
+                        return DblClickAction::LaunchProvider {
+                            provider: item.provider,
+                            watch_cursor: item.provider == ProviderKind::Cursor
+                                && item.can_open_cursor,
+                            anchor,
+                        };
+                    }
+                }
+
+                if s.strip_layout
+                    .as_ref()
+                    .is_some_and(|l| l.hit_test_system(dx, dy))
+                {
+                    let anchor = s
+                        .strip_layout
+                        .as_ref()
+                        .and_then(|l| l.system_rect())
+                        .map(|r| pill_screen_rect_px(sx, sy, r, scale));
+                    s.pending_hover_pill = None;
+                    s.pending_hover_system = false;
+                    s.active_hover_pill = None;
+                    s.active_hover_system = false;
+                    s.hover_card_hovered = false;
+                    s.hover_dismiss_at = None;
+                    s.suppress_next_lbuttonup = true;
+                    return DblClickAction::LaunchTaskManager { anchor };
+                }
+
+                DblClickAction::None
+            })
+            .unwrap_or(DblClickAction::None);
+
+            match action {
+                DblClickAction::None => {}
+                DblClickAction::LaunchProvider {
+                    provider,
+                    watch_cursor,
+                    anchor,
+                } => {
+                    let _ = KillTimer(Some(hwnd), TIMER_HOVER_OPEN_ID);
+                    let _ = KillTimer(Some(hwnd), TIMER_HOVER_CLOSE_ID);
+                    sync_and_paint_strip_ui();
+                    launch_provider_from_strip(provider, watch_cursor, anchor);
+                }
+                DblClickAction::LaunchTaskManager { anchor } => {
+                    let _ = KillTimer(Some(hwnd), TIMER_HOVER_OPEN_ID);
+                    let _ = KillTimer(Some(hwnd), TIMER_HOVER_CLOSE_ID);
+                    sync_and_paint_strip_ui();
+                    launch_task_manager_from_strip(anchor);
+                }
+            }
+            LRESULT(0)
+        }
         WM_LBUTTONUP => {
             let action = try_with_state(|s| {
+                if s.suppress_next_lbuttonup {
+                    s.suppress_next_lbuttonup = false;
+                    return StripClickAction::None;
+                }
                 let scale = s.metrics.map_or(1.0, |m| m.scale);
                 let (dx, dy) = cursor_dip(lparam, scale);
                 let (sx, sy, _, _) = s.strip_pos;
@@ -1638,6 +1793,7 @@ pub fn run_ui(
         let strip_class = w!("UsageDeckTaskbarStrip");
         let wc_strip = WNDCLASSEXW {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+            style: CS_DBLCLKS,
             lpfnWndProc: Some(strip_wnd_proc),
             hInstance: hinstance.into(),
             hCursor: hand_cursor,
@@ -1696,6 +1852,7 @@ pub fn run_ui(
                 active_hover_system: false,
                 hover_card_hovered: false,
                 hover_dismiss_at: None,
+                suppress_next_lbuttonup: false,
                 fullscreen_debounce: fullscreen::Debounce::default(),
                 strip_visible: false,
                 toast: None,

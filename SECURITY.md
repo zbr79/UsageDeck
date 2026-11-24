@@ -93,10 +93,15 @@ Windows Credential Manager, UsageDeck performs read-only discovery from `OPENCOD
 `opencode.db` (`SQLITE_OPEN_READ_ONLY`). Discovered keys are deduplicated against Credential Manager
 accounts in memory; `accounts.json` is never mutated.
 
-**Google Antigravity.** UsageDeck discovers Antigravity's OAuth access token read-only from Windows
-Credential Manager (`gemini:antigravity`, decoding `go-keyring-base64:` / `go-keyring-encoded:`
-payloads) or `%USERPROFILE%\.gemini\antigravity-acp\` (`antigravity-oauth-token`, `acp_token.json`)
-and queries `v1internal:retrieveUserQuotaSummary` read-only.
+**Google Antigravity.** When Antigravity Desktop IDE or `agy` is running locally, UsageDeck queries
+its loopback Connect-RPC server on `127.0.0.1` (`RetrieveUserQuotaSummary` / `GetUserStatus` /
+`GetCommandModelConfigs`) read-only using the process's `--csrf_token`. Otherwise, UsageDeck reads
+Antigravity's OAuth access token read-only from `%APPDATA%\*Antigravity*\User\globalStorage\state.vscdb`
+(`SQLITE_OPEN_READ_ONLY`, private temporary copy when locked), Windows Credential Manager
+(`gemini:antigravity` and `*antigravity*`, reading raw UTF-8/UTF-16LE credential blobs), or
+`%USERPROFILE%\.gemini\` (`jetski-standalone-oauth-token`, `antigravity-oauth-token`, `acp_token.json`)
+and queries `v1internal:retrieveUserQuotaSummary` (falling back to `v1internal:fetchAvailableModels`)
+read-only. UsageDeck never refreshes or modifies Antigravity's OAuth tokens.
 
 | App                     | What is read (read-only)                                                                                                                                                                    |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -108,7 +113,7 @@ and queries `v1internal:retrieveUserQuotaSummary` read-only.
 | Grok CLI                | `~/.grok/auth.json` (or `GROK_HOME/auth.json` / `GROK_AUTH`, skipped if `XAI_API_KEY` is set)                                                                                               |
 | Grok Bot                | `%APPDATA%\Grok Bot\sand-secrets.json` and `Local State` (fails closed on decryption error; falls back to Cursor only when absent)                                                          |
 | OpenCode                | Windows Credential Manager (`UsageDeck`), `OPENCODE_API_KEY`, `auth.json`, and `opencode.db` (`SQLITE_OPEN_READ_ONLY`)                                                                      |
-| Antigravity             | Windows Credential Manager (`gemini:antigravity`) or `%USERPROFILE%\.gemini\antigravity-acp\` (`antigravity-oauth-token` / `acp_token.json`)                                                |
+| Antigravity             | Local `language_server` / `agy` loopback RPC (`127.0.0.1`), `*Antigravity*\User\globalStorage\state.vscdb` (`SQLITE_OPEN_READ_ONLY`), Credential Manager (`*antigravity*`), and `~/.gemini/` |
 
 ## What the app stores
 
