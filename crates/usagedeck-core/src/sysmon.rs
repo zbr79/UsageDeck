@@ -1505,7 +1505,7 @@ mod tests {
             proc_sample(103, 102, 13, "grep.exe", None, 6.4, 250 * MB),
             proc_sample(104, 101, 14, "sed.exe", None, 1.2, 40 * MB),
             proc_sample(105, 101, 15, "xargs.exe", None, 0.8, 30 * MB),
-            proc_sample(200, 10, 20, "chrome.exe", None, 2.0, 1 * GB),
+            proc_sample(200, 10, 20, "chrome.exe", None, 2.0, GB),
         ];
 
         let (top_cpu, top_mem) = attribute_processes(&procs);
