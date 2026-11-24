@@ -414,11 +414,20 @@ fn is_generic_worker_or_tool(stem: &str) -> bool {
         "node"
             | "bun"
             | "deno"
+            | "npm"
+            | "npx"
+            | "pnpm"
+            | "yarn"
+            | "tsx"
+            | "ts-node"
             | "python"
             | "python3"
             | "pythonw"
             | "uv"
             | "pip"
+            | "pytest"
+            | "mypy"
+            | "ruff"
             | "cargo"
             | "rustc"
             | "rust-analyzer"
@@ -437,6 +446,9 @@ fn is_generic_worker_or_tool(stem: &str) -> bool {
             | "lld-link"
             | "mspdbsrv"
             | "msbuild"
+            | "make"
+            | "cmake"
+            | "ninja"
             | "dotnet"
             | "java"
             | "javaw"
@@ -446,10 +458,47 @@ fn is_generic_worker_or_tool(stem: &str) -> bool {
             | "tsc"
             | "vite"
             | "webpack"
+            | "eslint"
+            | "prettier"
             | "git"
+            | "git-remote-https"
+            | "git-upload-pack"
             | "rg"
             | "fd"
+            | "grep"
+            | "egrep"
+            | "fgrep"
+            | "find"
+            | "findstr"
+            | "sed"
+            | "awk"
+            | "gawk"
+            | "xargs"
+            | "timeout"
+            | "sleep"
+            | "cat"
+            | "head"
+            | "tail"
+            | "sort"
+            | "uniq"
+            | "wc"
+            | "jq"
+            | "diff"
+            | "ls"
+            | "cp"
+            | "mv"
+            | "rm"
+            | "mkdir"
+            | "tr"
+            | "cut"
+            | "tee"
+            | "env"
+            | "cygpath"
+            | "uname"
+            | "which"
+            | "where"
             | "ssh"
+            | "ssh-agent"
             | "curl"
             | "tar"
             | "7z"
@@ -675,6 +724,44 @@ pub fn attribute_processes(
     (top_cpu, top_memory)
 }
 
+/// Reconcile per-process CPU% and memory bytes so aggregated process rows can never exceed
+/// system-wide CPU% or physical used RAM (e.g. from minor snapshot clock skew or shared pages).
+pub fn reconcile_process_totals(
+    procs: &mut [RawProcessSample],
+    cpu_percent: f64,
+    memory_used_bytes: u64,
+) {
+    let sum_cpu: f64 = procs
+        .iter()
+        .filter(|p| p.cpu_percent.is_finite() && p.cpu_percent > 0.0)
+        .map(|p| p.cpu_percent)
+        .sum();
+    if sum_cpu > cpu_percent && cpu_percent > 0.0 {
+        let scale = cpu_percent / sum_cpu;
+        for p in procs.iter_mut() {
+            if p.cpu_percent.is_finite() && p.cpu_percent > 0.0 {
+                p.cpu_percent *= scale;
+            }
+        }
+    } else if cpu_percent <= 0.0 {
+        for p in procs.iter_mut() {
+            p.cpu_percent = 0.0;
+        }
+    }
+
+    let sum_mem: u64 = procs
+        .iter()
+        .fold(0u64, |acc, p| acc.saturating_add(p.memory_bytes));
+    if sum_mem > memory_used_bytes && memory_used_bytes > 0 {
+        let scale = memory_used_bytes as f64 / sum_mem as f64;
+        for p in procs.iter_mut() {
+            if p.memory_bytes > 0 {
+                p.memory_bytes = ((p.memory_bytes as f64) * scale).round() as u64;
+            }
+        }
+    }
+}
+
 /// Official `psapi.h` `PROCESS_MEMORY_COUNTERS_EX2` layout (Windows 10/11 22H2+).
 /// Exposes `private_working_set_size` (exact physical RAM privately owned by a process, matching
 /// Windows Task Manager's Memory column and excluding pagefile commit charge & shared DLLs).
@@ -697,12 +784,254 @@ struct ProcessMemoryCountersEx2 {
     shared_commit_usage: u64,
 }
 
+/// Exact 64-bit Windows `UNICODE_STRING` header inside `SYSTEM_PROCESS_INFORMATION`.
+#[cfg(all(windows, target_pointer_width = "64"))]
+#[allow(dead_code)]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct NtUnicodeString {
+    length: u16,
+    maximum_length: u16,
+    _pad: u32,
+    buffer: *const u16,
+}
+
+/// Exact 64-bit Windows `SYSTEM_PROCESS_INFORMATION` (`0x100` bytes) returned by
+/// `NtQuerySystemInformation(SystemProcessInformation = 5)` — unprivileged syscall used by
+/// Windows Task Manager to read CPU times & private working sets for ALL processes including
+/// `System` (PID 4), `vmmemWSL`, `MsMpEng`, `MemCompression`, and elevated apps.
+#[cfg(all(windows, target_pointer_width = "64"))]
+#[allow(dead_code)]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SystemProcessInfo64 {
+    next_entry_offset: u32,
+    number_of_threads: u32,
+    working_set_private_size: i64,
+    hard_fault_count: u32,
+    number_of_threads_high_watermark: u32,
+    cycle_time: u64,
+    create_time: i64,
+    user_time: i64,
+    kernel_time: i64,
+    image_name: NtUnicodeString,
+    base_priority: i32,
+    _pad_priority: u32,
+    unique_process_id: usize,
+    inherited_from_unique_process_id: usize,
+    handle_count: u32,
+    session_id: u32,
+    unique_process_key: usize,
+    peak_virtual_size: usize,
+    virtual_size: usize,
+    page_fault_count: u32,
+    _pad_fault: u32,
+    peak_working_set_size: usize,
+    working_set_size: usize,
+    quota_peak_paged_pool_usage: usize,
+    quota_paged_pool_usage: usize,
+    quota_peak_non_paged_pool_usage: usize,
+    quota_non_paged_pool_usage: usize,
+    pagefile_usage: usize,
+    peak_pagefile_usage: usize,
+    private_page_count: usize,
+    io_counters: [u64; 6],
+}
+
+#[cfg(all(windows, target_pointer_width = "64"))]
+const _: () = {
+    assert!(std::mem::size_of::<SystemProcessInfo64>() == 0x100);
+    assert!(std::mem::offset_of!(SystemProcessInfo64, working_set_private_size) == 0x08);
+    assert!(std::mem::offset_of!(SystemProcessInfo64, create_time) == 0x20);
+    assert!(std::mem::offset_of!(SystemProcessInfo64, image_name) == 0x38);
+    assert!(std::mem::offset_of!(SystemProcessInfo64, unique_process_id) == 0x50);
+    assert!(std::mem::offset_of!(SystemProcessInfo64, inherited_from_unique_process_id) == 0x58);
+    assert!(std::mem::offset_of!(SystemProcessInfo64, working_set_size) == 0x90);
+};
+
+#[cfg(all(windows, target_pointer_width = "64"))]
+#[link(name = "ntdll")]
+extern "system" {
+    fn NtQuerySystemInformation(
+        system_information_class: u32,
+        system_information: *mut std::ffi::c_void,
+        system_information_length: u32,
+        return_length: *mut u32,
+    ) -> i32;
+}
+
+/// Raw process entry retrieved from either `NtQuerySystemInformation` or `ToolHelp32`.
+#[cfg(windows)]
+struct RawWinProc {
+    pid: u32,
+    ppid: u32,
+    creation_time: u64,
+    total_proc_time: u64,
+    memory_bytes: u64,
+    exe_name: String,
+    exe_path: Option<String>,
+}
+
+/// Enumerate every live Windows process (including protected/elevated OS & WSL processes) via
+/// `NtQuerySystemInformation(SystemProcessInformation = 5)`.
+#[cfg(all(windows, target_pointer_width = "64"))]
+fn query_processes_nt() -> Option<Vec<RawWinProc>> {
+    use windows::core::PWSTR;
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    const SYSTEM_PROCESS_INFORMATION: u32 = 5;
+    const STATUS_INFO_LENGTH_MISMATCH: i32 = -1_073_741_820; // 0xC0000004
+    const MAX_BUF_BYTES: usize = 64 * 1024 * 1024;
+
+    // Allocate as `Vec<u64>` to guarantee 8-byte alignment for `SystemProcessInfo64`.
+    let mut cap_bytes: usize = 256 * 1024;
+    let mut words: Vec<u64> = Vec::new();
+    let mut ok = false;
+    for _ in 0..8 {
+        words.resize(cap_bytes.div_ceil(8), 0);
+        let buf_len = (words.len() * 8).min(u32::MAX as usize) as u32;
+        let mut ret_len: u32 = 0;
+        // SAFETY: `words` is valid writable memory of `buf_len` bytes and `ret_len` is stack-owned.
+        let status = unsafe {
+            NtQuerySystemInformation(
+                SYSTEM_PROCESS_INFORMATION,
+                words.as_mut_ptr().cast::<std::ffi::c_void>(),
+                buf_len,
+                &mut ret_len,
+            )
+        };
+        if status >= 0 {
+            ok = true;
+            break;
+        }
+        if status != STATUS_INFO_LENGTH_MISMATCH {
+            return None;
+        }
+        let needed = (ret_len as usize).max(cap_bytes.saturating_mul(2)) + 65_536;
+        if needed > MAX_BUF_BYTES {
+            return None;
+        }
+        cap_bytes = needed;
+    }
+    if !ok {
+        return None;
+    }
+
+    let buf_start = words.as_ptr().cast::<u8>() as usize;
+    let buf_bytes = words.len() * 8;
+    let buf_end = buf_start.saturating_add(buf_bytes);
+
+    let mut out = Vec::with_capacity(384);
+    let mut path_buf = [0u16; 520];
+    let mut offset: usize = 0;
+
+    while offset + std::mem::size_of::<SystemProcessInfo64>() <= buf_bytes {
+        // SAFETY: bounds checked above; `read_unaligned` handles arbitrary `NextEntryOffset`.
+        let info =
+            unsafe { std::ptr::read_unaligned((buf_start + offset) as *const SystemProcessInfo64) };
+        let pid = info.unique_process_id as u32;
+        let ppid = info.inherited_from_unique_process_id as u32;
+        let creation_time = info.create_time.max(0) as u64;
+        let total_proc_time =
+            (info.kernel_time.max(0) as u64).saturating_add(info.user_time.max(0) as u64);
+        let memory_bytes = if info.working_set_private_size > 0 {
+            info.working_set_private_size as u64
+        } else {
+            info.working_set_size as u64
+        };
+
+        let exe_name = if pid == 0 {
+            "System Idle Process".to_string()
+        } else if !info.image_name.buffer.is_null() && info.image_name.length >= 2 {
+            let str_addr = info.image_name.buffer as usize;
+            let byte_len = usize::from(info.image_name.length);
+            if str_addr >= buf_start && str_addr.saturating_add(byte_len) <= buf_end {
+                let u16_len = byte_len / 2;
+                let mut wide = Vec::with_capacity(u16_len);
+                // SAFETY: `str_addr..str_addr+byte_len` verified inside `words` buffer.
+                unsafe {
+                    for i in 0..u16_len {
+                        wide.push(std::ptr::read_unaligned(info.image_name.buffer.add(i)));
+                    }
+                }
+                String::from_utf16_lossy(&wide)
+            } else if pid == 4 {
+                "System".to_string()
+            } else {
+                String::new()
+            }
+        } else if pid == 4 {
+            "System".to_string()
+        } else {
+            String::new()
+        };
+
+        // Optional path lookup (for Steam/Epic game folders & Claude Code install path).
+        // Failing OpenProcess here is fine because CPU & RAM are already read above!
+        let mut exe_path: Option<String> = None;
+        if pid > 4 {
+            // SAFETY: best-effort limited query handle always closed immediately.
+            unsafe {
+                if let Ok(hproc) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+                    let mut path_len = path_buf.len() as u32;
+                    if QueryFullProcessImageNameW(
+                        hproc,
+                        PROCESS_NAME_FORMAT(0),
+                        PWSTR(path_buf.as_mut_ptr()),
+                        &mut path_len,
+                    )
+                    .is_ok()
+                        && path_len > 0
+                    {
+                        exe_path = Some(String::from_utf16_lossy(&path_buf[..path_len as usize]));
+                    }
+                    let _ = CloseHandle(hproc);
+                }
+            }
+        }
+
+        out.push(RawWinProc {
+            pid,
+            ppid,
+            creation_time,
+            total_proc_time,
+            memory_bytes,
+            exe_name,
+            exe_path,
+        });
+
+        if info.next_entry_offset == 0 {
+            break;
+        }
+        let Some(next) = offset.checked_add(info.next_entry_offset as usize) else {
+            break;
+        };
+        if next <= offset {
+            break;
+        }
+        offset = next;
+    }
+
+    (!out.is_empty()).then_some(out)
+}
+
+#[cfg(all(windows, not(target_pointer_width = "64")))]
+fn query_processes_nt() -> Option<Vec<RawWinProc>> {
+    None
+}
+
 /// Stateful native system monitor that computes delta CPU% across samples and attributes live
 /// CPU & Memory usage back to originating applications.
 #[derive(Default)]
 pub struct SystemMonitor {
     #[cfg(windows)]
     prev_sys_times: Option<(u64, u64, u64)>,
+    #[cfg(windows)]
+    prev_sample_ft: u64,
     #[cfg(windows)]
     prev_proc_times: HashMap<u32, (u64, u64)>,
 }
@@ -768,7 +1097,17 @@ impl SystemMonitor {
             f64::from(mem.dwMemoryLoad).clamp(0.0, 100.0)
         };
 
-        // 2. System-wide CPU times (kernel includes idle).
+        // 2. System-wide CPU times (kernel includes idle) & wall-clock FILETIME (100ns since 1601).
+        const WINDOWS_EPOCH_OFFSET_SECS: u64 = 11_644_473_600;
+        let now_ft = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| {
+                d.as_secs()
+                    .saturating_add(WINDOWS_EPOCH_OFFSET_SECS)
+                    .saturating_mul(10_000_000)
+                    .saturating_add(u64::from(d.subsec_nanos() / 100))
+            })
+            .unwrap_or(0);
         let (mut idle_ft, mut kernel_ft, mut user_ft) = (
             FILETIME::default(),
             FILETIME::default(),
@@ -804,139 +1143,179 @@ impl SystemMonitor {
             }
             None => (0, 0.0),
         };
+        let prev_sample_ft = self.prev_sample_ft;
         self.prev_sys_times = Some(curr_sys);
+        self.prev_sample_ft = now_ft;
 
-        // 3. Snapshot all live processes and gather parent PID, CPU delta, memory, and image path.
-        // SAFETY: ToolHelp snapshot handle is always closed before returning.
-        let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()? };
-        let mut entry = PROCESSENTRY32W {
-            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
-            ..Default::default()
-        };
+        // 3. Snapshot all live processes (preferring unprivileged NtQuerySystemInformation so
+        //    System, vmmemWSL, Defender, and elevated apps are all measured accurately).
+        let enumerated: Vec<RawWinProc> = if let Some(nt_procs) = query_processes_nt() {
+            nt_procs
+        } else {
+            // Fallback to ToolHelp32 if NtQuerySystemInformation ever fails.
+            // SAFETY: ToolHelp snapshot handle is always closed before returning.
+            let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()? };
+            let mut entry = PROCESSENTRY32W {
+                dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+                ..Default::default()
+            };
+            let mut fallback = Vec::with_capacity(256);
+            let mut path_buf = [0u16; 520];
 
-        let mut raw_procs: Vec<RawProcessSample> = Vec::with_capacity(256);
-        let mut next_proc_times: HashMap<u32, (u64, u64)> = HashMap::with_capacity(256);
-        let mut path_buf = [0u16; 520];
+            // SAFETY: iterates valid PROCESSENTRY32W entries in our snapshot handle.
+            unsafe {
+                if Process32FirstW(snap, &mut entry).is_ok() {
+                    loop {
+                        let pid = entry.th32ProcessID;
+                        let ppid = entry.th32ParentProcessID;
+                        let end = entry
+                            .szExeFile
+                            .iter()
+                            .position(|&c| c == 0)
+                            .unwrap_or(entry.szExeFile.len());
+                        let exe_name = String::from_utf16_lossy(&entry.szExeFile[..end]);
 
-        // SAFETY: iterates valid PROCESSENTRY32W entries in our snapshot handle.
-        unsafe {
-            if Process32FirstW(snap, &mut entry).is_ok() {
-                loop {
-                    let pid = entry.th32ProcessID;
-                    let ppid = entry.th32ParentProcessID;
-                    let end = entry
-                        .szExeFile
-                        .iter()
-                        .position(|&c| c == 0)
-                        .unwrap_or(entry.szExeFile.len());
-                    let exe_name = String::from_utf16_lossy(&entry.szExeFile[..end]);
+                        let mut creation_time = 0u64;
+                        let mut total_proc_time = 0u64;
+                        let mut memory_bytes = 0u64;
+                        let mut exe_path: Option<String> = None;
 
-                    let mut creation_time = 0u64;
-                    let mut proc_cpu_pct = 0.0f64;
-                    let mut memory_bytes = 0u64;
-                    let mut exe_path: Option<String> = None;
-
-                    if pid > 4 {
-                        if let Ok(hproc) =
-                            OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
-                        {
-                            let (mut c_ft, mut e_ft, mut k_ft, mut u_ft) = (
-                                FILETIME::default(),
-                                FILETIME::default(),
-                                FILETIME::default(),
-                                FILETIME::default(),
-                            );
-                            if GetProcessTimes(hproc, &mut c_ft, &mut e_ft, &mut k_ft, &mut u_ft)
+                        if pid > 4 {
+                            if let Ok(hproc) =
+                                OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+                            {
+                                let (mut c_ft, mut e_ft, mut k_ft, mut u_ft) = (
+                                    FILETIME::default(),
+                                    FILETIME::default(),
+                                    FILETIME::default(),
+                                    FILETIME::default(),
+                                );
+                                if GetProcessTimes(
+                                    hproc, &mut c_ft, &mut e_ft, &mut k_ft, &mut u_ft,
+                                )
                                 .is_ok()
-                            {
-                                creation_time = filetime_u64(c_ft);
-                                let total_proc_time =
-                                    filetime_u64(k_ft).saturating_add(filetime_u64(u_ft));
-                                if d_total_sys > 0 {
-                                    if let Some(&(prev_c, prev_t)) = self.prev_proc_times.get(&pid)
-                                    {
-                                        if prev_c == creation_time {
-                                            let d_proc = total_proc_time.saturating_sub(prev_t);
-                                            proc_cpu_pct = ((d_proc as f64 / d_total_sys as f64)
-                                                * 100.0)
-                                                .clamp(0.0, 100.0);
-                                        }
-                                    }
+                                {
+                                    creation_time = filetime_u64(c_ft);
+                                    total_proc_time =
+                                        filetime_u64(k_ft).saturating_add(filetime_u64(u_ft));
                                 }
-                                next_proc_times.insert(pid, (creation_time, total_proc_time));
-                            }
 
-                            let mut pmc2 = ProcessMemoryCountersEx2 {
-                                cb: std::mem::size_of::<ProcessMemoryCountersEx2>() as u32,
-                                ..Default::default()
-                            };
-                            if K32GetProcessMemoryInfo(
-                                hproc,
-                                std::ptr::from_mut(&mut pmc2).cast::<PROCESS_MEMORY_COUNTERS>(),
-                                std::mem::size_of::<ProcessMemoryCountersEx2>() as u32,
-                            )
-                            .as_bool()
-                            {
-                                memory_bytes = if pmc2.private_working_set_size > 0 {
-                                    pmc2.private_working_set_size as u64
-                                } else {
-                                    pmc2.working_set_size as u64
-                                };
-                            } else {
-                                let mut pmc = PROCESS_MEMORY_COUNTERS_EX {
-                                    cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
+                                let mut pmc2 = ProcessMemoryCountersEx2 {
+                                    cb: std::mem::size_of::<ProcessMemoryCountersEx2>() as u32,
                                     ..Default::default()
                                 };
                                 if K32GetProcessMemoryInfo(
                                     hproc,
-                                    std::ptr::from_mut(&mut pmc).cast::<PROCESS_MEMORY_COUNTERS>(),
-                                    std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
+                                    std::ptr::from_mut(&mut pmc2).cast::<PROCESS_MEMORY_COUNTERS>(),
+                                    std::mem::size_of::<ProcessMemoryCountersEx2>() as u32,
                                 )
                                 .as_bool()
                                 {
-                                    // Always use physical WorkingSetSize (never PrivateUsage pagefile commit).
-                                    memory_bytes = pmc.WorkingSetSize as u64;
+                                    memory_bytes = if pmc2.private_working_set_size > 0 {
+                                        pmc2.private_working_set_size as u64
+                                    } else {
+                                        pmc2.working_set_size as u64
+                                    };
+                                } else {
+                                    let mut pmc = PROCESS_MEMORY_COUNTERS_EX {
+                                        cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>()
+                                            as u32,
+                                        ..Default::default()
+                                    };
+                                    if K32GetProcessMemoryInfo(
+                                        hproc,
+                                        std::ptr::from_mut(&mut pmc)
+                                            .cast::<PROCESS_MEMORY_COUNTERS>(),
+                                        std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
+                                    )
+                                    .as_bool()
+                                    {
+                                        memory_bytes = pmc.WorkingSetSize as u64;
+                                    }
                                 }
-                            }
 
-                            let mut path_len = path_buf.len() as u32;
-                            if QueryFullProcessImageNameW(
-                                hproc,
-                                PROCESS_NAME_FORMAT(0),
-                                PWSTR(path_buf.as_mut_ptr()),
-                                &mut path_len,
-                            )
-                            .is_ok()
-                                && path_len > 0
-                            {
-                                exe_path =
-                                    Some(String::from_utf16_lossy(&path_buf[..path_len as usize]));
-                            }
+                                let mut path_len = path_buf.len() as u32;
+                                if QueryFullProcessImageNameW(
+                                    hproc,
+                                    PROCESS_NAME_FORMAT(0),
+                                    PWSTR(path_buf.as_mut_ptr()),
+                                    &mut path_len,
+                                )
+                                .is_ok()
+                                    && path_len > 0
+                                {
+                                    exe_path = Some(String::from_utf16_lossy(
+                                        &path_buf[..path_len as usize],
+                                    ));
+                                }
 
-                            let _ = CloseHandle(hproc);
+                                let _ = CloseHandle(hproc);
+                            }
+                        }
+
+                        fallback.push(RawWinProc {
+                            pid,
+                            ppid,
+                            creation_time,
+                            total_proc_time,
+                            memory_bytes,
+                            exe_name,
+                            exe_path,
+                        });
+
+                        if Process32NextW(snap, &mut entry).is_err() {
+                            break;
                         }
                     }
+                }
+                let _ = CloseHandle(snap);
+            }
+            fallback
+        };
 
-                    raw_procs.push(RawProcessSample {
-                        pid,
-                        ppid,
-                        creation_time,
-                        exe_name,
-                        exe_path,
-                        cpu_percent: proc_cpu_pct,
-                        memory_bytes,
-                    });
+        let mut raw_procs: Vec<RawProcessSample> = Vec::with_capacity(enumerated.len());
+        let mut next_proc_times: HashMap<u32, (u64, u64)> =
+            HashMap::with_capacity(enumerated.len());
 
-                    if Process32NextW(snap, &mut entry).is_err() {
-                        break;
+        for proc in enumerated {
+            let mut proc_cpu_pct = 0.0f64;
+            if proc.pid != 0 && d_total_sys > 0 {
+                let d_proc = if let Some(&(prev_c, prev_t)) = self.prev_proc_times.get(&proc.pid) {
+                    if prev_c == proc.creation_time {
+                        proc.total_proc_time.saturating_sub(prev_t)
+                    } else if prev_sample_ft > 0 && proc.creation_time >= prev_sample_ft {
+                        // Recycled PID started within this interval: all its CPU time is new.
+                        proc.total_proc_time
+                    } else {
+                        0
                     }
+                } else if prev_sample_ft > 0 && proc.creation_time >= prev_sample_ft {
+                    // Newly spawned process within this interval: count its CPU time immediately!
+                    proc.total_proc_time
+                } else {
+                    0
+                };
+                if d_proc > 0 {
+                    proc_cpu_pct = ((d_proc as f64 / d_total_sys as f64) * 100.0).clamp(0.0, 100.0);
                 }
             }
-            let _ = CloseHandle(snap);
+            if proc.pid != 0 {
+                next_proc_times.insert(proc.pid, (proc.creation_time, proc.total_proc_time));
+            }
+            raw_procs.push(RawProcessSample {
+                pid: proc.pid,
+                ppid: proc.ppid,
+                creation_time: proc.creation_time,
+                exe_name: proc.exe_name,
+                exe_path: proc.exe_path,
+                cpu_percent: proc_cpu_pct,
+                memory_bytes: proc.memory_bytes,
+            });
         }
 
         self.prev_proc_times = next_proc_times;
 
+        reconcile_process_totals(&mut raw_procs, cpu_percent, memory_used_bytes);
         let (top_cpu, top_memory) = attribute_processes(&raw_procs);
         Some(SystemSnapshot {
             cpu_percent,
@@ -1106,5 +1485,57 @@ mod tests {
             format_memory_summary(24 * GB + 614 * MB, 64 * GB),
             "24.6 / 64 GB"
         );
+    }
+
+    #[test]
+    fn timeout_and_grep_under_claude_roll_up_to_claude() {
+        let procs = vec![
+            proc_sample(10, 4, 1, "explorer.exe", None, 0.2, 100 * MB),
+            proc_sample(
+                100,
+                10,
+                10,
+                "claude.exe",
+                Some(r"C:\Users\me\.local\bin\claude.exe"),
+                12.0,
+                4 * GB,
+            ),
+            proc_sample(101, 100, 11, "bash.exe", None, 1.0, 80 * MB),
+            proc_sample(102, 101, 12, "timeout.exe", None, 12.0, 400 * MB),
+            proc_sample(103, 102, 13, "grep.exe", None, 6.4, 250 * MB),
+            proc_sample(104, 101, 14, "sed.exe", None, 1.2, 40 * MB),
+            proc_sample(105, 101, 15, "xargs.exe", None, 0.8, 30 * MB),
+            proc_sample(200, 10, 20, "chrome.exe", None, 2.0, GB),
+        ];
+
+        let (top_cpu, top_mem) = attribute_processes(&procs);
+        assert_eq!(top_cpu[0].name, "Claude");
+        assert_eq!(top_cpu[0].process_count, 6);
+        assert!((top_cpu[0].cpu_percent - 33.4).abs() < 0.01);
+        assert!(!top_cpu
+            .iter()
+            .any(|c| c.name == "Timeout" || c.name == "Grep"));
+        assert!(!top_mem
+            .iter()
+            .any(|c| c.name == "Timeout" || c.name == "Grep"));
+    }
+
+    #[test]
+    fn reconcile_process_totals_caps_cpu_and_memory_proportionally() {
+        let mut procs = vec![
+            proc_sample(10, 4, 1, "claude.exe", None, 60.0, 30 * GB),
+            proc_sample(20, 4, 2, "chrome.exe", None, 40.0, 20 * GB),
+        ];
+        // System reports 75% CPU and 40 GB RAM used -> scale down 100% -> 75% and 50 GB -> 40 GB.
+        reconcile_process_totals(&mut procs, 75.0, 40 * GB);
+        assert!((procs[0].cpu_percent - 45.0).abs() < 0.01);
+        assert!((procs[1].cpu_percent - 30.0).abs() < 0.01);
+        assert_eq!(procs[0].memory_bytes, 24 * GB);
+        assert_eq!(procs[1].memory_bytes, 16 * GB);
+
+        // When already under system totals, values are preserved unchanged.
+        reconcile_process_totals(&mut procs, 80.0, 48 * GB);
+        assert!((procs[0].cpu_percent - 45.0).abs() < 0.01);
+        assert_eq!(procs[0].memory_bytes, 24 * GB);
     }
 }
