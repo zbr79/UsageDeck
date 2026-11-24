@@ -135,7 +135,6 @@ struct HoverPalette {
     is_gemini_gem: bool,
     card_bg: D2D1_COLOR_F,
     card_border: D2D1_COLOR_F,
-    top_highlight: D2D1_COLOR_F,
     text_primary: D2D1_COLOR_F,
     text_muted: D2D1_COLOR_F,
     text_caption: D2D1_COLOR_F,
@@ -160,8 +159,7 @@ impl HoverPalette {
             (TaskbarTheme::Dark, true) => Self {
                 is_gemini_gem: true,
                 card_bg: rgba(22, 24, 28, 0.975),
-                card_border: rgba(255, 255, 255, 0.13),
-                top_highlight: rgba(0, 212, 146, 0.52),
+                card_border: rgba(0, 212, 146, 0.48),
                 text_primary: rgba(244, 244, 246, 0.98),
                 text_muted: rgba(154, 160, 172, 0.92),
                 text_caption: rgba(113, 118, 130, 0.95),
@@ -180,8 +178,7 @@ impl HoverPalette {
             (TaskbarTheme::Light, true) => Self {
                 is_gemini_gem: true,
                 card_bg: rgba(252, 253, 254, 0.985),
-                card_border: rgba(15, 23, 42, 0.11),
-                top_highlight: rgba(0, 153, 102, 0.42),
+                card_border: rgba(0, 153, 102, 0.40),
                 text_primary: rgba(22, 24, 28, 0.96),
                 text_muted: rgba(82, 88, 102, 0.90),
                 text_caption: rgba(113, 120, 133, 0.95),
@@ -201,7 +198,6 @@ impl HoverPalette {
                 is_gemini_gem: false,
                 card_bg: rgba(24, 25, 30, 0.97),
                 card_border: rgba(255, 255, 255, 0.14),
-                top_highlight: rgba(255, 255, 255, 0.06),
                 text_primary: rgba(244, 244, 246, 0.98),
                 text_muted: rgba(161, 161, 170, 0.92),
                 text_caption: rgba(113, 113, 122, 0.95),
@@ -221,7 +217,6 @@ impl HoverPalette {
                 is_gemini_gem: false,
                 card_bg: rgba(250, 251, 253, 0.98),
                 card_border: rgba(0, 0, 0, 0.12),
-                top_highlight: rgba(255, 255, 255, 0.85),
                 text_primary: rgba(20, 20, 24, 0.96),
                 text_muted: rgba(82, 82, 91, 0.90),
                 text_caption: rgba(113, 113, 122, 0.95),
@@ -1379,25 +1374,21 @@ impl TooltipWindow {
         let pal = HoverPalette::for_theme(theme);
 
         self.commit_layered((x, y), (width_px, height_px), metrics.dpi, |rt| {
+            let inset = if pal.is_gemini_gem { 0.75 } else { 0.5 };
             let outer = DipRect {
-                x: 0.5,
-                y: 0.5,
-                w: box_w_dip - 1.0,
-                h: box_h_dip - 1.0,
+                x: inset,
+                y: inset,
+                w: box_w_dip - inset * 2.0,
+                h: box_h_dip - inset * 2.0,
             };
             fill_rounded(rt, outer, TOOLTIP_RADIUS_DIP, pal.card_bg)?;
-            fill_rounded(
+            stroke_rounded(
                 rt,
-                DipRect {
-                    x: TOOLTIP_RADIUS_DIP,
-                    y: 1.0,
-                    w: (box_w_dip - TOOLTIP_RADIUS_DIP * 2.0).max(0.0),
-                    h: 1.0,
-                },
-                0.5,
-                pal.top_highlight,
+                outer,
+                TOOLTIP_RADIUS_DIP,
+                if pal.is_gemini_gem { 1.25 } else { 1.0 },
+                pal.card_border,
             )?;
-            stroke_rounded(rt, outer, TOOLTIP_RADIUS_DIP, 1.0, pal.card_border)?;
 
             let text_rect = DipRect {
                 x: TOOLTIP_PAD_X_DIP + 1.0,
@@ -1760,33 +1751,42 @@ impl TooltipWindow {
         let y = (anchor_top - gap_px - height_px).clamp(min_y, max_y);
 
         self.commit_layered((x, y), (width_px, height_px), metrics.dpi, |rt| {
-            // Card outer surface + 2px top emerald/status accent glow strip + outer border.
+            // Whole-card surface + subtle status wash + full continuous rounded border
+            // (red card when run out, amber when auth-expired, emerald glass in Gemini Gem).
+            let dark = theme == TaskbarTheme::Dark;
+            let (card_tint, card_border, stroke_w) = if item.exhausted {
+                (
+                    Some(with_alpha(pal.danger, if dark { 0.11 } else { 0.065 })),
+                    with_alpha(pal.danger, if dark { 0.68 } else { 0.54 }),
+                    1.25,
+                )
+            } else if item.auth_expired {
+                (
+                    Some(with_alpha(pal.warn, if dark { 0.08 } else { 0.05 })),
+                    with_alpha(pal.warn, if dark { 0.58 } else { 0.46 }),
+                    1.25,
+                )
+            } else if pal.is_gemini_gem {
+                (
+                    Some(with_alpha(pal.accent, if dark { 0.04 } else { 0.025 })),
+                    pal.card_border,
+                    1.25,
+                )
+            } else {
+                (None, pal.card_border, 1.0)
+            };
+            let inset = stroke_w * 0.5;
             let outer = DipRect {
-                x: 0.5,
-                y: 0.5,
-                w: layout.card_w_dip - 1.0,
-                h: layout.card_h_dip - 1.0,
+                x: inset,
+                y: inset,
+                w: layout.card_w_dip - stroke_w,
+                h: layout.card_h_dip - stroke_w,
             };
             fill_rounded(rt, outer, CARD_RADIUS_DIP, pal.card_bg)?;
-            let top_glow = if item.exhausted {
-                with_alpha(pal.danger, 0.58)
-            } else if item.auth_expired {
-                with_alpha(pal.warn, 0.55)
-            } else {
-                pal.top_highlight
-            };
-            fill_rounded(
-                rt,
-                DipRect {
-                    x: CARD_RADIUS_DIP + 4.0,
-                    y: 1.0,
-                    w: (layout.card_w_dip - (CARD_RADIUS_DIP + 4.0) * 2.0).max(0.0),
-                    h: 2.0,
-                },
-                1.0,
-                top_glow,
-            )?;
-            stroke_rounded(rt, outer, CARD_RADIUS_DIP, 1.0, pal.card_border)?;
+            if let Some(tint) = card_tint {
+                fill_rounded(rt, outer, CARD_RADIUS_DIP, tint)?;
+            }
+            stroke_rounded(rt, outer, CARD_RADIUS_DIP, stroke_w, card_border)?;
 
             // 1. Header Row: 20x20 provider icon (or colored fallback), title, subtitle, badges.
             let light_surface = theme == TaskbarTheme::Light;
@@ -2135,26 +2135,42 @@ impl TooltipWindow {
         let dark = theme == TaskbarTheme::Dark;
 
         self.commit_layered((x, y), (width_px, height_px), metrics.dpi, |rt| {
-            // Card surface + 2px top emerald accent glow strip + border.
+            // Whole-card surface + subtle status wash + full continuous rounded border
+            // (red card on critical CPU/RAM load, amber on high load, emerald glass in Gemini Gem).
+            let peak_load = sys.cpu_percent.max(sys.memory_percent);
+            let (card_tint, card_border, stroke_w) = if peak_load >= 90.0 {
+                (
+                    Some(with_alpha(pal.danger, if dark { 0.11 } else { 0.065 })),
+                    with_alpha(pal.danger, if dark { 0.68 } else { 0.54 }),
+                    1.25,
+                )
+            } else if peak_load >= 75.0 {
+                (
+                    Some(with_alpha(pal.warn, if dark { 0.08 } else { 0.05 })),
+                    with_alpha(pal.warn, if dark { 0.58 } else { 0.46 }),
+                    1.25,
+                )
+            } else if pal.is_gemini_gem {
+                (
+                    Some(with_alpha(pal.accent, if dark { 0.04 } else { 0.025 })),
+                    pal.card_border,
+                    1.25,
+                )
+            } else {
+                (None, pal.card_border, 1.0)
+            };
+            let inset = stroke_w * 0.5;
             let outer = DipRect {
-                x: 0.5,
-                y: 0.5,
-                w: card_w_dip - 1.0,
-                h: card_h_dip - 1.0,
+                x: inset,
+                y: inset,
+                w: card_w_dip - stroke_w,
+                h: card_h_dip - stroke_w,
             };
             fill_rounded(rt, outer, CARD_RADIUS_DIP, pal.card_bg)?;
-            fill_rounded(
-                rt,
-                DipRect {
-                    x: CARD_RADIUS_DIP + 4.0,
-                    y: 1.0,
-                    w: (card_w_dip - (CARD_RADIUS_DIP + 4.0) * 2.0).max(0.0),
-                    h: 2.0,
-                },
-                1.0,
-                pal.top_highlight,
-            )?;
-            stroke_rounded(rt, outer, CARD_RADIUS_DIP, 1.0, pal.card_border)?;
+            if let Some(tint) = card_tint {
+                fill_rounded(rt, outer, CARD_RADIUS_DIP, tint)?;
+            }
+            stroke_rounded(rt, outer, CARD_RADIUS_DIP, stroke_w, card_border)?;
 
             // 1. Header: rounded PC badge, "System", memory badge, top-right Settings button.
             let (icon_bg, icon_border, icon_fg) = HoverPalette::tinted_pill(pal.accent, theme);

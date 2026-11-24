@@ -166,7 +166,7 @@ fn palette(theme: TaskbarTheme) -> Palette {
             pill_border_danger: rgba(0xff, 0x64, 0x67, 0.65),
             pill_border_warn: rgba(0xff, 0xb9, 0x00, 0.55),
             flyout_bg: rgba(22, 24, 28, 0.975),
-            flyout_border: rgba(255, 255, 255, 0.13),
+            flyout_border: rgba(0, 212, 146, 0.46),
             card_bg: rgba(30, 33, 39, 0.94),
             card_border: rgba(255, 255, 255, 0.08),
             btn_bg: rgba(255, 255, 255, 0.065),
@@ -188,7 +188,7 @@ fn palette(theme: TaskbarTheme) -> Palette {
             pill_border_danger: rgba(0xc1, 0x00, 0x07, 0.65),
             pill_border_warn: rgba(0xbb, 0x4d, 0x00, 0.55),
             flyout_bg: rgba(250, 252, 253, 0.98),
-            flyout_border: rgba(15, 23, 42, 0.11),
+            flyout_border: rgba(0, 153, 102, 0.38),
             card_bg: rgba(255, 255, 255, 0.94),
             card_border: rgba(15, 23, 42, 0.08),
             btn_bg: rgba(15, 23, 42, 0.05),
@@ -1919,32 +1919,30 @@ impl Renderer {
         let pal = palette(theme);
 
         self.commit_layered(hwnd, (x, y), (width_px, height_px), dpi, |rt| {
+            let is_gem = snapshot.app_skin == usagedeck_core::store::AppSkin::GeminiGem;
+            let inset = if is_gem { 0.75 } else { 0.5 };
             let outer = DipRect {
-                x: 0.5,
-                y: 0.5,
-                w: layout.width_dip - 1.0,
-                h: layout.height_dip - 1.0,
+                x: inset,
+                y: inset,
+                w: layout.width_dip - inset * 2.0,
+                h: layout.height_dip - inset * 2.0,
             };
             self.fill_rounded(rt, outer, 12.0, pal.flyout_bg)?;
-            if snapshot.app_skin == usagedeck_core::store::AppSkin::GeminiGem {
-                let top_glow = if theme == TaskbarTheme::Dark {
-                    rgba(0, 212, 146, 0.50)
+            if is_gem {
+                let tint = if theme == TaskbarTheme::Dark {
+                    rgba(0, 212, 146, 0.035)
                 } else {
-                    rgba(0, 153, 102, 0.40)
+                    rgba(0, 153, 102, 0.025)
                 };
-                self.fill_rounded(
-                    rt,
-                    DipRect {
-                        x: 16.0,
-                        y: 1.0,
-                        w: (layout.width_dip - 32.0).max(0.0),
-                        h: 2.0,
-                    },
-                    1.0,
-                    top_glow,
-                )?;
+                self.fill_rounded(rt, outer, 12.0, tint)?;
             }
-            self.stroke_rounded(rt, outer, 12.0, 1.0, pal.flyout_border)?;
+            self.stroke_rounded(
+                rt,
+                outer,
+                12.0,
+                if is_gem { 1.25 } else { 1.0 },
+                pal.flyout_border,
+            )?;
 
             // Header title
             let title = if snapshot.is_demo {
