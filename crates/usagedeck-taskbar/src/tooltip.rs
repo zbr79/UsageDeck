@@ -12,7 +12,7 @@ use crate::icons::IconAtlas;
 use crate::layout::DipRect;
 use crate::taskbar::{TaskbarMetrics, TaskbarTheme};
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
-use usagedeck_core::sysmon::{format_memory_summary, AttributedConsumer, SystemSnapshot};
+use usagedeck_core::sysmon::{format_memory_summary, SystemSnapshot};
 use usagedeck_core::view::{BarSeverity, BarView, ProviderItem, ProviderKind};
 use windows::core::{w, Result, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
@@ -2014,20 +2014,25 @@ impl TooltipWindow {
         pal: &HoverPalette,
         hovered_button: Option<&HoverCardAction>,
     ) -> Result<(RECT, Vec<HoverCardButton>)> {
-        const SECTION_CAP_H: f32 = 14.0;
-        const SECTION_CAP_GAP: f32 = 4.0;
-        const PROC_ROW_H: f32 = 20.0;
-        const MINI_BAR_W: f32 = 56.0;
-        const MINI_BAR_H: f32 = 4.0;
-        const CPU_VAL_W: f32 = 44.0;
-        const MEM_VAL_W: f32 = 44.0;
+        const SYS_CARD_W_DIP: f32 = 500.0;
+        const COL_GAP_DIP: f32 = 10.0;
+        const PANEL_PAD_X: f32 = 10.0;
+        const PANEL_PAD_Y: f32 = 9.0;
+        const PANEL_RADIUS: f32 = 8.0;
+        const PANEL_HDR_H: f32 = 20.0;
+        const PANEL_BAR_GAP: f32 = 6.0;
+        const PANEL_DIV_GAP: f32 = 8.0;
+        const PROC_ROW_H: f32 = 21.0;
+        const MINI_BAR_W: f32 = 42.0;
+        const MINI_BAR_H: f32 = 4.5;
+        const VAL_W: f32 = 38.0;
 
         let scale = metrics.scale.max(0.5);
         let mon_w_dip = (metrics.monitor_rect.right - metrics.monitor_rect.left) as f32 / scale;
         let card_w_dip =
-            CARD_WIDTH_DIP.min((mon_w_dip - CARD_MARGIN_DIP * 2.0).max(CARD_MIN_WIDTH_DIP));
+            SYS_CARD_W_DIP.min((mon_w_dip - CARD_MARGIN_DIP * 2.0).max(CARD_MIN_WIDTH_DIP));
         let content_x = CARD_PAD_X_DIP;
-        let content_w = (card_w_dip - CARD_PAD_X_DIP * 2.0).max(120.0);
+        let content_w = (card_w_dip - CARD_PAD_X_DIP * 2.0).max(240.0);
 
         let header_y = CARD_PAD_Y_DIP;
         let icon_rect = DipRect {
@@ -2066,56 +2071,65 @@ impl TooltipWindow {
             h: HEADER_ROW_H_DIP,
         };
 
-        // Optional inline memory summary badge right beside "System" (e.g. "24.6 / 64 GB").
-        let mem_summary = format_memory_summary(sys.memory_used_bytes, sys.memory_total_bytes);
-        let mem_badge: Option<HeaderBadge> = if !mem_summary.is_empty() {
-            let (bw_raw, _) =
-                self.measure_text(&mem_summary, &self.fmt_badge, 140.0, BADGE_H_DIP)?;
-            let bw = (bw_raw.ceil() + BADGE_PAD_X_DIP * 2.0).max(32.0);
-            let bx = title_x + title_w + 6.0;
-            if bx + bw <= header_right_limit + 1.0 {
-                Some(HeaderBadge {
-                    text: mem_summary,
-                    rect: DipRect {
-                        x: bx,
-                        y: header_y + (HEADER_ROW_H_DIP - BADGE_H_DIP) * 0.5,
-                        w: bw,
-                        h: BADGE_H_DIP,
-                    },
-                    bg: pal.badge_neutral_bg,
-                    border: pal.badge_neutral_border,
-                    fg: pal.text_muted,
-                })
-            } else {
-                None
+        // Build reconciled CPU & Memory breakdown rows so each panel visibly adds up to its headline %.
+        let cpu_total = sys.cpu_percent.clamp(0.0, 100.0);
+        let mem_total_pct = sys.memory_percent.clamp(0.0, 100.0);
+        let total_mem_bytes = sys.memory_total_bytes.max(1) as f64;
+
+        let mut cpu_rows: Vec<(String, f64, bool)> = Vec::with_capacity(6);
+        let mut cpu_sum = 0.0f64;
+        for c in &sys.top_cpu {
+            let pct = c.cpu_percent.clamp(0.0, cpu_total);
+            if pct >= 0.1 {
+                cpu_rows.push((c.display_name(), pct, false));
+                cpu_sum += pct;
             }
-        } else {
-            None
-        };
+        }
+        let cpu_other = (cpu_total - cpu_sum).max(0.0);
+        if cpu_other >= 0.5 && cpu_total >= 1.0 {
+            let other_lbl = if cpu_rows.is_empty() {
+                "Windows & background"
+            } else {
+                "Other & OS"
+            };
+            cpu_rows.push((other_lbl.to_string(), cpu_other, true));
+        }
 
-        // Vertical cursor layout.
-        let mut cursor_y = header_y + HEADER_ROW_H_DIP + SECTION_GAP_DIP;
-        let cpu_bar_y = cursor_y;
-        cursor_y += BAR_META_H_DIP + BAR_TRACK_GAP_DIP + BAR_TRACK_H_DIP + BAR_GAP_DIP;
-        let mem_bar_y = cursor_y;
-        cursor_y += BAR_META_H_DIP + BAR_TRACK_GAP_DIP + BAR_TRACK_H_DIP + SECTION_GAP_DIP;
+        let mut mem_rows: Vec<(String, f64, bool)> = Vec::with_capacity(6);
+        let mut mem_sum = 0.0f64;
+        for c in &sys.top_memory {
+            let raw_pct = (c.memory_bytes as f64 / total_mem_bytes) * 100.0;
+            let pct = raw_pct.clamp(0.0, mem_total_pct);
+            if pct >= 0.1 {
+                mem_rows.push((c.display_name(), pct, false));
+                mem_sum += pct;
+            }
+        }
+        let mem_other = (mem_total_pct - mem_sum).max(0.0);
+        if mem_other >= 0.5 && mem_total_pct >= 1.0 {
+            let other_lbl = if mem_rows.is_empty() {
+                "Windows & cache"
+            } else {
+                "Other & OS"
+            };
+            mem_rows.push((other_lbl.to_string(), mem_other, true));
+        }
 
-        let divider_y = cursor_y;
-        cursor_y += 1.0 + 9.0;
+        // Two equal-height side-by-side framed sub-cards: CPU (left) and Memory (right).
+        let panels_y = header_y + HEADER_ROW_H_DIP + SECTION_GAP_DIP;
+        let col_w = ((content_w - COL_GAP_DIP) * 0.5).max(115.0);
+        let row_slots = cpu_rows.len().max(mem_rows.len()).max(1);
+        let panel_h = PANEL_PAD_Y
+            + PANEL_HDR_H
+            + PANEL_BAR_GAP
+            + BAR_TRACK_H_DIP
+            + PANEL_DIV_GAP
+            + 1.0
+            + 6.0
+            + row_slots as f32 * PROC_ROW_H
+            + PANEL_PAD_Y;
 
-        let cpu_cap_y = cursor_y;
-        cursor_y += SECTION_CAP_H + SECTION_CAP_GAP;
-        let cpu_rows_y = cursor_y;
-        let cpu_row_count = sys.top_cpu.len().max(1);
-        cursor_y += cpu_row_count as f32 * PROC_ROW_H + 9.0;
-
-        let mem_cap_y = cursor_y;
-        cursor_y += SECTION_CAP_H + SECTION_CAP_GAP;
-        let mem_rows_y = cursor_y;
-        let mem_row_count = sys.top_memory.len().max(1);
-        cursor_y += mem_row_count as f32 * PROC_ROW_H;
-
-        let card_h_dip = cursor_y + CARD_BOTTOM_PAD_DIP;
+        let card_h_dip = panels_y + panel_h + CARD_BOTTOM_PAD_DIP;
         let width_px = (card_w_dip * metrics.scale).ceil() as i32;
         let height_px = (card_h_dip * metrics.scale).ceil() as i32;
         if width_px <= 0 || height_px <= 0 {
@@ -2133,11 +2147,12 @@ impl TooltipWindow {
 
         let buttons = vec![settings_btn];
         let dark = theme == TaskbarTheme::Dark;
+        let mem_summary = format_memory_summary(sys.memory_used_bytes, sys.memory_total_bytes);
 
         self.commit_layered((x, y), (width_px, height_px), metrics.dpi, |rt| {
             // Whole-card surface + subtle status wash + full continuous rounded border
             // (red card on critical CPU/RAM load, amber on high load, emerald glass in Gemini Gem).
-            let peak_load = sys.cpu_percent.max(sys.memory_percent);
+            let peak_load = cpu_total.max(mem_total_pct);
             let (card_tint, card_border, stroke_w) = if peak_load >= 90.0 {
                 (
                     Some(with_alpha(pal.danger, if dark { 0.11 } else { 0.065 })),
@@ -2172,7 +2187,7 @@ impl TooltipWindow {
             }
             stroke_rounded(rt, outer, CARD_RADIUS_DIP, stroke_w, card_border)?;
 
-            // 1. Header: rounded PC badge, "System", memory badge, top-right Settings button.
+            // 1. Header: rounded PC badge, "System", top-right Settings button.
             let (icon_bg, icon_border, icon_fg) = HoverPalette::tinted_pill(pal.accent, theme);
             fill_rounded(rt, icon_rect, 5.0, icon_bg)?;
             stroke_rounded(rt, icon_rect, 5.0, 1.0, icon_border)?;
@@ -2185,291 +2200,279 @@ impl TooltipWindow {
                 title_rect,
                 pal.text_primary,
             )?;
-            if let Some(ref badge) = mem_badge {
-                fill_rounded(rt, badge.rect, BADGE_RADIUS_DIP, badge.bg)?;
-                stroke_rounded(rt, badge.rect, BADGE_RADIUS_DIP, 1.0, badge.border)?;
-                draw_text(rt, &badge.text, &self.fmt_badge, badge.rect, badge.fg)?;
-            }
 
-            // 2. Live CPU & Memory summary bars.
-            let draw_summary_bar = |label: &str, pct: f64, y_pos: f32| -> Result<()> {
-                let clamped = pct.clamp(0.0, 100.0);
-                let sev = system_load_severity(clamped);
-                let pct_x = content_x + content_w - BAR_PCT_W_DIP;
-                draw_text(
+            // Distinct color themes: CPU uses Emerald/Amber/Red; Memory uses Sky-Cyan/Amber/Red
+            // so you can tell CPU vs Memory apart instantly without reading labels.
+            let cpu_sev = system_load_severity(cpu_total);
+            let cpu_tone = pal.severity_color(cpu_sev);
+            let ram_base = if dark {
+                rgba(56, 189, 248, 1.0) // luminous sky-cyan
+            } else {
+                rgba(2, 132, 199, 1.0) // crisp sky-600
+            };
+            let mem_sev = system_load_severity(mem_total_pct);
+            let mem_tone = match mem_sev {
+                BarSeverity::Danger => pal.danger,
+                BarSeverity::Warn => pal.warn,
+                _ => ram_base,
+            };
+
+            let sub_bg = if dark {
+                rgba(255, 255, 255, 0.032)
+            } else {
+                rgba(15, 23, 42, 0.028)
+            };
+
+            let draw_metric_panel = |panel_rect: DipRect,
+                                     tag: &str,
+                                     subtitle: &str,
+                                     total_pct: f64,
+                                     tone: D2D1_COLOR_F,
+                                     sev: BarSeverity,
+                                     rows: &[(String, f64, bool)],
+                                     empty_text: &str|
+             -> Result<()> {
+                let border_alpha = if dark { 0.24 } else { 0.22 };
+                fill_rounded(rt, panel_rect, PANEL_RADIUS, sub_bg)?;
+                stroke_rounded(
                     rt,
-                    label,
-                    &self.fmt_bar_label,
-                    DipRect {
-                        x: content_x,
-                        y: y_pos,
-                        w: (pct_x - content_x - 4.0).max(40.0),
-                        h: BAR_META_H_DIP,
-                    },
-                    pal.text_primary,
+                    panel_rect,
+                    PANEL_RADIUS,
+                    1.0,
+                    with_alpha(tone, border_alpha),
                 )?;
-                let pct_str = format!("{:.0}%", clamped.round());
+
+                let ix = panel_rect.x + PANEL_PAD_X;
+                let iw = (panel_rect.w - PANEL_PAD_X * 2.0).max(80.0);
+                let hdr_y = panel_rect.y + PANEL_PAD_Y;
+
+                // Tag pill (`CPU` / `RAM`) + subtitle + bold right-aligned total %.
+                let tag_w = 34.0;
+                let tag_rect = DipRect {
+                    x: ix,
+                    y: hdr_y + 1.0,
+                    w: tag_w,
+                    h: PANEL_HDR_H - 2.0,
+                };
+                let (t_bg, t_border, t_fg) = HoverPalette::tinted_pill(tone, theme);
+                fill_rounded(rt, tag_rect, 4.5, t_bg)?;
+                stroke_rounded(rt, tag_rect, 4.5, 1.0, t_border)?;
+                draw_text(rt, tag, &self.fmt_badge, tag_rect, t_fg)?;
+
+                let pct_x = ix + iw - VAL_W;
+                let sub_x = ix + tag_w + 6.0;
+                let sub_w = (pct_x - 4.0 - sub_x).max(20.0);
                 draw_text(
                     rt,
-                    &pct_str,
+                    subtitle,
+                    &self.fmt_section_cap,
+                    DipRect {
+                        x: sub_x,
+                        y: hdr_y + 3.0,
+                        w: sub_w,
+                        h: PANEL_HDR_H - 4.0,
+                    },
+                    pal.text_muted,
+                )?;
+
+                let total_str = format!("{:.0}%", total_pct.round());
+                let total_fg = match sev {
+                    BarSeverity::Danger => pal.danger,
+                    BarSeverity::Warn => pal.warn,
+                    _ => pal.text_primary,
+                };
+                draw_text(
+                    rt,
+                    &total_str,
                     &self.fmt_bar_pct,
                     DipRect {
                         x: pct_x,
-                        y: y_pos,
-                        w: BAR_PCT_W_DIP,
-                        h: BAR_META_H_DIP,
+                        y: hdr_y + 1.0,
+                        w: VAL_W,
+                        h: PANEL_HDR_H - 2.0,
                     },
-                    pal.percent_color(sev),
+                    total_fg,
                 )?;
-                let track_rect = DipRect {
-                    x: content_x,
-                    y: y_pos + BAR_META_H_DIP + BAR_TRACK_GAP_DIP,
-                    w: content_w,
+
+                // Full-width total metric bar directly under its header.
+                let track = DipRect {
+                    x: ix,
+                    y: hdr_y + PANEL_HDR_H + PANEL_BAR_GAP,
+                    w: iw,
                     h: BAR_TRACK_H_DIP,
                 };
-                fill_rounded(rt, track_rect, BAR_TRACK_RADIUS_DIP, pal.track_bg)?;
-                let fill_w = (track_rect.w * (clamped as f32 / 100.0)).clamp(0.0, track_rect.w);
+                fill_rounded(rt, track, BAR_TRACK_RADIUS_DIP, pal.track_bg)?;
+                let fill_w = (track.w * (total_pct as f32 / 100.0)).clamp(0.0, track.w);
                 if fill_w > 0.5 {
                     fill_rounded(
                         rt,
                         DipRect {
-                            x: track_rect.x,
-                            y: track_rect.y,
+                            x: track.x,
+                            y: track.y,
                             w: fill_w,
-                            h: track_rect.h,
+                            h: track.h,
                         },
                         BAR_TRACK_RADIUS_DIP.min(fill_w * 0.5),
-                        pal.severity_color(sev),
+                        tone,
                     )?;
+                }
+
+                // Hairline divider before per-app breakdown rows.
+                let div_y = track.y + track.h + PANEL_DIV_GAP;
+                fill_rounded(
+                    rt,
+                    DipRect {
+                        x: ix,
+                        y: div_y,
+                        w: iw,
+                        h: 1.0,
+                    },
+                    0.5,
+                    pal.divider,
+                )?;
+
+                let rows_y = div_y + 1.0 + 6.0;
+                if rows.is_empty() {
+                    draw_text(
+                        rt,
+                        empty_text,
+                        &self.fmt_subtitle,
+                        DipRect {
+                            x: ix,
+                            y: rows_y,
+                            w: iw,
+                            h: PROC_ROW_H,
+                        },
+                        pal.text_muted,
+                    )?;
+                } else {
+                    let val_x = ix + iw - VAL_W;
+                    let bar_x = val_x - 6.0 - MINI_BAR_W;
+                    let name_w = (bar_x - 6.0 - ix).max(52.0);
+                    let denom = total_pct.max(1.0);
+                    for (idx, (label, pct, is_other)) in rows.iter().enumerate() {
+                        let row_y = rows_y + idx as f32 * PROC_ROW_H;
+                        let display = self.truncate_to_width(label, &self.fmt_proc_name, name_w);
+                        let name_fg = if *is_other {
+                            pal.text_muted
+                        } else {
+                            pal.text_primary
+                        };
+                        draw_text(
+                            rt,
+                            &display,
+                            &self.fmt_proc_name,
+                            DipRect {
+                                x: ix,
+                                y: row_y,
+                                w: name_w,
+                                h: PROC_ROW_H,
+                            },
+                            name_fg,
+                        )?;
+
+                        // Scale mini-bar relative to the panel's live total so top hogs stand out clearly.
+                        let frac = (*pct / denom).clamp(0.0, 1.0) as f32;
+                        let mini_track = DipRect {
+                            x: bar_x,
+                            y: row_y + (PROC_ROW_H - MINI_BAR_H) * 0.5,
+                            w: MINI_BAR_W,
+                            h: MINI_BAR_H,
+                        };
+                        fill_rounded(rt, mini_track, MINI_BAR_H * 0.5, pal.track_bg)?;
+                        let mini_fill = (mini_track.w * frac).clamp(0.0, mini_track.w);
+                        if mini_fill > 0.5 {
+                            let row_bar_col = if *is_other { pal.muted } else { tone };
+                            fill_rounded(
+                                rt,
+                                DipRect {
+                                    x: mini_track.x,
+                                    y: mini_track.y,
+                                    w: mini_fill,
+                                    h: mini_track.h,
+                                },
+                                (MINI_BAR_H * 0.5).min(mini_fill * 0.5),
+                                row_bar_col,
+                            )?;
+                        }
+
+                        let val_str = format_pct_share(*pct);
+                        let val_fg = if *is_other {
+                            pal.text_muted
+                        } else if *pct >= 30.0 {
+                            tone
+                        } else {
+                            pal.text_primary
+                        };
+                        draw_text(
+                            rt,
+                            &val_str,
+                            &self.fmt_proc_val,
+                            DipRect {
+                                x: val_x,
+                                y: row_y,
+                                w: VAL_W,
+                                h: PROC_ROW_H,
+                            },
+                            val_fg,
+                        )?;
+                    }
                 }
                 Ok(())
             };
-            draw_summary_bar("CPU", sys.cpu_percent, cpu_bar_y)?;
-            draw_summary_bar("Memory", sys.memory_percent, mem_bar_y)?;
 
-            // 3. Hairline divider before attributed program breakdowns.
-            fill_rounded(
-                rt,
-                DipRect {
-                    x: content_x,
-                    y: divider_y,
-                    w: content_w,
-                    h: 1.0,
-                },
-                0.5,
-                pal.divider,
-            )?;
-
-            // 4. TOP CPU attributed programs.
-            draw_text(
-                rt,
-                "TOP CPU",
-                &self.fmt_section_cap,
-                DipRect {
-                    x: content_x,
-                    y: cpu_cap_y,
-                    w: content_w,
-                    h: SECTION_CAP_H,
-                },
-                pal.text_caption,
-            )?;
-            if sys.top_cpu.is_empty() {
-                draw_text(
-                    rt,
-                    "System idle",
-                    &self.fmt_subtitle,
-                    DipRect {
-                        x: content_x,
-                        y: cpu_rows_y,
-                        w: content_w,
-                        h: PROC_ROW_H,
-                    },
-                    pal.text_muted,
-                )?;
+            let cpu_panel = DipRect {
+                x: content_x,
+                y: panels_y,
+                w: col_w,
+                h: panel_h,
+            };
+            let mem_panel = DipRect {
+                x: content_x + col_w + COL_GAP_DIP,
+                y: panels_y,
+                w: col_w,
+                h: panel_h,
+            };
+            let mem_sub = if mem_summary.is_empty() {
+                "Memory"
             } else {
-                let val_x = content_x + content_w - CPU_VAL_W;
-                let bar_x = val_x - 8.0 - MINI_BAR_W;
-                let name_w = (bar_x - 8.0 - content_x).max(60.0);
-                for (idx, consumer) in sys.top_cpu.iter().enumerate() {
-                    let row_y = cpu_rows_y + idx as f32 * PROC_ROW_H;
-                    let display = self.truncate_to_width(
-                        &consumer.display_name(),
-                        &self.fmt_proc_name,
-                        name_w,
-                    );
-                    draw_text(
-                        rt,
-                        &display,
-                        &self.fmt_proc_name,
-                        DipRect {
-                            x: content_x,
-                            y: row_y,
-                            w: name_w,
-                            h: PROC_ROW_H,
-                        },
-                        pal.text_primary,
-                    )?;
-                    let frac = (consumer.cpu_percent / 100.0).clamp(0.0, 1.0) as f32;
-                    let row_sev = if consumer.cpu_percent >= 60.0 {
-                        BarSeverity::Danger
-                    } else if consumer.cpu_percent >= 30.0 {
-                        BarSeverity::Warn
-                    } else {
-                        BarSeverity::Ok
-                    };
-                    let track = DipRect {
-                        x: bar_x,
-                        y: row_y + (PROC_ROW_H - MINI_BAR_H) * 0.5,
-                        w: MINI_BAR_W,
-                        h: MINI_BAR_H,
-                    };
-                    fill_rounded(rt, track, MINI_BAR_H * 0.5, pal.track_bg)?;
-                    let fill_w = (track.w * frac).clamp(0.0, track.w);
-                    if fill_w > 0.5 {
-                        fill_rounded(
-                            rt,
-                            DipRect {
-                                x: track.x,
-                                y: track.y,
-                                w: fill_w,
-                                h: track.h,
-                            },
-                            (MINI_BAR_H * 0.5).min(fill_w * 0.5),
-                            pal.severity_color(row_sev),
-                        )?;
-                    }
-                    let val_str = format_consumer_cpu(consumer);
-                    draw_text(
-                        rt,
-                        &val_str,
-                        &self.fmt_proc_val,
-                        DipRect {
-                            x: val_x,
-                            y: row_y,
-                            w: CPU_VAL_W,
-                            h: PROC_ROW_H,
-                        },
-                        pal.percent_color(row_sev),
-                    )?;
-                }
-            }
+                mem_summary.as_str()
+            };
 
-            // 5. TOP MEMORY attributed programs.
-            draw_text(
-                rt,
-                "TOP MEMORY",
-                &self.fmt_section_cap,
-                DipRect {
-                    x: content_x,
-                    y: mem_cap_y,
-                    w: content_w,
-                    h: SECTION_CAP_H,
-                },
-                pal.text_caption,
+            draw_metric_panel(
+                cpu_panel,
+                "CPU",
+                "Processor",
+                cpu_total,
+                cpu_tone,
+                cpu_sev,
+                &cpu_rows,
+                "System idle",
             )?;
-            if sys.top_memory.is_empty() {
-                draw_text(
-                    rt,
-                    "No active apps",
-                    &self.fmt_subtitle,
-                    DipRect {
-                        x: content_x,
-                        y: mem_rows_y,
-                        w: content_w,
-                        h: PROC_ROW_H,
-                    },
-                    pal.text_muted,
-                )?;
-            } else {
-                let val_x = content_x + content_w - MEM_VAL_W;
-                let bar_x = val_x - 8.0 - MINI_BAR_W;
-                let name_w = (bar_x - 8.0 - content_x).max(60.0);
-                let total_mem = sys.memory_total_bytes.max(1) as f64;
-                for (idx, consumer) in sys.top_memory.iter().enumerate() {
-                    let row_y = mem_rows_y + idx as f32 * PROC_ROW_H;
-                    let display = self.truncate_to_width(
-                        &consumer.display_name(),
-                        &self.fmt_proc_name,
-                        name_w,
-                    );
-                    draw_text(
-                        rt,
-                        &display,
-                        &self.fmt_proc_name,
-                        DipRect {
-                            x: content_x,
-                            y: row_y,
-                            w: name_w,
-                            h: PROC_ROW_H,
-                        },
-                        pal.text_primary,
-                    )?;
-                    let raw_pct = (consumer.memory_bytes as f64 / total_mem) * 100.0;
-                    let max_pct = sys.memory_percent.clamp(0.0, 100.0);
-                    let mem_pct = raw_pct.clamp(0.0, if max_pct > 0.0 { max_pct } else { 100.0 });
-                    let frac = (mem_pct / 100.0).clamp(0.0, 1.0) as f32;
-                    let row_sev = if mem_pct >= 45.0 {
-                        BarSeverity::Danger
-                    } else if mem_pct >= 25.0 {
-                        BarSeverity::Warn
-                    } else {
-                        BarSeverity::Ok
-                    };
-                    let bar_col = match row_sev {
-                        BarSeverity::Danger => pal.danger,
-                        BarSeverity::Warn => pal.warn,
-                        _ => pal.accent,
-                    };
-                    let track = DipRect {
-                        x: bar_x,
-                        y: row_y + (PROC_ROW_H - MINI_BAR_H) * 0.5,
-                        w: MINI_BAR_W,
-                        h: MINI_BAR_H,
-                    };
-                    fill_rounded(rt, track, MINI_BAR_H * 0.5, pal.track_bg)?;
-                    let fill_w = (track.w * frac).clamp(0.0, track.w);
-                    if fill_w > 0.5 {
-                        fill_rounded(
-                            rt,
-                            DipRect {
-                                x: track.x,
-                                y: track.y,
-                                w: fill_w,
-                                h: track.h,
-                            },
-                            (MINI_BAR_H * 0.5).min(fill_w * 0.5),
-                            bar_col,
-                        )?;
-                    }
-                    let val_str = format_pct_share(mem_pct);
-                    draw_text(
-                        rt,
-                        &val_str,
-                        &self.fmt_proc_val,
-                        DipRect {
-                            x: val_x,
-                            y: row_y,
-                            w: MEM_VAL_W,
-                            h: PROC_ROW_H,
-                        },
-                        pal.percent_color(row_sev),
-                    )?;
-                }
-            }
+            draw_metric_panel(
+                mem_panel,
+                "RAM",
+                mem_sub,
+                mem_total_pct,
+                mem_tone,
+                mem_sev,
+                &mem_rows,
+                "No active apps",
+            )?;
 
-            // 6. Top-right Settings button.
+            // Top-right Settings button.
             for btn in &buttons {
                 let is_hovered = hovered_button == Some(&btn.action);
                 let bg = with_alpha(
                     pal.accent,
                     if is_hovered {
                         if dark {
-                            0.32
+                            0.28
                         } else {
                             0.22
                         }
                     } else if dark {
-                        0.18
+                        0.16
                     } else {
                         0.12
                     },
@@ -2479,15 +2482,19 @@ impl TooltipWindow {
                     if is_hovered {
                         0.78
                     } else if dark {
-                        0.44
+                        0.48
                     } else {
-                        0.34
+                        0.40
                     },
                 );
                 let fg = if is_hovered && dark {
                     pal.text_primary
-                } else {
+                } else if !pal.is_gemini_gem {
                     pal.accent
+                } else if dark {
+                    rgba(94, 233, 181, 1.0)
+                } else {
+                    rgba(0, 122, 85, 1.0)
                 };
                 fill_rounded(rt, btn.rect, FOOTER_BTN_RADIUS_DIP, bg)?;
                 stroke_rounded(rt, btn.rect, FOOTER_BTN_RADIUS_DIP, 1.0, border)?;
@@ -2526,10 +2533,6 @@ fn format_pct_share(pct: f64) -> String {
     } else {
         format!("{clamped:.1}%")
     }
-}
-
-fn format_consumer_cpu(c: &AttributedConsumer) -> String {
-    format_pct_share(c.cpu_percent)
 }
 
 fn draw_card_bar_track(
