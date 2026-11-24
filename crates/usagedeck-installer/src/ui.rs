@@ -1054,17 +1054,11 @@ fn draw_card(state: &UiState, rt: &ID2D1DCRenderTarget) -> Result<()> {
     let danger_soft = rgba(239, 68, 68, 0.16);
     let danger_text = rgba(252, 165, 165, 1.0);
 
-    // Card background & crisp border.
-    let card = DipRect::new(0.5, 0.5, WINDOW_W_DIP - 1.0, WINDOW_H_DIP - 1.0);
+    // Card background & crisp full rounded emerald-glass border.
+    let card = DipRect::new(0.75, 0.75, WINDOW_W_DIP - 1.5, WINDOW_H_DIP - 1.5);
     r.fill_rounded(rt, card, 14.0, bg)?;
-    // Subtle top emerald accent glow strip.
-    r.fill_rounded(
-        rt,
-        DipRect::new(16.0, 1.0, WINDOW_W_DIP - 32.0, 2.5),
-        1.25,
-        rgba(0, 212, 146, 0.55),
-    )?;
-    r.stroke_rounded(rt, card, 14.0, 1.0, border)?;
+    r.fill_rounded(rt, card, 14.0, rgba(0, 212, 146, 0.035))?;
+    r.stroke_rounded(rt, card, 14.0, 1.25, rgba(0, 212, 146, 0.48))?;
 
     // Top-right close button (`×`).
     let close_rect = DipRect::new(WINDOW_W_DIP - 40.0, 14.0, 26.0, 26.0);
