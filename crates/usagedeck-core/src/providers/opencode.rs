@@ -378,8 +378,18 @@ pub async fn accounts(core: &Core) -> Vec<Value> {
         .await
         .unwrap_or_default();
     let accounts = merge_discovered_accounts(stored, discovered);
+    if accounts.is_empty() {
+        super::record_provider_status(
+            SECTION,
+            "not found: no saved accounts, OPENCODE_API_KEY, auth.json, or opencode.db",
+            false,
+        );
+        return Vec::new();
+    }
     let disabled = core.store.get_settings().disabled_accounts;
     let mut rows = Vec::with_capacity(accounts.len());
+    let mut ok_count = 0usize;
+    let mut err_reasons: Vec<String> = Vec::new();
     for acc in accounts {
         let email = acc.email.clone();
         let hash = key_hash(&acc.key);
@@ -402,8 +412,22 @@ pub async fn accounts(core: &Core) -> Vec<Value> {
                     .map_err(FetchError::from)
             })
             .await;
+        if result.error.is_none() && result.usage.is_some() {
+            ok_count += 1;
+        } else if let Some(err) = result.error {
+            err_reasons.push(err.to_string());
+        }
         let enabled = !disabled.contains(&email.to_lowercase());
         rows.push(row(&email, enabled, result));
+    }
+    if err_reasons.is_empty() {
+        super::record_provider_status(SECTION, format!("ok ({ok_count} active)"), true);
+    } else {
+        super::record_provider_status(
+            SECTION,
+            format!("fetch failed: {} ({ok_count} ok)", err_reasons.join("; ")),
+            false,
+        );
     }
     rows
 }

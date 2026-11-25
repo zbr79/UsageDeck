@@ -1,8 +1,9 @@
-//! Launch or focus a provider's desktop app (or fall back to its HTTPS web dashboard),
-//! plus Task Manager for the System strip slot.
+//! Launch or focus a provider's desktop app (classic `.exe` or packaged Windows MSIX / Store app),
+//! falling back to its HTTPS web dashboard, plus Task Manager for the System strip slot.
 //!
 //! All local executable paths are checked with `is_safe_local_path` (rejecting UNC paths and
-//! `..` traversals), and web fallbacks only accept hardcoded `https://` URLs.
+//! `..` traversals), MSIX AppUserModelIDs are strictly character-validated, and web fallbacks
+//! only accept hardcoded `https://` URLs.
 
 use crate::providers::cursor_signin::{
     exe_candidates as cursor_exe_candidates, is_safe_local_path, is_safe_local_path_str,
@@ -14,8 +15,11 @@ use std::ffi::OsString;
 use std::os::windows::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use windows::core::{w, BOOL, PCWSTR, PWSTR};
-use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM};
+use windows::Win32::Foundation::{CloseHandle, ERROR_SUCCESS, HWND, LPARAM};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
+use windows::Win32::System::Registry::{
+    RegCloseKey, RegEnumKeyExW, RegOpenKeyExW, HKEY, HKEY_CURRENT_USER, KEY_READ,
+};
 use windows::Win32::System::Threading::{
     AttachThreadInput, GetCurrentThreadId, OpenProcess, QueryFullProcessImageNameW,
     PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -27,6 +31,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SetForegroundWindow, ShowWindow, GWL_EXSTYLE, GW_OWNER, SW_RESTORE, SW_SHOW, SW_SHOWNORMAL,
     WS_EX_TOOLWINDOW,
 };
+
+const APPMODEL_PACKAGES_KEY: &str = r"Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages";
 
 /// Result of launching or focusing a provider app (or web dashboard fallback).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,11 +59,143 @@ pub fn app_exe_names(provider: ProviderKind) -> &'static [&'static str] {
     match provider {
         ProviderKind::Claude => &["claude.exe"],
         ProviderKind::Cursor => &["cursor.exe"],
-        ProviderKind::Codex => &["codex.exe"],
+        // OpenAI unified the Windows Codex desktop app (`OpenAI.Codex_*`) into `ChatGPT.exe`.
+        ProviderKind::Codex => &["codex.exe", "chatgpt.exe"],
         ProviderKind::Grok => &["grok bot.exe", "grokbot.exe", "grok.exe"],
         ProviderKind::OpenCode => &["opencode.exe", "opencode-desktop.exe"],
         ProviderKind::Antigravity => &["antigravity.exe", "antigravity ide.exe"],
     }
+}
+
+/// MSIX / Microsoft Store package name prefixes (in priority order) for packaged desktop apps.
+pub fn msix_package_prefixes(provider: ProviderKind) -> &'static [&'static str] {
+    match provider {
+        ProviderKind::Codex => &[
+            "OpenAI.Codex_",
+            "OpenAI.ChatGPT-Desktop_",
+            "OpenAI.ChatGPT_",
+        ],
+        ProviderKind::Claude => &["Claude_"],
+        _ => &[],
+    }
+}
+
+/// Derive a Windows MSIX Package Family Name (`<Name>_<PublisherId>`) from a Package Full Name
+/// (`<Name>_<Version>_<Arch>_<ResourceId>_<PublisherId>`).
+pub fn package_family_name_from_full_name(full_name: &str) -> Option<String> {
+    let trimmed = full_name.trim();
+    let (name, rest) = trimmed.split_once('_')?;
+    let publisher_id = rest.rsplit('_').next()?;
+    if name.is_empty() || publisher_id.is_empty() || !rest.contains('_') {
+        return None;
+    }
+    Some(format!("{name}_{publisher_id}"))
+}
+
+/// Strictly validate a Windows AppUserModelID (`<PackageFamilyName>!<AppId>`) before passing it
+/// to `shell:AppsFolder\...`.
+pub fn is_valid_aumid(aumid: &str) -> bool {
+    let Some((family, app_id)) = aumid.split_once('!') else {
+        return false;
+    };
+    !family.is_empty()
+        && !app_id.is_empty()
+        && !app_id.contains('!')
+        && aumid
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '!'))
+}
+
+fn enum_reg_subkeys(root: HKEY, path: &str) -> Vec<String> {
+    let mut key = HKEY::default();
+    let w_path = wide(path);
+    // SAFETY: `w_path` is NUL-terminated; `key` is closed before returning.
+    if unsafe { RegOpenKeyExW(root, PCWSTR(w_path.as_ptr()), None, KEY_READ, &mut key) }
+        != ERROR_SUCCESS
+    {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut name = [0u16; 512];
+    for index in 0.. {
+        let mut len = name.len() as u32;
+        // SAFETY: `name` has space for `len` UTF-16 code units.
+        let status = unsafe {
+            RegEnumKeyExW(
+                key,
+                index,
+                Some(PWSTR(name.as_mut_ptr())),
+                &mut len,
+                None,
+                None,
+                None,
+                None,
+            )
+        };
+        if status != ERROR_SUCCESS {
+            break;
+        }
+        out.push(String::from_utf16_lossy(&name[..len as usize]));
+    }
+    // SAFETY: `key` was opened above.
+    let _ = unsafe { RegCloseKey(key) };
+    out
+}
+
+/// Find the installed MSIX AppUserModelID (e.g. `OpenAI.Codex_2p2nqsd0c76g0!App`) for any
+/// package matching `prefixes` in priority order.
+fn find_installed_msix_aumid(prefixes: &[&str]) -> Option<String> {
+    if prefixes.is_empty() {
+        return None;
+    }
+    let packages = enum_reg_subkeys(HKEY_CURRENT_USER, APPMODEL_PACKAGES_KEY);
+    for prefix in prefixes {
+        let prefix_lower = prefix.to_ascii_lowercase();
+        let mut matches: Vec<&String> = packages
+            .iter()
+            .filter(|pkg| pkg.to_ascii_lowercase().starts_with(&prefix_lower))
+            .collect();
+        // Prefer lexicographically newest version when multiple revisions are staged.
+        matches.sort();
+        matches.reverse();
+        for pkg in matches {
+            let apps_path = format!(r"{APPMODEL_PACKAGES_KEY}\{pkg}\Applications");
+            for app_id in enum_reg_subkeys(HKEY_CURRENT_USER, &apps_path) {
+                if is_valid_aumid(&app_id) {
+                    return Some(app_id);
+                }
+            }
+            if let Some(family) = package_family_name_from_full_name(pkg) {
+                let fallback = format!("{family}!App");
+                if is_valid_aumid(&fallback) {
+                    return Some(fallback);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn launch_msix_aumid(aumid: &str) -> Result<(), String> {
+    if !is_valid_aumid(aumid) {
+        return Err("Invalid packaged app identifier".into());
+    }
+    let arg = wide(&format!(r"shell:AppsFolder\{aumid}"));
+    // SAFETY: `arg` is NUL-terminated UTF-16 and strictly validated to safe AUMID characters.
+    let res = unsafe {
+        ShellExecuteW(
+            None,
+            w!("open"),
+            w!("explorer.exe"),
+            PCWSTR(arg.as_ptr()),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    if (res.0 as isize) <= 32 {
+        return Err(format!("Could not launch packaged app {aumid}"));
+    }
+    Ok(())
 }
 
 fn path_file_name_lower(path: &str) -> &str {
@@ -120,7 +258,8 @@ fn uninstall_entry_exe(
 }
 
 /// Candidate local `.exe` install paths for a provider in priority order (default per-user
-/// installs, per-machine installs, then verified Windows Uninstall registry entries).
+/// installs, App Execution Aliases in `WindowsApps`, per-machine installs, then verified Windows
+/// Uninstall registry entries).
 pub fn provider_exe_candidates(
     provider: ProviderKind,
     local_app_data: Option<&Path>,
@@ -163,6 +302,12 @@ pub fn provider_exe_candidates(
                 }
                 push_safe(local.join("Programs").join("Claude").join("Claude.exe"));
                 push_safe(local.join("Programs").join("claude").join("Claude.exe"));
+                push_safe(
+                    local
+                        .join("Microsoft")
+                        .join("WindowsApps")
+                        .join("Claude.exe"),
+                );
             }
             if let Some(pf) = program_files {
                 push_safe(pf.join("Claude").join("Claude.exe"));
@@ -185,10 +330,30 @@ pub fn provider_exe_candidates(
         ProviderKind::Codex => {
             if let Some(local) = local_app_data {
                 push_safe(local.join("Programs").join("Codex").join("Codex.exe"));
+                push_safe(
+                    local
+                        .join("Programs")
+                        .join("OpenAI")
+                        .join("Codex")
+                        .join("Codex.exe"),
+                );
                 push_safe(local.join("Codex").join("Codex.exe"));
+                push_safe(
+                    local
+                        .join("Microsoft")
+                        .join("WindowsApps")
+                        .join("Codex.exe"),
+                );
+                push_safe(
+                    local
+                        .join("Microsoft")
+                        .join("WindowsApps")
+                        .join("ChatGPT.exe"),
+                );
             }
             if let Some(pf) = program_files {
                 push_safe(pf.join("Codex").join("Codex.exe"));
+                push_safe(pf.join("OpenAI").join("Codex").join("Codex.exe"));
             }
             for e in entries {
                 for p in uninstall_entry_exe(
@@ -199,9 +364,11 @@ pub fn provider_exe_candidates(
                             || l.starts_with("codex ")
                             || l.starts_with("codex (")
                             || l.starts_with("openai codex")
+                            || l == "chatgpt"
+                            || l.starts_with("chatgpt ")
                     },
                     |pub_opt| pub_opt.is_some_and(|p| p.to_ascii_lowercase().contains("openai")),
-                    &["Codex.exe"],
+                    &["Codex.exe", "ChatGPT.exe"],
                     app_exe_names(ProviderKind::Codex),
                 ) {
                     push_safe(p);
@@ -449,8 +616,8 @@ fn open_https_url(url: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Focus a running provider desktop window, launch the installed desktop app if found,
-/// or fall back to opening the provider's HTTPS web dashboard in the default browser.
+/// Focus a running provider desktop window, launch the installed desktop `.exe` or packaged MSIX
+/// app if found, or fall back to opening the provider's HTTPS web dashboard in the default browser.
 pub fn open_provider_app_or_web(provider: ProviderKind) -> Result<LaunchOutcome, String> {
     let label = provider.display_name();
     if focus_window_by_exe_names(app_exe_names(provider)) {
@@ -476,9 +643,21 @@ pub fn open_provider_app_or_web(provider: ProviderKind) -> Result<LaunchOutcome,
             }
             Err(e) => {
                 log::warn!(
-                    "launch: failed to start {label} desktop app ({:?}), falling back to web",
+                    "launch: failed to start {label} desktop app ({:?}), trying packaged app / web",
                     e.kind()
                 );
+            }
+        }
+    }
+
+    if let Some(aumid) = find_installed_msix_aumid(msix_package_prefixes(provider)) {
+        match launch_msix_aumid(&aumid) {
+            Ok(()) => {
+                log::info!("launch: activated packaged {label} app ({aumid})");
+                return Ok(LaunchOutcome::Launched(label));
+            }
+            Err(e) => {
+                log::warn!("launch: MSIX activation for {label} failed ({e}), falling back to web");
             }
         }
     }
@@ -544,6 +723,30 @@ mod tests {
             assert!(web_dashboard_url(kind).starts_with("https://"));
             assert!(!app_exe_names(kind).is_empty());
         }
+        // Codex desktop app on Windows runs as ChatGPT.exe (OpenAI.Codex MSIX package).
+        assert!(app_exe_names(ProviderKind::Codex).contains(&"chatgpt.exe"));
+        assert!(msix_package_prefixes(ProviderKind::Codex).contains(&"OpenAI.Codex_"));
+        assert!(msix_package_prefixes(ProviderKind::Claude).contains(&"Claude_"));
+    }
+
+    #[test]
+    fn msix_package_family_and_aumid_validation() {
+        assert_eq!(
+            package_family_name_from_full_name("OpenAI.Codex_26.1007.2314.0_x64__2p2nqsd0c76g0")
+                .as_deref(),
+            Some("OpenAI.Codex_2p2nqsd0c76g0")
+        );
+        assert_eq!(
+            package_family_name_from_full_name("Claude_1.7196.0.0_x64__pzs8sxrjxfjjc").as_deref(),
+            Some("Claude_pzs8sxrjxfjjc")
+        );
+        assert_eq!(package_family_name_from_full_name("NotAPackage"), None);
+
+        assert!(is_valid_aumid("OpenAI.Codex_2p2nqsd0c76g0!App"));
+        assert!(is_valid_aumid("Claude_pzs8sxrjxfjjc!Claude"));
+        assert!(!is_valid_aumid("OpenAI.Codex_2p2nqsd0c76g0"));
+        assert!(!is_valid_aumid("bad id!App & calc"));
+        assert!(!is_valid_aumid(r"..\evil!App"));
     }
 
     #[test]
@@ -568,7 +771,21 @@ mod tests {
 
         let claude = provider_exe_candidates(ProviderKind::Claude, Some(local), Some(pf), &entries);
         assert!(claude.contains(&local.join("AnthropicClaude").join("claude.exe")));
+        assert!(claude.contains(
+            &local
+                .join("Microsoft")
+                .join("WindowsApps")
+                .join("Claude.exe")
+        ));
         assert!(claude.contains(&PathBuf::from(r"D:\Apps\Claude").join("claude.exe")));
+
+        let codex = provider_exe_candidates(ProviderKind::Codex, Some(local), Some(pf), &entries);
+        assert!(codex.contains(
+            &local
+                .join("Microsoft")
+                .join("WindowsApps")
+                .join("ChatGPT.exe")
+        ));
 
         let ag =
             provider_exe_candidates(ProviderKind::Antigravity, Some(local), Some(pf), &entries);

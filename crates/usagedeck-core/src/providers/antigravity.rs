@@ -35,7 +35,7 @@ use std::collections::HashSet;
 use std::ffi::OsString;
 use std::os::windows::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 use windows::core::{PCWSTR, PWSTR};
 use windows::Win32::Foundation::{CloseHandle, ERROR_INSUFFICIENT_BUFFER, HANDLE, NO_ERROR};
@@ -75,6 +75,20 @@ static CACHE: LazyLock<CachedProvider<AntigravityUsage>> = LazyLock::new(|| {
         Some(Duration::from_secs(60)),
     )
 });
+
+/// Secret-free diagnostic snapshot of the most recent Antigravity discovery & fetch pass.
+static LAST_DIAG: LazyLock<Mutex<Option<(i64, String)>>> = LazyLock::new(|| Mutex::new(None));
+
+/// Most recent secret-free Antigravity discovery/fetch report `(timestamp_ms, text)`.
+pub fn last_diag_report() -> Option<(i64, String)> {
+    LAST_DIAG.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+fn save_diag_report(lines: &[String]) {
+    let now_ms = Utc::now().timestamp_millis();
+    let body = lines.join("\n");
+    *LAST_DIAG.lock().unwrap_or_else(|e| e.into_inner()) = Some((now_ms, body));
+}
 
 /// One named Antigravity quota pool (e.g. `"Gemini"`, `"Claude & GPT"`, `"Gemini 4 Argon"`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -465,13 +479,19 @@ fn listening_loopback_ports_for_pid(pid: u32) -> Vec<u16> {
     ports
 }
 
-fn discover_local_servers() -> Vec<LocalAntigravityServer> {
+fn discover_local_servers_with_diag() -> (Vec<LocalAntigravityServer>, String) {
     if !super::codex::real_sign_ins() {
-        return Vec::new();
+        return (
+            Vec::new(),
+            "Local servers: skipped (real sign-ins disabled)".to_string(),
+        );
     }
     // SAFETY: read-only ToolHelp process snapshot, closed before returning.
     let Ok(snap) = (unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }) else {
-        return Vec::new();
+        return (
+            Vec::new(),
+            "Local servers: CreateToolhelp32Snapshot failed".to_string(),
+        );
     };
     let mut entry = PROCESSENTRY32W {
         dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
@@ -500,24 +520,43 @@ fn discover_local_servers() -> Vec<LocalAntigravityServer> {
     // SAFETY: `snap` was returned by `CreateToolhelp32Snapshot`.
     let _ = unsafe { CloseHandle(snap) };
 
+    let total_candidates = candidates.len();
     let mut servers = Vec::new();
+    let mut skips: Vec<String> = Vec::new();
     for (pid, exe) in candidates {
         // SAFETY: read-only process handle, closed below.
         let Ok(handle) = (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) })
         else {
+            skips.push(format!("{exe}: OpenProcess denied"));
             continue;
         };
         let exe_path = read_process_image_path(handle);
-        let cmdline = read_process_command_line(handle).unwrap_or_default();
+        let cmdline = read_process_command_line(handle);
         // SAFETY: `handle` was opened above.
         let _ = unsafe { CloseHandle(handle) };
 
-        let Some(parsed) = parse_language_server_cmdline(&exe, &cmdline, exe_path.as_deref())
+        let cmdline_str = cmdline.as_deref().unwrap_or("");
+        let Some(parsed) = parse_language_server_cmdline(&exe, cmdline_str, exe_path.as_deref())
         else {
+            let reason = if cmdline.is_none() {
+                "cmdline unreadable"
+            } else if !cmdline_str.to_ascii_lowercase().contains("antigravity")
+                && !exe_path
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_ascii_lowercase()
+                    .contains("antigravity")
+            {
+                "non-antigravity"
+            } else {
+                "missing --csrf_token"
+            };
+            skips.push(format!("{exe}: skipped ({reason})"));
             continue;
         };
         let listen_ports = listening_loopback_ports_for_pid(pid);
         if listen_ports.is_empty() && parsed.extension_server_port.is_none() {
+            skips.push(format!("{exe}: skipped (0 listening loopback ports)"));
             continue;
         }
         servers.push(LocalAntigravityServer {
@@ -531,7 +570,20 @@ fn discover_local_servers() -> Vec<LocalAntigravityServer> {
     }
     // Prefer desktop IDE language_server over CLI server when both are running.
     servers.sort_by_key(|s| s.is_cli);
-    servers
+
+    let desktop_n = servers.iter().filter(|s| !s.is_cli).count();
+    let cli_n = servers.iter().filter(|s| s.is_cli).count();
+    let total_ports: usize = servers
+        .iter()
+        .map(|s| s.listen_ports.len() + usize::from(s.extension_server_port.is_some()))
+        .sum();
+    let mut diag = format!(
+        "Local servers: {desktop_n} desktop, {cli_n} cli (ports: {total_ports}; candidates seen: {total_candidates})"
+    );
+    if !skips.is_empty() {
+        diag.push_str(&format!(" [{}]", skips.join("; ")));
+    }
+    (servers, diag)
 }
 
 // ---- credential discovery (read-only) -------------------------------------------------------
@@ -931,7 +983,12 @@ fn parse_credential_flexible(raw: &str) -> Option<AntigravityCredential> {
     })
 }
 
-fn query_ide_state_db(db: &Path, flags: OpenFlags) -> rusqlite::Result<Vec<AntigravityCredential>> {
+struct StateDbDiag {
+    creds: Vec<AntigravityCredential>,
+    detail: String,
+}
+
+fn query_ide_state_db_with_diag(db: &Path, flags: OpenFlags) -> rusqlite::Result<StateDbDiag> {
     let conn = rusqlite::Connection::open_with_flags(db, flags | OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
     conn.busy_timeout(DB_BUSY)?;
     let get = |key: &str| -> rusqlite::Result<Option<String>> {
@@ -992,17 +1049,26 @@ fn query_ide_state_db(db: &Path, flags: OpenFlags) -> rusqlite::Result<Vec<Antig
         push_tok(tok);
     }
 
-    Ok(tokens
+    let yn = |opt: &Option<String>| if opt.is_some() { "yes" } else { "no" };
+    let detail = format!(
+        "tokens={} (authStatus={}, unifiedOAuth={}, legacyInit={})",
+        tokens.len(),
+        yn(&auth_status),
+        yn(&unified_oauth),
+        yn(&legacy_init)
+    );
+    let creds = tokens
         .into_iter()
         .map(|access_token| AntigravityCredential {
             access_token,
             email: email.clone(),
             project_id: None,
         })
-        .collect())
+        .collect();
+    Ok(StateDbDiag { creds, detail })
 }
 
-fn read_ide_state_db_copy(db: &Path) -> Vec<AntigravityCredential> {
+fn read_ide_state_db_copy_with_diag(db: &Path) -> StateDbDiag {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
@@ -1011,12 +1077,18 @@ fn read_ide_state_db_copy(db: &Path) -> Vec<AntigravityCredential> {
         std::process::id()
     ));
     if std::fs::create_dir_all(&dir).is_err() {
-        return Vec::new();
+        return StateDbDiag {
+            creds: Vec::new(),
+            detail: "temp copy dir failed".into(),
+        };
     }
-    let res = (|| -> Vec<AntigravityCredential> {
+    let res = (|| -> StateDbDiag {
         let copy = dir.join("state.vscdb");
         if std::fs::copy(db, &copy).is_err() {
-            return Vec::new();
+            return StateDbDiag {
+                creds: Vec::new(),
+                detail: "copy failed".into(),
+            };
         }
         for suffix in ["-wal", "-shm", "-journal"] {
             let mut side = db.as_os_str().to_owned();
@@ -1025,23 +1097,36 @@ fn read_ide_state_db_copy(db: &Path) -> Vec<AntigravityCredential> {
             target.push(suffix);
             let _ = std::fs::copy(PathBuf::from(side), PathBuf::from(target));
         }
-        query_ide_state_db(&copy, OpenFlags::SQLITE_OPEN_READ_WRITE).unwrap_or_default()
+        match query_ide_state_db_with_diag(&copy, OpenFlags::SQLITE_OPEN_READ_WRITE) {
+            Ok(d) => d,
+            Err(e) => StateDbDiag {
+                creds: Vec::new(),
+                detail: format!("sqlite copy err: {e}"),
+            },
+        }
     })();
     let _ = std::fs::remove_dir_all(&dir);
     res
 }
 
+fn read_ide_state_db_all_with_diag(db: &Path) -> Option<StateDbDiag> {
+    if !db.is_file() {
+        return None;
+    }
+    Some(
+        match query_ide_state_db_with_diag(db, OpenFlags::SQLITE_OPEN_READ_ONLY) {
+            Ok(d) => d,
+            Err(_) => read_ide_state_db_copy_with_diag(db),
+        },
+    )
+}
+
 /// Read all Antigravity Desktop IDE sign-in tokens from a `state.vscdb` SQLite database
 /// (read-only first, falling back to a private temporary copy if the running IDE holds a lock).
 pub fn read_ide_state_db_all(db: &Path) -> Vec<AntigravityCredential> {
-    if !db.is_file() {
-        return Vec::new();
-    }
-    match query_ide_state_db(db, OpenFlags::SQLITE_OPEN_READ_ONLY) {
-        Ok(creds) if !creds.is_empty() => creds,
-        Ok(_) => Vec::new(),
-        Err(_) => read_ide_state_db_copy(db),
-    }
+    read_ide_state_db_all_with_diag(db)
+        .map(|d| d.creds)
+        .unwrap_or_default()
 }
 
 /// Read the primary Antigravity Desktop IDE sign-in from a `state.vscdb` SQLite database.
@@ -1119,8 +1204,9 @@ fn read_keyring_entry_bytes(target: Option<&str>, service: &str, user: &str) -> 
 
 /// Enumerate read-only Windows Generic Credentials matching `*antigravity*` (or `gemini:antigravity`)
 /// using raw `CredentialBlob` bytes to avoid UTF-16LE mis-decoding of UTF-8 `go-keyring-*` entries.
-fn read_keyring_credentials() -> Vec<AntigravityCredential> {
+fn read_keyring_credentials_with_diag() -> (Vec<AntigravityCredential>, usize) {
     let mut found = Vec::new();
+    let mut matched_entries = 0usize;
     let mut push_cred = |cred: AntigravityCredential| {
         if !found
             .iter()
@@ -1137,6 +1223,7 @@ fn read_keyring_credentials() -> Vec<AntigravityCredential> {
         (Some("antigravity:oauth"), "antigravity", "oauth"),
     ] {
         if let Some(bytes) = read_keyring_entry_bytes(target, service, user) {
+            matched_entries += 1;
             if let Some(text) = decode_credential_blob(&bytes) {
                 if let Some(cred) = parse_credential_flexible(&text) {
                     push_cred(cred);
@@ -1158,6 +1245,7 @@ fn read_keyring_credentials() -> Vec<AntigravityCredential> {
         CredEnumerateW(PCWSTR(filter.as_ptr()), None, &mut count, &mut creds_ptr).is_ok()
     };
     if ok && !creds_ptr.is_null() {
+        matched_entries += count as usize;
         // SAFETY: `CredEnumerateW` guarantees `count` valid `*mut CREDENTIALW` pointers.
         let slice = unsafe { std::slice::from_raw_parts(creds_ptr, count as usize) };
         for &ptr in slice {
@@ -1183,15 +1271,19 @@ fn read_keyring_credentials() -> Vec<AntigravityCredential> {
         unsafe { CredFree(creds_ptr.cast()) };
     }
 
-    found
+    (found, matched_entries)
 }
 
-fn read_file_credentials_in(home: &Path) -> Vec<AntigravityCredential> {
+fn read_file_credentials_in_with_count(home: &Path) -> (Vec<AntigravityCredential>, usize) {
     let mut found = Vec::new();
+    let mut files_existed = 0usize;
     let mut try_file = |path: PathBuf| {
-        if let Ok(text) = std::fs::read_to_string(&path) {
-            if let Some(cred) = parse_credential_flexible(&text) {
-                found.push(cred);
+        if path.is_file() {
+            files_existed += 1;
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                if let Some(cred) = parse_credential_flexible(&text) {
+                    found.push(cred);
+                }
             }
         }
     };
@@ -1223,21 +1315,25 @@ fn read_file_credentials_in(home: &Path) -> Vec<AntigravityCredential> {
     ] {
         try_file(ag_home.join(filename));
     }
-    found
+    (found, files_existed)
 }
 
 #[cfg(test)]
 fn read_file_credential_in(home: &Path) -> Option<AntigravityCredential> {
-    read_file_credentials_in(home).into_iter().next()
+    read_file_credentials_in_with_count(home)
+        .0
+        .into_iter()
+        .next()
 }
 
-/// Discover all available Antigravity credentials on this machine in priority order:
-/// 1. Antigravity Desktop IDE `state.vscdb` (live active desktop sign-in)
-/// 2. Windows Credential Manager (`gemini:antigravity` / `*antigravity*`)
-/// 3. Local `~/.gemini` / `~/.antigravity` OAuth token files
-fn read_credentials() -> Vec<AntigravityCredential> {
+/// Discover all available Antigravity credentials on this machine in priority order, returning
+/// both the deduplicated credentials and secret-free diagnostic lines.
+fn read_credentials_with_diag() -> (Vec<AntigravityCredential>, Vec<String>) {
     if !super::codex::real_sign_ins() {
-        return Vec::new();
+        return (
+            Vec::new(),
+            vec!["Credentials: skipped (real sign-ins disabled)".to_string()],
+        );
     }
     let mut creds = Vec::new();
     let mut push_unique = |cand: AntigravityCredential| {
@@ -1249,24 +1345,63 @@ fn read_credentials() -> Vec<AntigravityCredential> {
         }
     };
 
-    for db in ide_state_db_candidates() {
-        for cred in read_ide_state_db_all(&db) {
-            push_unique(cred);
+    let db_candidates = ide_state_db_candidates();
+    let mut db_notes = Vec::new();
+    for db in &db_candidates {
+        if let Some(d) = read_ide_state_db_all_with_diag(db) {
+            let app_folder = db
+                .parent()
+                .and_then(|p| p.parent())
+                .and_then(|p| p.parent())
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                .unwrap_or("Antigravity");
+            db_notes.push(format!("{app_folder}: {}", d.detail));
+            for cred in d.creds {
+                push_unique(cred);
+            }
         }
     }
-    for cred in read_keyring_credentials() {
+    let db_line = if db_notes.is_empty() {
+        format!(
+            "state.vscdb: 0 existing of {} paths checked",
+            db_candidates.len()
+        )
+    } else {
+        format!(
+            "state.vscdb: {} existing [{}]",
+            db_notes.len(),
+            db_notes.join("; ")
+        )
+    };
+
+    let (kr_creds, kr_entries) = read_keyring_credentials_with_diag();
+    let kr_count = kr_creds.len();
+    for cred in kr_creds {
         push_unique(cred);
     }
-    if let Some(home) = std::env::var_os("USERPROFILE")
+    let kr_line =
+        format!("Credential Manager: {kr_count} token(s) decoded (entries matched: {kr_entries})");
+
+    let (file_count, files_existed) = if let Some(home) = std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .map(PathBuf::from)
         .filter(|p| !p.as_os_str().is_empty())
     {
-        for cred in read_file_credentials_in(&home) {
+        let (fc, existed) = read_file_credentials_in_with_count(&home);
+        let n = fc.len();
+        for cred in fc {
             push_unique(cred);
         }
-    }
-    creds
+        (n, existed)
+    } else {
+        (0, 0)
+    };
+    let file_line = format!(
+        "Local files (~/.gemini, ~/.antigravity): {file_count} token(s) decoded (files existed: {files_existed})"
+    );
+
+    (creds, vec![db_line, kr_line, file_line])
 }
 
 // ---- quota summary & local RPC parsing ------------------------------------------------------
@@ -1804,7 +1939,7 @@ async fn call_local_rpc(
     port: u16,
     method: &str,
     csrf_token: Option<&str>,
-) -> Option<Vec<u8>> {
+) -> Result<Vec<u8>, String> {
     let url = format!("{scheme}://127.0.0.1:{port}{LOCAL_RPC_SERVICE}/{method}");
     let mut req = client
         .post(url)
@@ -1814,17 +1949,25 @@ async fn call_local_rpc(
     if let Some(tok) = csrf_token.filter(|t| !t.is_empty()) {
         req = req.header("X-Codeium-Csrf-Token", tok);
     }
-    let resp = req.send().await.ok()?;
-    if !resp.status().is_success() {
-        return None;
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("connect err ({})", e.without_url()))?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(format!("HTTP {}", status.as_u16()));
     }
-    resp.bytes().await.ok().map(|b| b.to_vec())
+    resp.bytes()
+        .await
+        .map(|b| b.to_vec())
+        .map_err(|_| "body read err".to_string())
 }
 
 async fn fetch_via_local_server(
     client: &reqwest::Client,
     server: &LocalAntigravityServer,
     email_hint: Option<String>,
+    trace: &mut Vec<String>,
 ) -> Option<AntigravityUsage> {
     // Build ordered `(scheme, port, csrf_token)` candidates: HTTPS connect ports first, then
     // HTTP fallback on `extension_server_port`.
@@ -1857,41 +2000,68 @@ async fn fetch_via_local_server(
     let now = Utc::now();
     for (scheme, port, csrf) in endpoints {
         // 1. Prefer RetrieveUserQuotaSummary (includes both 5-hour and weekly pools!).
-        if let Some(bytes) =
-            call_local_rpc(client, scheme, port, "RetrieveUserQuotaSummary", csrf).await
-        {
-            if let Ok(mut usage) = parse_quota_summary(&bytes, email_hint.clone(), now) {
-                if usage.email.is_none() {
-                    // Best-effort email lookup from GetUserStatus on the same working port.
-                    if let Some(ub) =
-                        call_local_rpc(client, scheme, port, "GetUserStatus", csrf).await
-                    {
-                        if let Ok(u) = parse_local_user_status(&ub, email_hint.clone(), now) {
-                            usage.email = u.email;
+        match call_local_rpc(client, scheme, port, "RetrieveUserQuotaSummary", csrf).await {
+            Ok(bytes) => match parse_quota_summary(&bytes, email_hint.clone(), now) {
+                Ok(mut usage) => {
+                    if usage.email.is_none() {
+                        // Best-effort email lookup from GetUserStatus on the same working port.
+                        if let Ok(ub) =
+                            call_local_rpc(client, scheme, port, "GetUserStatus", csrf).await
+                        {
+                            if let Ok(u) = parse_local_user_status(&ub, email_hint.clone(), now) {
+                                usage.email = u.email;
+                            }
                         }
                     }
+                    trace.push(format!(
+                        "local {scheme}:{port} RetrieveUserQuotaSummary -> ok"
+                    ));
+                    log::info!(
+                        "antigravity: read live quota via local server RetrieveUserQuotaSummary"
+                    );
+                    return Some(usage);
                 }
-                log::info!(
-                    "antigravity: read live quota via local server RetrieveUserQuotaSummary"
-                );
-                return Some(usage);
-            }
+                Err(e) => trace.push(format!(
+                    "local {scheme}:{port} RetrieveUserQuotaSummary -> HTTP 200 ({e})"
+                )),
+            },
+            Err(e) => trace.push(format!(
+                "local {scheme}:{port} RetrieveUserQuotaSummary -> {e}"
+            )),
         }
         // 2. Fallback to GetUserStatus (real-time 5-hour per-pool quota + email).
-        if let Some(bytes) = call_local_rpc(client, scheme, port, "GetUserStatus", csrf).await {
-            if let Ok(usage) = parse_local_user_status(&bytes, email_hint.clone(), now) {
-                log::info!("antigravity: read live quota via local server GetUserStatus");
-                return Some(usage);
-            }
+        match call_local_rpc(client, scheme, port, "GetUserStatus", csrf).await {
+            Ok(bytes) => match parse_local_user_status(&bytes, email_hint.clone(), now) {
+                Ok(usage) => {
+                    trace.push(format!("local {scheme}:{port} GetUserStatus -> ok"));
+                    log::info!("antigravity: read live quota via local server GetUserStatus");
+                    return Some(usage);
+                }
+                Err(e) => trace.push(format!(
+                    "local {scheme}:{port} GetUserStatus -> HTTP 200 ({e})"
+                )),
+            },
+            Err(e) => trace.push(format!("local {scheme}:{port} GetUserStatus -> {e}")),
         }
         // 3. Fallback to GetCommandModelConfigs.
-        if let Some(bytes) =
-            call_local_rpc(client, scheme, port, "GetCommandModelConfigs", csrf).await
-        {
-            if let Ok(usage) = parse_local_user_status(&bytes, email_hint.clone(), now) {
-                log::info!("antigravity: read live quota via local server GetCommandModelConfigs");
-                return Some(usage);
-            }
+        match call_local_rpc(client, scheme, port, "GetCommandModelConfigs", csrf).await {
+            Ok(bytes) => match parse_local_user_status(&bytes, email_hint.clone(), now) {
+                Ok(usage) => {
+                    trace.push(format!(
+                        "local {scheme}:{port} GetCommandModelConfigs -> ok"
+                    ));
+                    log::info!(
+                        "antigravity: read live quota via local server GetCommandModelConfigs"
+                    );
+                    return Some(usage);
+                }
+                Err(e) => trace.push(format!(
+                    "local {scheme}:{port} GetCommandModelConfigs -> HTTP 200 ({e})"
+                )),
+            },
+            Err(e) => trace.push(format!(
+                "local {scheme}:{port} GetCommandModelConfigs -> {e}"
+            )),
         }
     }
     None
@@ -2353,9 +2523,19 @@ async fn fetch(
     http: reqwest::Client,
     creds: Vec<AntigravityCredential>,
     local_servers: Vec<LocalAntigravityServer>,
+    mut diag_lines: Vec<String>,
 ) -> Result<AntigravityUsage, FetchError<AntigravityUsage>> {
     let fallback_email = creds.iter().find_map(|c| c.email.clone());
     let mut local_partial: Option<AntigravityUsage> = None;
+    let mut trace: Vec<String> = Vec::new();
+
+    let finish = |lines: &mut Vec<String>, trace: &[String], outcome: &str| {
+        if !trace.is_empty() {
+            lines.push(format!("Attempts: {}", trace.join(" | ")));
+        }
+        lines.push(format!("Outcome: {outcome}"));
+        save_diag_report(lines);
+    };
 
     // 1. Prefer live local language_server / agy Connect-RPC when running — always holds a fresh
     //    in-memory session even after on-disk `ya29.*` access tokens expire.
@@ -2363,9 +2543,11 @@ async fn fetch(
         if let Some(local_client) = build_local_rpc_client() {
             for srv in &local_servers {
                 if let Some(usage) =
-                    fetch_via_local_server(&local_client, srv, fallback_email.clone()).await
+                    fetch_via_local_server(&local_client, srv, fallback_email.clone(), &mut trace)
+                        .await
                 {
                     if usage.weekly_percent.is_some() {
+                        finish(&mut diag_lines, &trace, "ok (local server)");
                         return Ok(usage);
                     }
                     // Local GetUserStatus succeeded (5-hour live pools) — keep it and try cloud
@@ -2379,7 +2561,7 @@ async fn fetch(
 
     // 2. Cloud API across all discovered read-only tokens (state.vscdb, Credential Manager, files).
     let mut last_err = ProviderError::AuthRejected;
-    for cred in &creds {
+    for (idx, cred) in creds.iter().enumerate() {
         let email = cred
             .email
             .clone()
@@ -2387,24 +2569,31 @@ async fn fetch(
             .or_else(|| fallback_email.clone());
         match fetch_cloud_for_cred(&http, cred, email).await {
             Ok(mut cloud_usage) => {
+                trace.push(format!("cloud cred#{} -> ok", idx + 1));
                 if let Some(local) = local_partial {
                     // Local RPC reflects real-time 5h usage; cloud adds weekly limits.
                     let mut combined = local;
                     merge_usage(&mut combined, cloud_usage);
+                    finish(&mut diag_lines, &trace, "ok (local + cloud)");
                     return Ok(combined);
                 }
                 if cloud_usage.email.is_none() {
                     cloud_usage.email = fallback_email;
                 }
+                finish(&mut diag_lines, &trace, "ok (cloud)");
                 return Ok(cloud_usage);
             }
             Err(ProviderError::RateLimited) => {
+                trace.push(format!("cloud cred#{} -> rate-limited", idx + 1));
                 if let Some(local) = local_partial {
+                    finish(&mut diag_lines, &trace, "ok (local 5h; cloud rate-limited)");
                     return Ok(local);
                 }
+                finish(&mut diag_lines, &trace, "failed (rate-limited)");
                 return Err(ProviderError::RateLimited.into());
             }
             Err(e) => {
+                trace.push(format!("cloud cred#{} -> {e}", idx + 1));
                 last_err = e;
             }
         }
@@ -2413,59 +2602,100 @@ async fn fetch(
     // If local Connect-RPC already returned live 5-hour quota, use it rather than surfacing a
     // stale on-disk token's `AuthRejected`.
     if let Some(local) = local_partial {
+        finish(
+            &mut diag_lines,
+            &trace,
+            "ok (local 5h; cloud tokens unavailable/rejected)",
+        );
         return Ok(local);
     }
 
     // 3. All local RPC and stored OAuth tokens failed or were missing; try `agy` CLI fallback.
     match fetch_via_agy_cli(fallback_email).await {
-        Ok(usage) => Ok(usage),
-        Err(_) => Err(last_err.into()),
+        Ok(usage) => {
+            trace.push("agy CLI -> ok".to_string());
+            finish(&mut diag_lines, &trace, "ok (agy CLI)");
+            Ok(usage)
+        }
+        Err(_) => {
+            trace.push("agy CLI -> no quota".to_string());
+            finish(&mut diag_lines, &trace, &format!("failed ({last_err})"));
+            Err(last_err.into())
+        }
     }
 }
 
 /// Rows for Antigravity (`TrackedAccount<AntigravityUsage>` each).
 pub async fn accounts(core: &Core) -> Vec<Value> {
-    let (creds, local_servers, has_agy) = tokio::task::spawn_blocking(|| {
-        let local_servers = discover_local_servers();
-        let creds = read_credentials();
-        let has_agy =
-            if !creds.is_empty() || !local_servers.is_empty() || !super::codex::real_sign_ins() {
-                false
-            } else {
-                find_agy_binary().is_some()
-            };
-        (creds, local_servers, has_agy)
+    let (creds, local_servers, has_agy, mut diag_lines) = tokio::task::spawn_blocking(|| {
+        let (local_servers, server_diag) = discover_local_servers_with_diag();
+        let (creds, cred_diags) = read_credentials_with_diag();
+        let has_agy = if !super::codex::real_sign_ins() {
+            false
+        } else {
+            find_agy_binary().is_some()
+        };
+        let mut diag_lines = Vec::with_capacity(2 + cred_diags.len());
+        diag_lines.push(server_diag);
+        diag_lines.extend(cred_diags);
+        diag_lines.push(format!(
+            "agy CLI: {}",
+            if has_agy { "found" } else { "not found" }
+        ));
+        (creds, local_servers, has_agy, diag_lines)
     })
     .await
-    .unwrap_or((Vec::new(), Vec::new(), false));
+    .unwrap_or((
+        Vec::new(),
+        Vec::new(),
+        false,
+        vec!["Discovery task panicked".to_string()],
+    ));
 
-    let live: Vec<LiveAccount<'_, AntigravityUsage>> =
-        if !creds.is_empty() || !local_servers.is_empty() || has_agy {
-            let email = creds.iter().find_map(|c| c.email.clone());
-            let label = email.clone().or_else(|| Some("Antigravity".into()));
-            let id = email
-                .as_deref()
-                .unwrap_or("antigravity")
-                .trim()
-                .to_lowercase();
-            let http = core.http.clone();
-            vec![LiveAccount {
-                id: id.clone(),
-                label,
-                active: true,
-                load: Box::pin(async move {
-                    CACHE
-                        .get(&core.cache, &id, move |_| fetch(http, creds, local_servers))
-                        .await
-                }),
-                label_from: Some(|u| u.email.clone()),
-            }]
-        } else {
-            Vec::new()
-        };
+    let detected = !creds.is_empty() || !local_servers.is_empty() || has_agy;
+    let diag_for_fetch = diag_lines.clone();
+    let live: Vec<LiveAccount<'_, AntigravityUsage>> = if detected {
+        let email = creds.iter().find_map(|c| c.email.clone());
+        let label = email.clone().or_else(|| Some("Antigravity".into()));
+        let id = email
+            .as_deref()
+            .unwrap_or("antigravity")
+            .trim()
+            .to_lowercase();
+        let http = core.http.clone();
+        vec![LiveAccount {
+            id: id.clone(),
+            label,
+            active: true,
+            load: Box::pin(async move {
+                CACHE
+                    .get(&core.cache, &id, move |_| {
+                        fetch(http, creds, local_servers, diag_for_fetch)
+                    })
+                    .await
+            }),
+            label_from: Some(|u| u.email.clone()),
+        }]
+    } else {
+        Vec::new()
+    };
 
     let rows: Vec<TrackedAccount<AntigravityUsage>> =
         collect_accounts(&core.seen, &core.cache, PROVIDER, SECTION, live).await;
+    if !detected {
+        let reason =
+            "not found: no running language_server/agy, no state.vscdb/keyring/file tokens, no agy CLI";
+        diag_lines.push(format!("Outcome: {reason}"));
+        save_diag_report(&diag_lines);
+        super::record_provider_status(PROVIDER, reason, false);
+    } else {
+        let (ok, summary) = super::summarize_tracked_rows(&rows);
+        if last_diag_report().is_none() {
+            diag_lines.push(format!("Outcome: {summary} (served from cache)"));
+            save_diag_report(&diag_lines);
+        }
+        super::record_provider_status(PROVIDER, summary, ok);
+    }
     rows.into_iter()
         .filter_map(|r| serde_json::to_value(r).ok())
         .collect()

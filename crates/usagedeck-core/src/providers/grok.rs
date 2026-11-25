@@ -593,6 +593,7 @@ pub async fn accounts(core: &Core) -> Vec<Value> {
     let accounts = tokio::task::spawn_blocking(read_accounts)
         .await
         .unwrap_or_default();
+    let found_any = !accounts.is_empty();
     let live: Vec<LiveAccount<'_, GrokUsage>> = accounts
         .into_iter()
         .map(|account| {
@@ -615,6 +616,16 @@ pub async fn accounts(core: &Core) -> Vec<Value> {
         .collect();
     let rows: Vec<TrackedAccount<GrokUsage>> =
         collect_accounts(&core.seen, &core.cache, PROVIDER, SECTION, live).await;
+    if !found_any {
+        super::record_provider_status(
+            PROVIDER,
+            "not found: no ~/.grok/auth.json or %APPDATA%\\Grok Bot\\sand-secrets.json sign-in",
+            false,
+        );
+    } else {
+        let (ok, summary) = super::summarize_tracked_rows(&rows);
+        super::record_provider_status(PROVIDER, summary, ok);
+    }
     rows.into_iter()
         .filter_map(|r| serde_json::to_value(r).ok())
         .collect()
