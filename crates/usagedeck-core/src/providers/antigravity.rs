@@ -120,6 +120,13 @@ pub struct AntigravityCredential {
     pub access_token: String,
     pub email: Option<String>,
     pub project_id: Option<String>,
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+impl AntigravityCredential {
+    pub fn is_expired(&self, now: DateTime<Utc>) -> bool {
+        self.expires_at.is_some_and(|exp| exp <= now)
+    }
 }
 
 impl std::fmt::Debug for AntigravityCredential {
@@ -128,6 +135,7 @@ impl std::fmt::Debug for AntigravityCredential {
             .field("access_token", &"<redacted>")
             .field("email", &self.email)
             .field("project_id", &self.project_id)
+            .field("has_expiry", &self.expires_at.is_some())
             .finish()
     }
 }
@@ -277,25 +285,59 @@ fn split_cmdline_tokens(cmdline: &str) -> Vec<String> {
     tokens
 }
 
+fn flag_name_matches(tok: &str, canonical_name: &str) -> bool {
+    let stripped = tok.trim_start_matches('-');
+    if stripped.len() == tok.len() || tok.len() - stripped.len() > 2 {
+        return false;
+    }
+    stripped.eq_ignore_ascii_case(canonical_name)
+        || stripped
+            .replace('-', "_")
+            .eq_ignore_ascii_case(canonical_name)
+}
+
 fn extract_flag_value(tokens: &[String], flag: &str) -> Option<String> {
-    let eq_prefix = format!("{flag}=");
+    let canonical = flag.trim_start_matches('-');
     for (i, tok) in tokens.iter().enumerate() {
-        if let Some(rest) = tok.strip_prefix(&eq_prefix) {
-            let v = rest.trim();
-            if !v.is_empty() {
-                return Some(v.to_string());
+        if let Some((lhs, rhs)) = tok.split_once('=') {
+            if flag_name_matches(lhs, canonical) {
+                let v = rhs.trim();
+                if !v.is_empty() {
+                    return Some(v.to_string());
+                }
             }
         }
-        if tok == flag {
+        if flag_name_matches(tok, canonical) {
             if let Some(next) = tokens.get(i + 1) {
                 let v = next.trim();
-                if !v.is_empty() && !v.starts_with("--") {
+                if !v.is_empty() && !v.starts_with('-') {
                     return Some(v.to_string());
                 }
             }
         }
     }
     None
+}
+
+/// Extract only flag names (no values) from a command line for secret-free diagnostics.
+pub fn extract_flag_names(cmdline: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for tok in split_cmdline_tokens(cmdline) {
+        if !tok.starts_with('-') {
+            continue;
+        }
+        let name = tok.split_once('=').map_or(tok.as_str(), |(k, _)| k);
+        if name.len() >= 2
+            && name.len() <= 64
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+            && !names.iter().any(|n| n == name)
+        {
+            names.push(name.to_string());
+        }
+    }
+    names
 }
 
 /// Parsed command-line metadata for a running Antigravity `language_server` or `agy` process.
@@ -349,6 +391,8 @@ pub fn parse_language_server_cmdline(
     }
 
     // Desktop language_server requires a CSRF token to answer Connect-RPC requests.
+    // Antigravity 2.34+ removed `--csrf_token` from argv (`--read_host_bridge_token_from_stdin`),
+    // so external processes cannot call its local RPC directly and must use the cloud or `agy` CLI path.
     if csrf_token.is_none() && extension_server_csrf_token.is_none() {
         return None;
     }
@@ -359,6 +403,31 @@ pub fn parse_language_server_cmdline(
         extension_server_csrf_token,
         is_cli: false,
     })
+}
+
+/// Produce a secret-free diagnostic reason when a `language_server` candidate is skipped.
+pub fn classify_skipped_language_server(cmdline: Option<&str>, exe_path: Option<&str>) -> String {
+    let Some(cmdline_str) = cmdline else {
+        return "cmdline unreadable".to_string();
+    };
+    let cmd_lower = cmdline_str.to_ascii_lowercase();
+    let path_lower = exe_path.unwrap_or_default().to_ascii_lowercase();
+    if !cmd_lower.contains("antigravity") && !path_lower.contains("antigravity") {
+        return "non-antigravity".to_string();
+    }
+    let flags = extract_flag_names(cmdline_str);
+    if flags.iter().any(|f| {
+        f.to_ascii_lowercase()
+            .contains("read_host_bridge_token_from_stdin")
+            || f.to_ascii_lowercase().contains("csrf_token_stdin")
+    }) {
+        return "v2.34+ hardened local RPC (stdin token; use agy CLI)".to_string();
+    }
+    if flags.is_empty() {
+        "missing --csrf_token".to_string()
+    } else {
+        format!("missing --csrf_token; flags: {}", flags.join(", "))
+    }
 }
 
 fn listening_loopback_ports_for_pid(pid: u32) -> Vec<u16> {
@@ -538,19 +607,7 @@ fn discover_local_servers_with_diag() -> (Vec<LocalAntigravityServer>, String) {
         let cmdline_str = cmdline.as_deref().unwrap_or("");
         let Some(parsed) = parse_language_server_cmdline(&exe, cmdline_str, exe_path.as_deref())
         else {
-            let reason = if cmdline.is_none() {
-                "cmdline unreadable"
-            } else if !cmdline_str.to_ascii_lowercase().contains("antigravity")
-                && !exe_path
-                    .as_deref()
-                    .unwrap_or("")
-                    .to_ascii_lowercase()
-                    .contains("antigravity")
-            {
-                "non-antigravity"
-            } else {
-                "missing --csrf_token"
-            };
+            let reason = classify_skipped_language_server(cmdline.as_deref(), exe_path.as_deref());
             skips.push(format!("{exe}: skipped ({reason})"));
             continue;
         };
@@ -909,6 +966,34 @@ fn parse_auth_status_json(raw: &str) -> (Option<String>, Option<String>) {
     (token, email)
 }
 
+fn parse_expiry_value(v: &Value) -> Option<DateTime<Utc>> {
+    if let Some(s) = v.as_str() {
+        let trimmed = s.trim();
+        if let Ok(dt) = DateTime::parse_from_rfc3339(trimmed) {
+            return Some(dt.with_timezone(&Utc));
+        }
+        if let Ok(n) = trimmed.parse::<i64>() {
+            return if n > 10_000_000_000 {
+                DateTime::from_timestamp_millis(n)
+            } else if n > 0 {
+                DateTime::from_timestamp(n, 0)
+            } else {
+                None
+            };
+        }
+    }
+    if let Some(n) = v.as_i64() {
+        return if n > 10_000_000_000 {
+            DateTime::from_timestamp_millis(n)
+        } else if n > 0 {
+            DateTime::from_timestamp(n, 0)
+        } else {
+            None
+        };
+    }
+    None
+}
+
 /// Parse an Antigravity OAuth JSON payload (optionally wrapped in a `go-keyring-*:` prefix).
 pub fn parse_credential_json(raw: &str) -> Option<AntigravityCredential> {
     let decoded = decode_keyring_payload(raw)?;
@@ -962,10 +1047,27 @@ pub fn parse_credential_json(raw: &str) -> Option<AntigravityCredential> {
             .map(str::to_string)
     });
 
+    let expires_at = [
+        token_obj.and_then(|t| t.get("expiry")),
+        token_obj.and_then(|t| t.get("expires_at")),
+        token_obj.and_then(|t| t.get("expiresAt")),
+        token_obj.and_then(|t| t.get("expiry_date")),
+        token_obj.and_then(|t| t.get("expiryDate")),
+        json.get("expiry"),
+        json.get("expires_at"),
+        json.get("expiresAt"),
+        json.get("expiry_date"),
+        json.get("expiryDate"),
+    ]
+    .into_iter()
+    .flatten()
+    .find_map(parse_expiry_value);
+
     Some(AntigravityCredential {
         access_token,
         email,
         project_id,
+        expires_at,
     })
 }
 
@@ -980,6 +1082,7 @@ fn parse_credential_flexible(raw: &str) -> Option<AntigravityCredential> {
         access_token: tok,
         email,
         project_id: None,
+        expires_at: None,
     })
 }
 
@@ -1063,6 +1166,7 @@ fn query_ide_state_db_with_diag(db: &Path, flags: OpenFlags) -> rusqlite::Result
             access_token,
             email: email.clone(),
             project_id: None,
+            expires_at: None,
         })
         .collect();
     Ok(StateDbDiag { creds, detail })
@@ -1375,31 +1479,46 @@ fn read_credentials_with_diag() -> (Vec<AntigravityCredential>, Vec<String>) {
         )
     };
 
+    let now = Utc::now();
     let (kr_creds, kr_entries) = read_keyring_credentials_with_diag();
     let kr_count = kr_creds.len();
+    let kr_expired = kr_creds.iter().filter(|c| c.is_expired(now)).count();
     for cred in kr_creds {
         push_unique(cred);
     }
-    let kr_line =
-        format!("Credential Manager: {kr_count} token(s) decoded (entries matched: {kr_entries})");
+    let kr_line = if kr_expired > 0 {
+        format!(
+            "Credential Manager: {kr_count} token(s) decoded ({kr_expired} expired; entries matched: {kr_entries})"
+        )
+    } else {
+        format!("Credential Manager: {kr_count} token(s) decoded (entries matched: {kr_entries})")
+    };
 
-    let (file_count, files_existed) = if let Some(home) = std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
+    let (file_count, file_expired, files_existed) = if let Some(home) =
+        std::env::var_os("USERPROFILE")
+            .or_else(|| std::env::var_os("HOME"))
+            .map(PathBuf::from)
+            .filter(|p| !p.as_os_str().is_empty())
     {
         let (fc, existed) = read_file_credentials_in_with_count(&home);
         let n = fc.len();
+        let exp = fc.iter().filter(|c| c.is_expired(now)).count();
         for cred in fc {
             push_unique(cred);
         }
-        (n, existed)
+        (n, exp, existed)
     } else {
-        (0, 0)
+        (0, 0, 0)
     };
-    let file_line = format!(
-        "Local files (~/.gemini, ~/.antigravity): {file_count} token(s) decoded (files existed: {files_existed})"
-    );
+    let file_line = if file_expired > 0 {
+        format!(
+            "Local files (~/.gemini, ~/.antigravity): {file_count} token(s) decoded ({file_expired} expired; files existed: {files_existed})"
+        )
+    } else {
+        format!(
+            "Local files (~/.gemini, ~/.antigravity): {file_count} token(s) decoded (files existed: {files_existed})"
+        )
+    };
 
     (creds, vec![db_line, kr_line, file_line])
 }
@@ -1673,6 +1792,14 @@ pub fn parse_quota_summary(
     now: DateTime<Utc>,
 ) -> Result<AntigravityUsage, ProviderError> {
     let reply: Value = super::parse_reply(bytes)?;
+    parse_quota_summary_value(&reply, email, now)
+}
+
+fn parse_quota_summary_value(
+    reply: &Value,
+    email: Option<String>,
+    now: DateTime<Utc>,
+) -> Result<AntigravityUsage, ProviderError> {
     let Some(root) = reply.as_object() else {
         return Err(ProviderError::SchemaChanged);
     };
@@ -1687,6 +1814,7 @@ pub fn parse_quota_summary(
             let name = group
                 .get("displayName")
                 .or_else(|| group.get("display_name"))
+                .or_else(|| group.get("name"))
                 .and_then(Value::as_str)
                 .map(short_group_name)
                 .unwrap_or_else(|| "Quota".to_string());
@@ -1990,11 +2118,13 @@ async fn fetch_via_local_server(
         endpoints.push(("http", ext_port, http_tok));
         endpoints.push(("https", ext_port, server.csrf_token.as_deref()));
     }
-    // Also try plain HTTP on CLI listen ports if HTTPS handshake failed.
-    if server.is_cli {
-        for &port in &server.listen_ports {
-            endpoints.push(("http", port, server.csrf_token.as_deref()));
+    // Also try plain HTTP on listening loopback ports if HTTPS handshake failed (covers both
+    // CLI servers and multi-port desktop language servers without `--extension_server_port`).
+    for &port in &server.listen_ports {
+        if server.extension_server_port == Some(port) {
+            continue;
         }
+        endpoints.push(("http", port, server.csrf_token.as_deref()));
     }
 
     let now = Utc::now();
@@ -2069,17 +2199,53 @@ async fn fetch_via_local_server(
 
 // ---- cloud fetch ----------------------------------------------------------------------------
 
+struct CloudError {
+    err: ProviderError,
+    detail: String,
+}
+
+impl CloudError {
+    fn from_status(status: u16, expired_hint: bool) -> Self {
+        match status {
+            401 => Self {
+                err: ProviderError::AuthRejected,
+                detail: if expired_hint {
+                    "HTTP 401 (expired token)".into()
+                } else {
+                    "HTTP 401".into()
+                },
+            },
+            403 => Self {
+                err: ProviderError::AuthRejected,
+                detail: "HTTP 403".into(),
+            },
+            429 => Self {
+                err: ProviderError::RateLimited,
+                detail: "HTTP 429".into(),
+            },
+            s => Self {
+                err: ProviderError::Http(s),
+                detail: format!("HTTP {s}"),
+            },
+        }
+    }
+
+    fn from_provider(err: ProviderError) -> Self {
+        let detail = err.to_string();
+        Self { err, detail }
+    }
+}
+
 async fn post_quota_summary(
     http: &reqwest::Client,
     url: &str,
     access_token: &str,
     email: Option<String>,
     project_id: Option<&str>,
-) -> Result<AntigravityUsage, ProviderError> {
-    let proj = project_id
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or(DEFAULT_PROJECT_ID);
+    expired_hint: bool,
+) -> Result<AntigravityUsage, CloudError> {
+    let explicit_project = project_id.map(str::trim).filter(|s| !s.is_empty());
+    let proj = explicit_project.unwrap_or(DEFAULT_PROJECT_ID);
     let body = serde_json::json!({ "project": proj }).to_string();
 
     let resp = http
@@ -2093,12 +2259,13 @@ async fn post_quota_summary(
         .await
         .map_err(|e| {
             log::warn!("antigravity quota request failed: {}", e.without_url());
-            ProviderError::Network
+            CloudError::from_provider(ProviderError::Network)
         })?;
     super::note_retry_after(&resp);
     let status = resp.status().as_u16();
-    // If a workspace/enterprise account rejects the consumer project field with 400, retry once with `{}`.
-    if status == 400 {
+    // If a workspace/enterprise account rejects the default consumer project field with 400 or
+    // 403, retry once read-only with `{}`.
+    if status == 400 || (status == 403 && explicit_project.is_none()) {
         let retry = http
             .post(url)
             .bearer_auth(access_token)
@@ -2108,26 +2275,26 @@ async fn post_quota_summary(
             .timeout(Duration::from_secs(7))
             .send()
             .await
-            .map_err(|_| ProviderError::Network)?;
+            .map_err(|_| CloudError::from_provider(ProviderError::Network))?;
         super::note_retry_after(&retry);
-        match retry.status().as_u16() {
-            401 | 403 => return Err(ProviderError::AuthRejected),
-            429 => return Err(ProviderError::RateLimited),
-            s if !(200..300).contains(&s) => return Err(ProviderError::Http(s)),
-            _ => {
-                let bytes = retry.bytes().await.map_err(|_| ProviderError::Network)?;
-                return parse_quota_summary(&bytes, email, Utc::now());
-            }
+        let retry_status = retry.status().as_u16();
+        if !(200..300).contains(&retry_status) {
+            return Err(CloudError::from_status(retry_status, expired_hint));
         }
+        let bytes = retry
+            .bytes()
+            .await
+            .map_err(|_| CloudError::from_provider(ProviderError::Network))?;
+        return parse_quota_summary(&bytes, email, Utc::now()).map_err(CloudError::from_provider);
     }
-    match status {
-        401 | 403 => return Err(ProviderError::AuthRejected),
-        429 => return Err(ProviderError::RateLimited),
-        s if !(200..300).contains(&s) => return Err(ProviderError::Http(s)),
-        _ => {}
+    if !(200..300).contains(&status) {
+        return Err(CloudError::from_status(status, expired_hint));
     }
-    let bytes = resp.bytes().await.map_err(|_| ProviderError::Network)?;
-    parse_quota_summary(&bytes, email, Utc::now())
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|_| CloudError::from_provider(ProviderError::Network))?;
+    parse_quota_summary(&bytes, email, Utc::now()).map_err(CloudError::from_provider)
 }
 
 async fn post_available_models(
@@ -2136,7 +2303,8 @@ async fn post_available_models(
     access_token: &str,
     email: Option<String>,
     project_id: Option<&str>,
-) -> Result<AntigravityUsage, ProviderError> {
+    expired_hint: bool,
+) -> Result<AntigravityUsage, CloudError> {
     let proj = project_id
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -2151,29 +2319,32 @@ async fn post_available_models(
         .timeout(Duration::from_secs(7))
         .send()
         .await
-        .map_err(|_| ProviderError::Network)?;
+        .map_err(|_| CloudError::from_provider(ProviderError::Network))?;
     super::note_retry_after(&resp);
-    match resp.status().as_u16() {
-        401 | 403 => return Err(ProviderError::AuthRejected),
-        429 => return Err(ProviderError::RateLimited),
-        s if !(200..300).contains(&s) => return Err(ProviderError::Http(s)),
-        _ => {}
+    let status = resp.status().as_u16();
+    if !(200..300).contains(&status) {
+        return Err(CloudError::from_status(status, expired_hint));
     }
-    let bytes = resp.bytes().await.map_err(|_| ProviderError::Network)?;
-    parse_fetch_available_models(&bytes, email, Utc::now())
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|_| CloudError::from_provider(ProviderError::Network))?;
+    parse_fetch_available_models(&bytes, email, Utc::now()).map_err(CloudError::from_provider)
 }
 
 async fn fetch_cloud_for_cred(
     http: &reqwest::Client,
     cred: &AntigravityCredential,
     email: Option<String>,
-) -> Result<AntigravityUsage, ProviderError> {
+    expired_hint: bool,
+) -> Result<AntigravityUsage, CloudError> {
     match post_quota_summary(
         http,
         DAILY_QUOTA_URL,
         &cred.access_token,
         email.clone(),
         cred.project_id.as_deref(),
+        expired_hint,
     )
     .await
     {
@@ -2186,6 +2357,7 @@ async fn fetch_cloud_for_cred(
                     &cred.access_token,
                     email,
                     cred.project_id.as_deref(),
+                    expired_hint,
                 )
                 .await
                 {
@@ -2194,8 +2366,14 @@ async fn fetch_cloud_for_cred(
             }
             Ok(daily)
         }
-        Err(ProviderError::RateLimited) => Err(ProviderError::RateLimited),
-        Err(ProviderError::AuthRejected) => Err(ProviderError::AuthRejected),
+        Err(e)
+            if matches!(
+                e.err,
+                ProviderError::RateLimited | ProviderError::AuthRejected
+            ) =>
+        {
+            Err(e)
+        }
         Err(daily_err) => {
             match post_quota_summary(
                 http,
@@ -2203,12 +2381,19 @@ async fn fetch_cloud_for_cred(
                 &cred.access_token,
                 email.clone(),
                 cred.project_id.as_deref(),
+                expired_hint,
             )
             .await
             {
                 Ok(prod) => Ok(prod),
-                Err(ProviderError::RateLimited) => Err(ProviderError::RateLimited),
-                Err(ProviderError::AuthRejected) => Err(ProviderError::AuthRejected),
+                Err(e)
+                    if matches!(
+                        e.err,
+                        ProviderError::RateLimited | ProviderError::AuthRejected
+                    ) =>
+                {
+                    Err(e)
+                }
                 Err(_) => {
                     // Final cloud fallback: per-model quotas via fetchAvailableModels.
                     for url in [DAILY_MODELS_URL, PROD_MODELS_URL] {
@@ -2218,6 +2403,7 @@ async fn fetch_cloud_for_cred(
                             &cred.access_token,
                             email.clone(),
                             cred.project_id.as_deref(),
+                            expired_hint,
                         )
                         .await
                         {
@@ -2254,11 +2440,124 @@ pub fn strip_ansi_escapes(input: &str) -> String {
     out
 }
 
+fn push_agy_bucket(usage: &mut AntigravityUsage, group_name: Option<String>, cand: ParsedBucket) {
+    let kind = cand.kind;
+    if let Some(group_name) = group_name {
+        let grp = match usage.groups.iter_mut().find(|g| g.name == group_name) {
+            Some(existing) => existing,
+            None => {
+                usage.groups.push(AntigravityQuotaGroup {
+                    name: group_name,
+                    ..AntigravityQuotaGroup::default()
+                });
+                usage.groups.last_mut().expect("pushed above")
+            }
+        };
+        match kind {
+            WindowKind::FiveHour => merge_window(
+                &mut grp.five_hour_percent,
+                &mut grp.five_hour_resets_at,
+                cand.clone(),
+            ),
+            WindowKind::Weekly => merge_window(
+                &mut grp.weekly_percent,
+                &mut grp.weekly_resets_at,
+                cand.clone(),
+            ),
+        }
+    }
+    match kind {
+        WindowKind::FiveHour => merge_window(
+            &mut usage.five_hour_percent,
+            &mut usage.five_hour_resets_at,
+            cand,
+        ),
+        WindowKind::Weekly => {
+            merge_window(&mut usage.weekly_percent, &mut usage.weekly_resets_at, cand)
+        }
+    }
+}
+
+fn parse_window_from_label(lower: &str) -> Option<WindowKind> {
+    if lower.contains("five hour")
+        || lower.contains("five-hour")
+        || lower.contains("5 hour")
+        || lower.contains("5-hour")
+        || lower.contains(" 5h")
+        || lower.starts_with("5h")
+    {
+        Some(WindowKind::FiveHour)
+    } else if lower.contains("weekly") || lower.contains("7-day") || lower.contains("7 day") {
+        Some(WindowKind::Weekly)
+    } else {
+        None
+    }
+}
+
+/// Parse `agy --output-format json -p /usage` stdout into `AntigravityUsage`.
+///
+/// Supports both the structured `command.data.groups[]` envelope returned by `agy` 1.1.11+ and
+/// string `response` envelopes containing TSV/table output.
+pub fn parse_agy_json_output(
+    output: &str,
+    email: Option<String>,
+    now: DateTime<Utc>,
+) -> Option<AntigravityUsage> {
+    let clean = strip_ansi_escapes(output);
+    let trimmed = clean.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let parsed: Value = serde_json::from_str(trimmed).ok().or_else(|| {
+        trimmed
+            .lines()
+            .rev()
+            .map(str::trim)
+            .filter(|l| l.starts_with('{') && l.ends_with('}'))
+            .find_map(|l| serde_json::from_str::<Value>(l).ok())
+    })?;
+
+    for candidate in [
+        parsed.pointer("/command/data"),
+        parsed.pointer("/data"),
+        parsed.pointer("/result"),
+        Some(&parsed),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Ok(usage) = parse_quota_summary_value(candidate, email.clone(), now) {
+            return Some(usage);
+        }
+    }
+
+    for text_field in [
+        parsed.pointer("/response"),
+        parsed.pointer("/command/output"),
+        parsed.pointer("/output"),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Some(s) = text_field.as_str() {
+            if let Some(mut usage) = parse_agy_usage_output(s) {
+                if usage.email.is_none() {
+                    usage.email = email;
+                }
+                return Some(usage);
+            }
+        }
+    }
+
+    None
+}
+
 /// Parse `agy -p /quota` or `agy -p /usage` stdout into `AntigravityUsage`.
 ///
-/// Handles table and line layouts (with or without ANSI color codes) containing `Five Hour` /
-/// `5h` and `Weekly` remaining or used percentages along with optional RFC3339 reset timestamps,
-/// preserving per-group splits.
+/// Handles TSV (`Group\tLimit\t80%\t2026-...Z`), `|`-delimited tables, and line layouts (with or
+/// without ANSI color codes) containing `Five Hour` / `5h` and `Weekly` remaining or used
+/// percentages along with optional RFC3339 reset timestamps, preserving per-group splits.
 pub fn parse_agy_usage_output(output: &str) -> Option<AntigravityUsage> {
     let clean = strip_ansi_escapes(output);
     let mut usage = AntigravityUsage::default();
@@ -2269,21 +2568,53 @@ pub fn parse_agy_usage_output(output: &str) -> Option<AntigravityUsage> {
         if line.is_empty() {
             continue;
         }
+
+        // Standard non-interactive `agy -p /usage` TSV format:
+        // `Gemini Models\tWeekly Limit Remaining\t80%\t2026-11-24T23:28:29Z`
+        // `Gemini 4 Argon\tGemini 4 Argon Weekly Limit\t100%\t2026-11-28T05:16:42Z`
+        // Column 3 is always Remaining % unless explicitly marked "used" / "consumed".
+        if line.contains('\t') {
+            let cols: Vec<&str> = line.split('\t').map(str::trim).collect();
+            if cols.len() >= 3 {
+                let label_lower = cols[1].to_ascii_lowercase();
+                if let Some(kind) = parse_window_from_label(&label_lower) {
+                    if let Some(pct) =
+                        extract_percent_token(cols[2]).or_else(|| extract_percent_token(line))
+                    {
+                        let pct_lower = cols[2].to_ascii_lowercase();
+                        let is_used = label_lower.contains("used")
+                            || label_lower.contains("consumed")
+                            || pct_lower.contains("used");
+                        let used_pct = if is_used {
+                            pct.clamp(0.0, 100.0)
+                        } else {
+                            (100.0 - pct).clamp(0.0, 100.0)
+                        };
+                        let resets_at = cols
+                            .get(3)
+                            .and_then(|c| extract_iso_timestamp(c))
+                            .or_else(|| extract_iso_timestamp(line));
+                        let group_name = (!cols[0].is_empty()).then(|| short_group_name(cols[0]));
+                        push_agy_bucket(
+                            &mut usage,
+                            group_name,
+                            ParsedBucket {
+                                kind,
+                                percent_used: used_pct,
+                                resets_at,
+                            },
+                        );
+                        found_any = true;
+                        continue;
+                    }
+                }
+            }
+        }
+
         let lower = line.to_ascii_lowercase();
-        let kind = if lower.contains("five hour")
-            || lower.contains("five-hour")
-            || lower.contains("5 hour")
-            || lower.contains("5-hour")
-            || lower.contains(" 5h")
-            || lower.starts_with("5h")
-        {
-            WindowKind::FiveHour
-        } else if lower.contains("weekly") || lower.contains("7-day") || lower.contains("7 day") {
-            WindowKind::Weekly
-        } else {
+        let Some(kind) = parse_window_from_label(&lower) else {
             continue;
         };
-
         let Some(pct) = extract_percent_token(line) else {
             continue;
         };
@@ -2294,11 +2625,6 @@ pub fn parse_agy_usage_output(output: &str) -> Option<AntigravityUsage> {
             pct.clamp(0.0, 100.0)
         };
         let resets_at = extract_iso_timestamp(line);
-        let candidate = ParsedBucket {
-            kind,
-            percent_used: used_pct,
-            resets_at,
-        };
         let group_name = if line.contains('|') {
             line.split('|')
                 .next()
@@ -2308,42 +2634,15 @@ pub fn parse_agy_usage_output(output: &str) -> Option<AntigravityUsage> {
         } else {
             model_pool_name(line).map(str::to_string)
         };
-        if let Some(group_name) = group_name {
-            let grp = match usage.groups.iter_mut().find(|g| g.name == group_name) {
-                Some(existing) => existing,
-                None => {
-                    usage.groups.push(AntigravityQuotaGroup {
-                        name: group_name,
-                        ..AntigravityQuotaGroup::default()
-                    });
-                    usage.groups.last_mut().expect("pushed above")
-                }
-            };
-            match kind {
-                WindowKind::FiveHour => merge_window(
-                    &mut grp.five_hour_percent,
-                    &mut grp.five_hour_resets_at,
-                    candidate.clone(),
-                ),
-                WindowKind::Weekly => merge_window(
-                    &mut grp.weekly_percent,
-                    &mut grp.weekly_resets_at,
-                    candidate.clone(),
-                ),
-            }
-        }
-        match kind {
-            WindowKind::FiveHour => merge_window(
-                &mut usage.five_hour_percent,
-                &mut usage.five_hour_resets_at,
-                candidate,
-            ),
-            WindowKind::Weekly => merge_window(
-                &mut usage.weekly_percent,
-                &mut usage.weekly_resets_at,
-                candidate,
-            ),
-        }
+        push_agy_bucket(
+            &mut usage,
+            group_name,
+            ParsedBucket {
+                kind,
+                percent_used: used_pct,
+                resets_at,
+            },
+        );
         found_any = true;
     }
 
@@ -2388,7 +2687,81 @@ fn extract_iso_timestamp(line: &str) -> Option<String> {
     None
 }
 
+/// Expand Windows `%VAR%` placeholders inside `PATH` entries (handles `REG_SZ` user `Path`
+/// entries like `%LOCALAPPDATA%\agy\bin` that Windows does not pre-expand for GUI apps).
+pub fn expand_windows_env_vars(input: &str) -> String {
+    if !input.contains('%') {
+        return input.to_string();
+    }
+    let mut out = String::with_capacity(input.len());
+    let mut rest = input;
+    while let Some(start) = rest.find('%') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('%') else {
+            out.push('%');
+            out.push_str(after);
+            return out;
+        };
+        let var_name = &after[..end];
+        if !var_name.is_empty()
+            && var_name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '(' | ')' | ' '))
+        {
+            if let Ok(val) =
+                std::env::var(var_name).or_else(|_| std::env::var(var_name.to_ascii_uppercase()))
+            {
+                out.push_str(&val);
+            } else {
+                out.push('%');
+                out.push_str(var_name);
+                out.push('%');
+            }
+        } else {
+            out.push('%');
+            out.push_str(var_name);
+            out.push('%');
+        }
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
 fn find_agy_binary() -> Option<PathBuf> {
+    if let Some(override_path) = std::env::var_os("ANTIGRAVITY_CLI_PATH") {
+        let p = PathBuf::from(expand_windows_env_vars(&override_path.to_string_lossy()));
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    if let Some(local_app) = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+    {
+        for rel in [
+            "agy/bin/agy.exe",
+            "agy/bin/agy.cmd",
+            "agy/agy.exe",
+            "Antigravity/agy.exe",
+            "Antigravity/bin/agy.exe",
+            "Antigravity/bin/agy.cmd",
+            "Programs/Antigravity/resources/bin/agy.exe",
+            "Programs/Antigravity/bin/agy.exe",
+            "Programs/Antigravity/bin/agy.cmd",
+            "Programs/Antigravity IDE/resources/bin/agy.exe",
+            "Programs/Antigravity IDE/bin/agy.exe",
+            "Programs/Antigravity IDE/bin/agy.cmd",
+            "Programs/agy/agy.exe",
+            "Programs/agy/bin/agy.exe",
+        ] {
+            let candidate = local_app.join(rel);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
     if let Some(home) = std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .map(PathBuf::from)
@@ -2401,25 +2774,10 @@ fn find_agy_binary() -> Option<PathBuf> {
             ".gemini/antigravity/bin/agy.exe",
             ".gemini/antigravity/bin/agy.cmd",
             ".gemini/antigravity/bin/agy",
+            ".antigravity/bin/agy.exe",
+            ".antigravity/bin/agy.cmd",
         ] {
             let candidate = home.join(rel);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-    if let Some(local_app) = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
-    {
-        for rel in [
-            "Programs/Antigravity/bin/agy.exe",
-            "Programs/Antigravity/bin/agy.cmd",
-            "Programs/Antigravity IDE/bin/agy.exe",
-            "Programs/Antigravity IDE/bin/agy.cmd",
-            "Programs/agy/agy.exe",
-        ] {
-            let candidate = local_app.join(rel);
             if candidate.is_file() {
                 return Some(candidate);
             }
@@ -2443,6 +2801,7 @@ fn find_agy_binary() -> Option<PathBuf> {
         for rel in [
             "Antigravity/bin/agy.exe",
             "Antigravity/bin/agy.cmd",
+            "Antigravity/resources/bin/agy.exe",
             "Antigravity IDE/bin/agy.exe",
         ] {
             let candidate = pf.join(rel);
@@ -2452,7 +2811,8 @@ fn find_agy_binary() -> Option<PathBuf> {
         }
     }
     if let Some(path_var) = std::env::var_os("PATH") {
-        for dir in std::env::split_paths(&path_var) {
+        for raw_dir in std::env::split_paths(&path_var) {
+            let dir = PathBuf::from(expand_windows_env_vars(&raw_dir.to_string_lossy()));
             for name in ["agy.exe", "agy.cmd", "agy"] {
                 let candidate = dir.join(name);
                 if candidate.is_file() {
@@ -2464,12 +2824,24 @@ fn find_agy_binary() -> Option<PathBuf> {
     None
 }
 
-async fn run_agy_command(bin: PathBuf, prompt: &'static str) -> Option<AntigravityUsage> {
-    let output = tokio::time::timeout(
-        Duration::from_secs(12),
+enum AgyAttempt {
+    Ok(AntigravityUsage, &'static str),
+    TimedOut,
+    Failed(String),
+}
+
+async fn run_agy_command(
+    bin: PathBuf,
+    args: &'static [&'static str],
+    json_mode: bool,
+) -> AgyAttempt {
+    let waited = tokio::time::timeout(
+        Duration::from_secs(30),
         tokio::task::spawn_blocking(move || {
             let mut cmd = std::process::Command::new(&bin);
-            cmd.args(["-p", prompt])
+            cmd.args(args)
+                .env("AGY_CLI_DISABLE_AUTO_UPDATE", "true")
+                .current_dir(std::env::temp_dir())
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped());
@@ -2482,39 +2854,89 @@ async fn run_agy_command(bin: PathBuf, prompt: &'static str) -> Option<Antigravi
             cmd.output()
         }),
     )
-    .await
-    .ok()?
-    .ok()?
-    .ok()?;
+    .await;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    if let Some(usage) = parse_agy_usage_output(&stdout) {
-        return Some(usage);
-    }
-    let combined = format!("{stdout}\n{}", String::from_utf8_lossy(&output.stderr));
-    parse_agy_usage_output(&combined)
-}
-
-async fn fetch_via_agy_cli(email: Option<String>) -> Result<AntigravityUsage, ProviderError> {
-    let Some(bin) = tokio::task::spawn_blocking(find_agy_binary)
-        .await
-        .ok()
-        .flatten()
-    else {
-        return Err(ProviderError::AuthRejected);
+    let output = match waited {
+        Ok(Ok(Ok(out))) => out,
+        Ok(Ok(Err(_))) => return AgyAttempt::Failed("spawn error".into()),
+        Ok(Err(_)) => return AgyAttempt::Failed("task error".into()),
+        Err(_) => return AgyAttempt::TimedOut,
     };
 
-    for prompt in ["/quota", "/usage"] {
-        if let Some(mut usage) = run_agy_command(bin.clone(), prompt).await {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let now = Utc::now();
+    if json_mode {
+        if let Some(usage) = parse_agy_json_output(&stdout, None, now) {
+            return AgyAttempt::Ok(usage, "json");
+        }
+    }
+    if let Some(usage) = parse_agy_usage_output(&stdout) {
+        return AgyAttempt::Ok(usage, "text");
+    }
+    let combined = format!("{stdout}\n{}", String::from_utf8_lossy(&output.stderr));
+    if json_mode {
+        if let Some(usage) = parse_agy_json_output(&combined, None, now) {
+            return AgyAttempt::Ok(usage, "json");
+        }
+    }
+    if let Some(usage) = parse_agy_usage_output(&combined) {
+        return AgyAttempt::Ok(usage, "text");
+    }
+
+    match output.status.code() {
+        Some(0) => AgyAttempt::Failed("unparseable output".into()),
+        Some(code) => AgyAttempt::Failed(format!("exit {code}")),
+        None => AgyAttempt::Failed("terminated".into()),
+    }
+}
+
+async fn fetch_via_agy_cli(
+    bin: Option<PathBuf>,
+    email: Option<String>,
+) -> Result<(AntigravityUsage, &'static str), String> {
+    let Some(bin) = bin else {
+        return Err("not installed".into());
+    };
+
+    // Prefer structured JSON mode (`-p /usage` last, auto-update disabled).
+    match run_agy_command(
+        bin.clone(),
+        &[
+            "--output-format",
+            "json",
+            "--print-timeout",
+            "25s",
+            "-p",
+            "/usage",
+        ],
+        true,
+    )
+    .await
+    {
+        AgyAttempt::Ok(mut usage, mode) => {
             if usage.email.is_none() {
                 usage.email = email;
             }
-            return Ok(usage);
+            return Ok((usage, mode));
         }
+        AgyAttempt::TimedOut => return Err("timeout".into()),
+        AgyAttempt::Failed(_) => {}
     }
 
-    log::warn!("antigravity: agy CLI fallback returned no parseable quota rows");
-    Err(ProviderError::AuthRejected)
+    // Fallback to plain-text TSV mode for older `agy` versions without `--output-format json`.
+    match run_agy_command(bin, &["--print-timeout", "25s", "-p", "/usage"], false).await {
+        AgyAttempt::Ok(mut usage, mode) => {
+            if usage.email.is_none() {
+                usage.email = email;
+            }
+            Ok((usage, mode))
+        }
+        AgyAttempt::TimedOut => Err("timeout".into()),
+        AgyAttempt::Failed(reason) => {
+            log::warn!("antigravity: agy CLI fallback failed ({reason})");
+            Err(reason)
+        }
+    }
 }
 
 // ---- top-level fetch orchestration ----------------------------------------------------------
@@ -2523,11 +2945,13 @@ async fn fetch(
     http: reqwest::Client,
     creds: Vec<AntigravityCredential>,
     local_servers: Vec<LocalAntigravityServer>,
+    agy_bin: Option<PathBuf>,
     mut diag_lines: Vec<String>,
 ) -> Result<AntigravityUsage, FetchError<AntigravityUsage>> {
     let fallback_email = creds.iter().find_map(|c| c.email.clone());
     let mut local_partial: Option<AntigravityUsage> = None;
     let mut trace: Vec<String> = Vec::new();
+    let now = Utc::now();
 
     let finish = |lines: &mut Vec<String>, trace: &[String], outcome: &str| {
         if !trace.is_empty() {
@@ -2550,8 +2974,8 @@ async fn fetch(
                         finish(&mut diag_lines, &trace, "ok (local server)");
                         return Ok(usage);
                     }
-                    // Local GetUserStatus succeeded (5-hour live pools) — keep it and try cloud
-                    // once to enrich weekly limits if an unexpired OAuth token is also on disk.
+                    // Local GetUserStatus succeeded (5-hour live pools) — keep it and try cloud/CLI
+                    // once to enrich weekly limits.
                     local_partial = Some(usage);
                     break;
                 }
@@ -2559,19 +2983,31 @@ async fn fetch(
         }
     }
 
-    // 2. Cloud API across all discovered read-only tokens (state.vscdb, Credential Manager, files).
-    let mut last_err = ProviderError::AuthRejected;
+    // Partition discovered tokens into unexpired first, then known-expired as a last-resort
+    // fallback (avoids burning round trips on expired tokens before trying `agy` CLI).
+    let mut fresh_creds: Vec<(usize, &AntigravityCredential)> = Vec::new();
+    let mut expired_creds: Vec<(usize, &AntigravityCredential)> = Vec::new();
     for (idx, cred) in creds.iter().enumerate() {
+        if cred.is_expired(now) {
+            expired_creds.push((idx + 1, cred));
+        } else {
+            fresh_creds.push((idx + 1, cred));
+        }
+    }
+
+    let mut last_err = ProviderError::AuthRejected;
+
+    // 2. Cloud API across unexpired read-only tokens (state.vscdb, Credential Manager, files).
+    for (cred_num, cred) in fresh_creds {
         let email = cred
             .email
             .clone()
             .or_else(|| local_partial.as_ref().and_then(|u| u.email.clone()))
             .or_else(|| fallback_email.clone());
-        match fetch_cloud_for_cred(&http, cred, email).await {
+        match fetch_cloud_for_cred(&http, cred, email, false).await {
             Ok(mut cloud_usage) => {
-                trace.push(format!("cloud cred#{} -> ok", idx + 1));
+                trace.push(format!("cloud cred#{cred_num} -> ok"));
                 if let Some(local) = local_partial {
-                    // Local RPC reflects real-time 5h usage; cloud adds weekly limits.
                     let mut combined = local;
                     merge_usage(&mut combined, cloud_usage);
                     finish(&mut diag_lines, &trace, "ok (local + cloud)");
@@ -2583,8 +3019,8 @@ async fn fetch(
                 finish(&mut diag_lines, &trace, "ok (cloud)");
                 return Ok(cloud_usage);
             }
-            Err(ProviderError::RateLimited) => {
-                trace.push(format!("cloud cred#{} -> rate-limited", idx + 1));
+            Err(e) if e.err == ProviderError::RateLimited => {
+                trace.push(format!("cloud cred#{cred_num} -> rate-limited"));
                 if let Some(local) = local_partial {
                     finish(&mut diag_lines, &trace, "ok (local 5h; cloud rate-limited)");
                     return Ok(local);
@@ -2593,8 +3029,66 @@ async fn fetch(
                 return Err(ProviderError::RateLimited.into());
             }
             Err(e) => {
-                trace.push(format!("cloud cred#{} -> {e}", idx + 1));
-                last_err = e;
+                trace.push(format!("cloud cred#{cred_num} -> {}", e.detail));
+                last_err = e.err;
+            }
+        }
+    }
+
+    // 3. Official `agy` CLI (`--output-format json -p /usage`) — handles Antigravity 2.34+ where
+    //    `language_server.exe` moved its CSRF token to stdin and cached desktop access tokens expire.
+    match fetch_via_agy_cli(agy_bin, fallback_email.clone()).await {
+        Ok((usage, mode)) => {
+            trace.push(format!("agy CLI -> ok ({mode})"));
+            if let Some(local) = local_partial {
+                let mut combined = local;
+                merge_usage(&mut combined, usage);
+                finish(&mut diag_lines, &trace, "ok (local + agy CLI)");
+                return Ok(combined);
+            }
+            finish(&mut diag_lines, &trace, "ok (agy CLI)");
+            return Ok(usage);
+        }
+        Err(reason) => {
+            trace.push(format!("agy CLI -> {reason}"));
+        }
+    }
+
+    // 4. Last-resort cloud probe for tokens whose local expiry timestamp was in the past (covers
+    //    clock skew and records exact HTTP 401/403 status in diagnostics).
+    for (cred_num, cred) in expired_creds {
+        let email = cred
+            .email
+            .clone()
+            .or_else(|| local_partial.as_ref().and_then(|u| u.email.clone()))
+            .or_else(|| fallback_email.clone());
+        match fetch_cloud_for_cred(&http, cred, email, true).await {
+            Ok(mut cloud_usage) => {
+                trace.push(format!("cloud cred#{cred_num} -> ok"));
+                if let Some(local) = local_partial {
+                    let mut combined = local;
+                    merge_usage(&mut combined, cloud_usage);
+                    finish(&mut diag_lines, &trace, "ok (local + cloud)");
+                    return Ok(combined);
+                }
+                if cloud_usage.email.is_none() {
+                    cloud_usage.email = fallback_email;
+                }
+                finish(&mut diag_lines, &trace, "ok (cloud)");
+                return Ok(cloud_usage);
+            }
+            Err(e) if e.err == ProviderError::RateLimited => {
+                trace.push(format!("cloud cred#{cred_num} -> rate-limited"));
+                if let Some(local) = local_partial {
+                    finish(&mut diag_lines, &trace, "ok (local 5h; cloud rate-limited)");
+                    return Ok(local);
+                }
+                finish(&mut diag_lines, &trace, "failed (rate-limited)");
+                return Err(ProviderError::RateLimited.into());
+            }
+            Err(e) => {
+                trace.push(format!("cloud cred#{cred_num} -> {}", e.detail));
+                last_err = e.err;
             }
         }
     }
@@ -2605,54 +3099,47 @@ async fn fetch(
         finish(
             &mut diag_lines,
             &trace,
-            "ok (local 5h; cloud tokens unavailable/rejected)",
+            "ok (local 5h; cloud/CLI unavailable)",
         );
         return Ok(local);
     }
 
-    // 3. All local RPC and stored OAuth tokens failed or were missing; try `agy` CLI fallback.
-    match fetch_via_agy_cli(fallback_email).await {
-        Ok(usage) => {
-            trace.push("agy CLI -> ok".to_string());
-            finish(&mut diag_lines, &trace, "ok (agy CLI)");
-            Ok(usage)
-        }
-        Err(_) => {
-            trace.push("agy CLI -> no quota".to_string());
-            finish(&mut diag_lines, &trace, &format!("failed ({last_err})"));
-            Err(last_err.into())
-        }
-    }
+    finish(&mut diag_lines, &trace, &format!("failed ({last_err})"));
+    Err(last_err.into())
 }
 
 /// Rows for Antigravity (`TrackedAccount<AntigravityUsage>` each).
 pub async fn accounts(core: &Core) -> Vec<Value> {
-    let (creds, local_servers, has_agy, mut diag_lines) = tokio::task::spawn_blocking(|| {
+    let (creds, local_servers, agy_bin, mut diag_lines) = tokio::task::spawn_blocking(|| {
         let (local_servers, server_diag) = discover_local_servers_with_diag();
         let (creds, cred_diags) = read_credentials_with_diag();
-        let has_agy = if !super::codex::real_sign_ins() {
-            false
+        let agy_bin = if !super::codex::real_sign_ins() {
+            None
         } else {
-            find_agy_binary().is_some()
+            find_agy_binary()
         };
         let mut diag_lines = Vec::with_capacity(2 + cred_diags.len());
         diag_lines.push(server_diag);
         diag_lines.extend(cred_diags);
         diag_lines.push(format!(
             "agy CLI: {}",
-            if has_agy { "found" } else { "not found" }
+            if agy_bin.is_some() {
+                "found"
+            } else {
+                "not found (checked %LOCALAPPDATA%\\agy\\bin, %LOCALAPPDATA%\\Antigravity, PATH)"
+            }
         ));
-        (creds, local_servers, has_agy, diag_lines)
+        (creds, local_servers, agy_bin, diag_lines)
     })
     .await
     .unwrap_or((
         Vec::new(),
         Vec::new(),
-        false,
+        None,
         vec!["Discovery task panicked".to_string()],
     ));
 
-    let detected = !creds.is_empty() || !local_servers.is_empty() || has_agy;
+    let detected = !creds.is_empty() || !local_servers.is_empty() || agy_bin.is_some();
     let diag_for_fetch = diag_lines.clone();
     let live: Vec<LiveAccount<'_, AntigravityUsage>> = if detected {
         let email = creds.iter().find_map(|c| c.email.clone());
@@ -2670,7 +3157,7 @@ pub async fn accounts(core: &Core) -> Vec<Value> {
             load: Box::pin(async move {
                 CACHE
                     .get(&core.cache, &id, move |_| {
-                        fetch(http, creds, local_servers, diag_for_fetch)
+                        fetch(http, creds, local_servers, agy_bin, diag_for_fetch)
                     })
                     .await
             }),
@@ -2739,6 +3226,7 @@ mod tests {
             access_token: "ya29.super-secret-oauth-token".into(),
             email: Some("dev@example.com".into()),
             project_id: None,
+            expires_at: None,
         };
         let dbg = format!("{cred:?}");
         assert!(!dbg.contains("ya29.super-secret-oauth-token"));
@@ -3235,5 +3723,160 @@ Claude and GPT       | Five Hour Limit Remaining  | 40%       | 2026-11-23T04:30
         assert!((usage.groups[0].five_hour_percent.unwrap() - 10.0).abs() < 1e-6);
         assert_eq!(usage.groups[1].name, "Claude & GPT");
         assert!((usage.groups[1].five_hour_percent.unwrap() - 100.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn agy_json_and_tsv_outputs_parse_with_argon_and_remaining_inversion() {
+        let now = utc("2026-11-24T10:00:00Z");
+
+        // 1. Structured JSON envelope from `agy --output-format json -p /usage`.
+        let json_out = json!({
+            "status": "SUCCESS",
+            "command": {
+                "name": "usage",
+                "data": {
+                    "groups": [
+                        {
+                            "displayName": "Gemini Models",
+                            "buckets": [
+                                {
+                                    "window": "weekly",
+                                    "remaining_fraction": 0.80,
+                                    "reset_time": "2026-11-28T23:28:29Z"
+                                },
+                                {
+                                    "window": "5h",
+                                    "remaining_fraction": 0.81,
+                                    "reset_time": "2026-11-24T14:18:33Z"
+                                }
+                            ]
+                        },
+                        {
+                            "displayName": "Claude and GPT models",
+                            "buckets": [
+                                {
+                                    "window": "weekly",
+                                    "remaining_fraction": 1.0,
+                                    "reset_time": "2026-12-01T10:00:05Z"
+                                }
+                            ]
+                        },
+                        {
+                            "displayName": "Gemini 4 Argon",
+                            "buckets": [
+                                {
+                                    "window": "weekly",
+                                    "remaining_fraction": 1.0,
+                                    "reset_time": "2026-12-01T10:00:05Z"
+                                }
+                            ]
+                        }
+                    ]
+                }
+            }
+        })
+        .to_string();
+
+        let parsed = parse_agy_json_output(&json_out, Some("dev@example.com".into()), now)
+            .expect("parses structured agy JSON");
+        assert_eq!(parsed.email.as_deref(), Some("dev@example.com"));
+        assert!((parsed.five_hour_percent.unwrap() - 19.0).abs() < 1e-6);
+        assert!((parsed.weekly_percent.unwrap() - 20.0).abs() < 1e-6);
+        assert_eq!(parsed.groups.len(), 3);
+        assert_eq!(parsed.groups[2].name, "Gemini 4 Argon");
+        assert!((parsed.groups[2].weekly_percent.unwrap() - 0.0).abs() < 1e-6);
+
+        // 2. Real TSV output from `agy -p /usage` (note Argon row omits "Remaining" word, yet
+        //    column 3 is still remaining % and must invert to 0% used, not 100% used!).
+        let tsv = "\
+Gemini Models\tWeekly Limit Remaining\t80%\t2026-11-28T23:28:29Z
+Gemini Models\tFive Hour Limit Remaining\t81%\t2026-11-24T14:18:33Z
+Claude and GPT models\tWeekly Limit Remaining\t100%\t2026-12-01T05:16:42Z
+Claude and GPT models\tFive Hour Limit Remaining\t100%\t2026-11-24T15:16:42Z
+Gemini 4 Argon\tGemini 4 Argon Weekly Limit\t100%\t2026-12-01T05:16:42Z
+";
+        let from_tsv = parse_agy_usage_output(tsv).expect("parses agy TSV");
+        assert!((from_tsv.five_hour_percent.unwrap() - 19.0).abs() < 1e-6);
+        assert!((from_tsv.weekly_percent.unwrap() - 20.0).abs() < 1e-6);
+        let argon = from_tsv
+            .groups
+            .iter()
+            .find(|g| g.name == "Gemini 4 Argon")
+            .expect("includes Argon group");
+        assert!((argon.weekly_percent.unwrap() - 0.0).abs() < 1e-6);
+
+        // 3. JSON envelope with plain TSV in `response`.
+        let wrapped = json!({ "status": "SUCCESS", "response": tsv }).to_string();
+        let from_wrapped =
+            parse_agy_json_output(&wrapped, None, now).expect("parses wrapped response TSV");
+        assert!((from_wrapped.weekly_percent.unwrap() - 20.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn v234_stdin_auth_detection_flag_variants_and_secret_free_flag_names() {
+        let v234_cmd = r#"C:\Users\me\AppData\Local\Programs\Antigravity\resources\bin\language_server.exe --standalone --override_ide_name antigravity --https_server_port 0 --app_data_dir antigravity --host_bridge_url=http://127.0.0.1:9999 --read_host_bridge_token_from_stdin"#;
+        assert_eq!(
+            parse_language_server_cmdline("language_server.exe", v234_cmd, None),
+            None
+        );
+        let reason = classify_skipped_language_server(Some(v234_cmd), None);
+        assert!(reason.contains("v2.34+"));
+        assert!(reason.contains("agy CLI"));
+
+        // Single-dash and hyphenated CSRF flags are accepted.
+        let single_dash = r#"C:\Antigravity\language_server.exe -csrf-token 11111111-2222-3333-4444-555555555555 -app-data-dir antigravity"#;
+        let parsed = parse_language_server_cmdline("language_server.exe", single_dash, None)
+            .expect("accepts single-dash/hyphenated CSRF flags");
+        assert_eq!(
+            parsed.csrf_token.as_deref(),
+            Some("11111111-2222-3333-4444-555555555555")
+        );
+
+        // Flag-name extractor must NEVER include flag values or secrets.
+        let with_secret = r#"language_server.exe --csrf_token=super-secret-uuid-999 --app_data_dir antigravity --secret_arg my-secret-val"#;
+        let names = extract_flag_names(with_secret);
+        assert_eq!(
+            names,
+            vec!["--csrf_token", "--app_data_dir", "--secret_arg"]
+        );
+        assert!(!names.iter().any(|n| n.contains("super-secret")));
+        assert!(!names.iter().any(|n| n.contains("my-secret-val")));
+    }
+
+    #[test]
+    fn credential_expiry_and_windows_env_var_expansion() {
+        let now = utc("2026-11-24T12:00:00Z");
+        let expired_json = json!({
+            "email": "user@example.com",
+            "token": {
+                "access_token": "ya29.old_token",
+                "expiry": "2026-11-24T10:00:00Z"
+            }
+        })
+        .to_string();
+        let cred = parse_credential_json(&expired_json).expect("parses expired cred");
+        assert!(cred.is_expired(now));
+
+        let fresh_ms = (now + ChronoDuration::minutes(30)).timestamp_millis();
+        let fresh_json = json!({
+            "access_token": "ya29.fresh_token",
+            "expiry_date": fresh_ms
+        })
+        .to_string();
+        let cred_fresh = parse_credential_json(&fresh_json).expect("parses epoch-ms expiry");
+        assert!(!cred_fresh.is_expired(now));
+
+        // Env expansion preserves unknown vars and expands known ones.
+        let path_val = std::env::var("PATH").unwrap_or_default();
+        if !path_val.is_empty() {
+            assert_eq!(
+                expand_windows_env_vars("%PATH%/agy/bin"),
+                format!("{path_val}/agy/bin")
+            );
+        }
+        assert_eq!(
+            expand_windows_env_vars("%USAGEDECK_NONEXISTENT_VAR_XYZ%\\agy\\bin"),
+            "%USAGEDECK_NONEXISTENT_VAR_XYZ%\\agy\\bin"
+        );
     }
 }

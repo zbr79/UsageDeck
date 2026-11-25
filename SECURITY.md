@@ -93,15 +93,19 @@ Windows Credential Manager, UsageDeck performs read-only discovery from `OPENCOD
 `opencode.db` (`SQLITE_OPEN_READ_ONLY`). Discovered keys are deduplicated against Credential Manager
 accounts in memory; `accounts.json` is never mutated.
 
-**Google Antigravity.** When Antigravity Desktop IDE or `agy` is running locally, UsageDeck queries
-its loopback Connect-RPC server on `127.0.0.1` (`RetrieveUserQuotaSummary` / `GetUserStatus` /
-`GetCommandModelConfigs`) read-only using the process's `--csrf_token`. Otherwise, UsageDeck reads
-Antigravity's OAuth access token read-only from `%APPDATA%\*Antigravity*\User\globalStorage\state.vscdb`
-(`SQLITE_OPEN_READ_ONLY`, private temporary copy when locked), Windows Credential Manager
-(`gemini:antigravity` and `*antigravity*`, reading raw UTF-8/UTF-16LE credential blobs), or
-`%USERPROFILE%\.gemini\` (`jetski-standalone-oauth-token`, `antigravity-oauth-token`, `acp_token.json`)
-and queries `v1internal:retrieveUserQuotaSummary` (falling back to `v1internal:fetchAvailableModels`)
-read-only. UsageDeck never refreshes or modifies Antigravity's OAuth tokens.
+**Google Antigravity.** When a pre-2.34 Antigravity Desktop IDE or `agy` local server exposes
+`--csrf_token`, UsageDeck queries its loopback Connect-RPC server on `127.0.0.1`
+(`RetrieveUserQuotaSummary` / `GetUserStatus` / `GetCommandModelConfigs`) read-only. Otherwise,
+UsageDeck reads Antigravity's OAuth access token read-only from
+`%APPDATA%\*Antigravity*\User\globalStorage\state.vscdb` (`SQLITE_OPEN_READ_ONLY`, private
+temporary copy when locked), Windows Credential Manager (`gemini:antigravity` and `*antigravity*`,
+reading raw UTF-8/UTF-16LE credential blobs), or `%USERPROFILE%\.gemini\`
+(`jetski-standalone-oauth-token`, `antigravity-oauth-token`, `acp_token.json`) and queries
+`v1internal:retrieveUserQuotaSummary` (falling back to `v1internal:fetchAvailableModels`)
+read-only. When the cached access token has expired or Antigravity 2.34+ hardens its local RPC
+behind a stdin-only token, UsageDeck delegates read-only quota retrieval to the official `agy` CLI
+(`agy --output-format json --print-timeout 25s -p /usage` with `AGY_CLI_DISABLE_AUTO_UPDATE=true`).
+UsageDeck never refreshes or modifies Antigravity's OAuth tokens.
 
 | App                     | What is read (read-only)                                                                                                                                                                    |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
