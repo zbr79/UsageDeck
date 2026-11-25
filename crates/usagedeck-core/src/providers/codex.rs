@@ -333,6 +333,7 @@ fn account_from_auth(auth: &Value) -> Option<CodexAccount> {
     })
 }
 
+#[cfg(test)]
 fn read_codex_account() -> Option<CodexAccount> {
     let bytes = std::fs::read(auth_file()).ok()?;
     account_from_auth(&serde_json::from_slice(&bytes).ok()?)
@@ -367,34 +368,58 @@ async fn fetch_usage(
 
 /// Rows for the `accounts` array of the old route's JSON body (`TrackedAccount<CodexUsage>` each).
 pub async fn accounts(core: &Core) -> Vec<Value> {
-    let live = match read_codex_account() {
-        Some(account) => {
-            let key = account.id.clone();
-            let label_from: fn(&CodexUsage) -> Option<String> = |u| u.email.clone();
-            vec![LiveAccount {
-                id: account.id.clone(),
-                label: account.label.clone(),
-                active: true,
-                load: Box::pin(async move {
-                    CACHE
-                        .get(&core.cache, &key, |_| async move {
-                            let usage = fetch_usage(&core.http, &account)
+    let auth_path = auth_file();
+    let (live, missing_reason) = match std::fs::read(&auth_path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (
+            Vec::new(),
+            Some("not found: ~/.codex/auth.json does not exist"),
+        ),
+        Err(_) => (Vec::new(), Some("not found: ~/.codex/auth.json unreadable")),
+        Ok(bytes) => match serde_json::from_slice::<Value>(&bytes)
+            .ok()
+            .and_then(|v| account_from_auth(&v))
+        {
+            Some(account) => {
+                let key = account.id.clone();
+                let label_from: fn(&CodexUsage) -> Option<String> = |u| u.email.clone();
+                (
+                    vec![LiveAccount {
+                        id: account.id.clone(),
+                        label: account.label.clone(),
+                        active: true,
+                        load: Box::pin(async move {
+                            CACHE
+                                .get(&core.cache, &key, |_| async move {
+                                    let usage = fetch_usage(&core.http, &account)
+                                        .await
+                                        .map_err(FetchError::from)?;
+                                    let list =
+                                        fetch_resets(&core.http, &account, usage.reset_credits)
+                                            .await;
+                                    Ok(with_resets(usage, list))
+                                })
                                 .await
-                                .map_err(FetchError::from)?;
-                            let list =
-                                fetch_resets(&core.http, &account, usage.reset_credits).await;
-                            Ok(with_resets(usage, list))
-                        })
-                        .await
-                }),
-                label_from: Some(label_from),
-            }]
-        }
-        None => Vec::new(),
+                        }),
+                        label_from: Some(label_from),
+                    }],
+                    None,
+                )
+            }
+            None => (
+                Vec::new(),
+                Some("not found: ~/.codex/auth.json present but missing tokens.access_token"),
+            ),
+        },
     };
-    collect_accounts(&core.seen, &core.cache, SECTION, SECTION, live)
-        .await
-        .into_iter()
+    let rows: Vec<super::TrackedAccount<CodexUsage>> =
+        collect_accounts(&core.seen, &core.cache, SECTION, SECTION, live).await;
+    if let Some(reason) = missing_reason {
+        super::record_provider_status(SECTION, reason, false);
+    } else {
+        let (ok, summary) = super::summarize_tracked_rows(&rows);
+        super::record_provider_status(SECTION, summary, ok);
+    }
+    rows.into_iter()
         .filter_map(|row| serde_json::to_value(row).ok())
         .collect()
 }

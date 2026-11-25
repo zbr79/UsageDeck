@@ -93,6 +93,77 @@ pub fn log_id(id: &str) -> String {
     digest[..4].iter().map(|b| format!("{b:02x}")).collect()
 }
 
+// ---- provider discovery & fetch diagnostics (secret-free) -----------------------------------
+
+static PROVIDER_STATUS: std::sync::LazyLock<Mutex<HashMap<&'static str, (i64, String)>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Record the latest secret-free discovery/fetch summary for a provider and log once per change.
+pub fn record_provider_status(provider: &'static str, summary: impl Into<String>, ok: bool) {
+    let summary = summary.into();
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let mut map = PROVIDER_STATUS.lock().unwrap_or_else(|e| e.into_inner());
+    let changed = map.get(provider).is_none_or(|(_, prev)| prev != &summary);
+    map.insert(provider, (now_ms, summary.clone()));
+    drop(map);
+    if changed {
+        if ok {
+            log::info!("{provider}: {summary}");
+        } else {
+            log::warn!("{provider}: {summary}");
+        }
+    }
+}
+
+/// Last recorded `(timestamp_ms, summary)` for a provider since UsageDeck started.
+pub fn provider_status(provider: &str) -> Option<(i64, String)> {
+    PROVIDER_STATUS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(provider)
+        .cloned()
+}
+
+/// Summarize active tracked account rows into `(ok, human_reason)` without leaking emails or tokens.
+pub fn summarize_tracked_rows<T>(rows: &[TrackedAccount<T>]) -> (bool, String) {
+    let active: Vec<&TrackedAccount<T>> = rows.iter().filter(|r| r.active).collect();
+    if active.is_empty() {
+        return (false, "no active sign-in discovered".to_string());
+    }
+    let fresh = active
+        .iter()
+        .filter(|r| r.usage.is_some() && r.error.is_none() && !r.stale)
+        .count();
+    if fresh == active.len() {
+        return (true, format!("ok ({fresh} active)"));
+    }
+    let errs: Vec<String> = active
+        .iter()
+        .filter_map(|r| {
+            r.error.map(|e| {
+                if r.usage.is_some() {
+                    format!("{e} (showing stale cache)")
+                } else {
+                    format!("{e} (no cached usage)")
+                }
+            })
+        })
+        .collect();
+    if !errs.is_empty() {
+        return (false, format!("fetch failed: {}", errs.join("; ")));
+    }
+    if active.iter().any(|r| r.usage.is_some()) {
+        return (true, format!("ok ({} active, cached)", active.len()));
+    }
+    (
+        false,
+        format!(
+            "{} active sign-in(s) but no usage data returned",
+            active.len()
+        ),
+    )
+}
+
 // ---- 429 backoff ----------------------------------------------------------------------------
 
 tokio::task_local! {

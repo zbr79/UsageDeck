@@ -3323,6 +3323,7 @@ fn build_diagnostics_text(
     app_version: &str,
     system: &str,
     now_ms: i64,
+    settings: &Settings,
     cursor_attempt: Option<&CursorAttempt>,
     spend_report: &str,
 ) -> String {
@@ -3330,6 +3331,16 @@ fn build_diagnostics_text(
     let cursor_report = cursor_attempt.map_or_else(
         || "No attempt yet since UsageDeck started".to_string(),
         |c| c.report(&Local),
+    );
+    let antigravity_report = crate::providers::antigravity::last_diag_report().map_or_else(
+        || {
+            if settings.antigravity_enabled {
+                "No attempt yet since UsageDeck started".to_string()
+            } else {
+                "Disabled in Settings".to_string()
+            }
+        },
+        |(at, fields)| format!("Checked: {}\n{fields}", format_stamp_local(at)),
     );
     let claude_resets = crate::providers::claude::last_resets_report().map_or_else(
         || "No usage reply yet since UsageDeck started".to_string(),
@@ -3339,6 +3350,35 @@ fn build_diagnostics_text(
         || "No usage reply yet since UsageDeck started".to_string(),
         |(at, fields)| format!("Fetched: {}\n{fields}", format_stamp_local(at)),
     );
+
+    let provider_line = |name: &str, key: &str, enabled: bool| -> String {
+        if !enabled {
+            return format!("{name}: disabled in Settings");
+        }
+        if key == "cursor" {
+            let detail = cursor_attempt.map_or_else(
+                || "not polled yet".to_string(),
+                |c| c.reason(&Local).unwrap_or_else(|| "ok".to_string()),
+            );
+            return format!("{name}: enabled — {detail}");
+        }
+        match crate::providers::provider_status(key) {
+            Some((at, summary)) => {
+                format!("{name}: enabled — {summary} ({})", format_stamp_local(at))
+            }
+            None => format!("{name}: enabled — not polled yet"),
+        }
+    };
+    let providers_summary = [
+        provider_line("Claude", "claude", settings.claude_enabled),
+        provider_line("Cursor", "cursor", settings.cursor_enabled),
+        provider_line("Codex", "codex", settings.codex_enabled),
+        provider_line("Grok", "grok", settings.grok_enabled),
+        provider_line("OpenCode", "opencode", settings.opencode_enabled),
+        provider_line("Antigravity", "antigravity", settings.antigravity_enabled),
+    ]
+    .join("\n");
+
     let header = format!(
         "UsageDeck diagnostics (holds no token, key or account name)\n\
          App: UsageDeck {app_version}\n\
@@ -3346,6 +3386,8 @@ fn build_diagnostics_text(
          Generated: {generated}"
     );
     let sections = [
+        ("Providers", providers_summary.as_str()),
+        ("Antigravity", antigravity_report.as_str()),
         ("Cursor", cursor_report.as_str()),
         ("Claude spend", spend_report),
         ("Claude resets", claude_resets.as_str()),
@@ -3478,8 +3520,14 @@ pub fn cached_settings_snapshot(
         .map_or_else(Vec::new, |a| cursor_diag_rows(a, now_ms));
     let app_version = env!("CARGO_PKG_VERSION").to_string();
     let system = current_system_label();
-    let diagnostics_text =
-        build_diagnostics_text(&app_version, &system, now_ms, attempt.as_ref(), "");
+    let diagnostics_text = build_diagnostics_text(
+        &app_version,
+        &system,
+        now_ms,
+        &settings,
+        attempt.as_ref(),
+        "",
+    );
 
     SettingsSnapshot {
         claude: build_settings_claude_rows(&claude_rows, &settings, now_ms),
@@ -3618,6 +3666,7 @@ pub async fn poll_settings_snapshot(core: &Core) -> SettingsSnapshot {
         &app_version,
         &system,
         now_ms,
+        &settings,
         attempt.as_ref(),
         &spend_report,
     );

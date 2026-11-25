@@ -901,6 +901,7 @@ pub async fn accounts(core: &Core) -> Vec<Value> {
         live.as_ref().map(|l| l.id.as_str()),
     );
     core.seen.forget(PROVIDER, &stale).await;
+    let live_found = live.is_some();
     let rows: Vec<LiveAccount<'_, ClaudeUsage>> = live
         .into_iter()
         .map(|live| {
@@ -934,6 +935,16 @@ pub async fn accounts(core: &Core) -> Vec<Value> {
         .collect();
     let tracked: Vec<TrackedAccount<ClaudeUsage>> =
         collect_accounts(&core.seen, &core.cache, PROVIDER, SECTION, rows).await;
+    if !live_found {
+        super::record_provider_status(
+            PROVIDER,
+            "not found: no ~/.claude/.credentials.json or Claude Desktop sign-in",
+            false,
+        );
+    } else {
+        let (ok, summary) = super::summarize_tracked_rows(&tracked);
+        super::record_provider_status(PROVIDER, summary, ok);
+    }
     tracked
         .into_iter()
         .filter_map(|row| serde_json::to_value(row).ok())
