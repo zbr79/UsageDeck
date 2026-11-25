@@ -9,21 +9,21 @@ use usagedeck_core::view::{
 /// Outer DIP height of the taskbar strip window (fits inside Win11 48 DIP and Win10 40 DIP bars).
 pub const STRIP_HEIGHT_DIP: f32 = 38.0;
 pub const PILL_HEIGHT_DIP: f32 = 34.0;
-pub const PILL_GAP_DIP: f32 = 9.0;
+pub const PILL_GAP_DIP: f32 = 7.0;
 pub const STRIP_PAD_X_DIP: f32 = 3.0;
 
-pub const STANDARD_PILL_WIDTH_DIP: f32 = 108.0;
-pub const CLAUDE_EXTENDED_PILL_WIDTH_DIP: f32 = 156.0;
-pub const WIDE_PAD_X_DIP: f32 = 8.0;
-pub const WIDE_ICON_COL_DIP: f32 = 18.0;
-pub const WIDE_RATE_ICON_COL_DIP: f32 = 34.0;
-pub const WIDE_ICON_GAP_DIP: f32 = 6.0;
-pub const WIDE_METER_COL_DIP: f32 = 82.0;
-pub const WIDE_SINGLE_METER_COL_DIP: f32 = 88.0;
-pub const WIDE_METER_GAP_DIP: f32 = 8.0;
+pub const STANDARD_PILL_WIDTH_DIP: f32 = 86.0;
+pub const CLAUDE_EXTENDED_PILL_WIDTH_DIP: f32 = 124.0;
+pub const WIDE_PAD_X_DIP: f32 = 6.0;
+pub const WIDE_ICON_COL_DIP: f32 = 16.0;
+pub const WIDE_RATE_ICON_COL_DIP: f32 = 28.0;
+pub const WIDE_ICON_GAP_DIP: f32 = 5.0;
+pub const WIDE_METER_COL_DIP: f32 = 65.0;
+pub const WIDE_SINGLE_METER_COL_DIP: f32 = 70.0;
+pub const WIDE_METER_GAP_DIP: f32 = 6.0;
 pub const OVERFLOW_BADGE_WIDTH_DIP: f32 = 28.0;
-pub const SYSTEM_PILL_WIDTH_DIP: f32 = 110.0;
-pub const COMPACT_SUMMARY_WIDTH_DIP: f32 = 62.0;
+pub const SYSTEM_PILL_WIDTH_DIP: f32 = 88.0;
+pub const COMPACT_SUMMARY_WIDTH_DIP: f32 = 52.0;
 pub const MIN_VISIBLE_WIDTH_DIP: f32 = 64.0;
 
 pub const FLYOUT_WIDTH_DIP: f32 = 340.0;
@@ -193,9 +193,9 @@ pub fn pill_width(item: &ProviderItem) -> f32 {
 }
 
 /// Width of a provider slot in `PillStyle::WideMeters`:
-/// - 2-bar provider without rate: `8 + 18 + 6 + 82 + 8 + 82 + 8 = 212` DIP
-/// - 2-bar provider with rate (Claude): `8 + 34 + 6 + 82 + 8 + 82 + 8 = 228` DIP
-/// - 1-bar provider without rate (Grok): `8 + 18 + 6 + 88 + 8 = 128` DIP
+/// - 2-bar provider without rate: `6 + 16 + 5 + 65 + 6 + 65 + 6 = 169` DIP
+/// - 2-bar provider with rate (Claude): `6 + 28 + 5 + 65 + 6 + 65 + 6 = 181` DIP
+/// - 1-bar provider without rate (Grok): `6 + 16 + 5 + 70 + 6 = 103` DIP
 pub fn wide_pill_width(item: &ProviderItem) -> f32 {
     let icon_col = if item.spend_rate_text.is_some() {
         WIDE_RATE_ICON_COL_DIP
@@ -204,7 +204,7 @@ pub fn wide_pill_width(item: &ProviderItem) -> f32 {
     };
     let bars = item.taskbar_bars.len().min(2);
     let meters_w = match bars {
-        0 => 56.0,
+        0 => 44.0,
         1 => WIDE_SINGLE_METER_COL_DIP,
         _ => WIDE_METER_COL_DIP * 2.0 + WIDE_METER_GAP_DIP,
     };
@@ -825,8 +825,8 @@ mod tests {
     fn packs_all_four_demo_providers_in_wide_meters_when_space_allows() {
         let mut snap = demo_snapshot(1_700_000_000_000);
         snap.system = None;
-        // Claude (228) + 3 * 212 + 3 * 9 gap + 6 pad = 897 DIP
-        let layout = compute_strip_layout(&snap, 920.0, false);
+        // Claude (181) + 3 * 169 + 3 * 7 gap + 6 pad = 715 DIP
+        let layout = compute_strip_layout(&snap, 740.0, false);
         match layout.mode {
             StripMode::Pills {
                 slots,
@@ -838,9 +838,9 @@ mod tests {
                 assert!(system_slot.is_none());
                 assert!(slots.iter().all(|s| s.style == PillStyle::WideMeters));
                 assert!(slots[0].extended);
-                assert_eq!(slots[0].rect.w, 228.0);
+                assert_eq!(slots[0].rect.w, 181.0);
                 assert!(!slots[1].extended);
-                assert_eq!(slots[1].rect.w, 212.0);
+                assert_eq!(slots[1].rect.w, 169.0);
                 for slot in &slots {
                     assert_eq!(slot.meter_rects.len(), 2);
                     assert_eq!(slot.meter_rects[0].w, WIDE_METER_COL_DIP);
@@ -855,7 +855,7 @@ mod tests {
     #[test]
     fn packs_system_pill_alongside_providers_and_alone() {
         let mut snap = demo_snapshot(1_700_000_000_000);
-        let layout = compute_strip_layout(&snap, 980.0, false);
+        let layout = compute_strip_layout(&snap, 840.0, false);
         match layout.mode {
             StripMode::Pills {
                 ref slots,
@@ -867,7 +867,7 @@ mod tests {
                 assert_eq!(sys.w, SYSTEM_PILL_WIDTH_DIP);
                 assert!(layout.hit_test_system(sys.x + 10.0, sys.y + 10.0));
                 assert_eq!(layout.system_rect(), Some(sys));
-                assert!(layout.width_dip <= 980.0);
+                assert!(layout.width_dip <= 840.0);
             }
             ref other => panic!("expected Pills, got {other:?}"),
         }
@@ -890,7 +890,7 @@ mod tests {
     }
 
     #[test]
-    fn single_bar_provider_uses_128_dip_wide_meter_slot() {
+    fn single_bar_provider_uses_103_dip_wide_meter_slot() {
         let now = 1_700_000_000_000i64;
         let mut snap = demo_snapshot(now);
         snap.system = None;
@@ -927,7 +927,7 @@ mod tests {
                 assert_eq!(slots.len(), 1);
                 assert!(overflow_badge.is_none());
                 assert_eq!(slots[0].style, PillStyle::WideMeters);
-                assert_eq!(slots[0].rect.w, 128.0);
+                assert_eq!(slots[0].rect.w, 103.0);
                 assert_eq!(slots[0].meter_rects.len(), 1);
                 assert_eq!(slots[0].meter_rects[0].w, WIDE_SINGLE_METER_COL_DIP);
             }
@@ -939,8 +939,9 @@ mod tests {
     fn keeps_wide_meters_with_overflow_when_at_least_two_fit() {
         let mut snap = demo_snapshot(1_700_000_000_000);
         snap.system = None;
-        // At 860 DIP cap, 3 demo providers (228 + 212 + 212 + 3*9 + 28 + 6 = 713 DIP) fit in WideMeters + `+1`.
-        let layout = compute_strip_layout(&snap, 860.0, false);
+        // At 680 DIP cap, 3 demo providers (181 + 169 + 169 + 3*7 + 28 + 6 = 574 DIP) fit in WideMeters + `+1`,
+        // while all 4 (715 DIP) do not.
+        let layout = compute_strip_layout(&snap, 680.0, false);
         match layout.mode {
             StripMode::Pills {
                 slots,
@@ -950,7 +951,7 @@ mod tests {
                 assert_eq!(slots.len(), 3);
                 assert_eq!(overflow_badge.map(|(_, n)| n), Some(1));
                 assert!(slots.iter().all(|s| s.style == PillStyle::WideMeters));
-                assert!(layout.width_dip <= 860.0);
+                assert!(layout.width_dip <= 680.0);
             }
             other => panic!("expected WideMeters Pills with overflow, got {other:?}"),
         }
@@ -960,9 +961,9 @@ mod tests {
     fn falls_back_to_compact_stacked_when_fewer_than_two_wide_fit() {
         let mut snap = demo_snapshot(1_700_000_000_000);
         snap.system = None;
-        // At 320 DIP, only 1 wide pill would fit (< 2), so we collapse to CompactStacked:
-        // Claude (156) + 9 + Cursor (108) + 9 + badge (28) + 6 pad = 316 DIP <= 320.
-        let layout = compute_strip_layout(&snap, 320.0, false);
+        // At 260 DIP, only 1 wide pill would fit (< 2), so we collapse to CompactStacked:
+        // Claude (124) + 7 + Cursor (86) + 7 + badge (28) + 6 pad = 258 DIP <= 260.
+        let layout = compute_strip_layout(&snap, 260.0, false);
         match layout.mode {
             StripMode::Pills {
                 slots,
@@ -973,7 +974,7 @@ mod tests {
                 assert_eq!(overflow_badge.map(|(_, n)| n), Some(2));
                 assert!(slots.iter().all(|s| s.style == PillStyle::CompactStacked));
                 assert!(slots.iter().all(|s| s.meter_rects.is_empty()));
-                assert!(layout.width_dip <= 320.0);
+                assert!(layout.width_dip <= 260.0);
             }
             other => panic!("expected CompactStacked Pills with overflow, got {other:?}"),
         }

@@ -1172,22 +1172,28 @@ impl Renderer {
         let draw_row = |tag: &str, pct: f64, row_y: f32| -> Result<()> {
             let clamped = pct.clamp(0.0, 100.0);
             let sev = severity_for(clamped);
+            let pad_x = 5.0;
+            let tag_w = 23.0;
+            let pct_w = 25.0;
+            let pct_x = r.x + r.w - pad_x - pct_w;
+            let track_x = r.x + pad_x + tag_w + 1.0;
+            let track_w = (pct_x - 3.0 - track_x).max(16.0);
             self.draw_text(
                 rt,
                 tag,
                 &self.fmt_sys_tag,
                 DipRect {
-                    x: r.x + 6.0,
+                    x: r.x + pad_x,
                     y: row_y - 0.5,
-                    w: 24.0,
+                    w: tag_w,
                     h: 12.5,
                 },
                 pal.muted,
             )?;
             let track = DipRect {
-                x: r.x + 31.0,
+                x: track_x,
                 y: row_y + 4.0,
-                w: 44.0,
+                w: track_w,
                 h: 4.0,
             };
             self.fill_rounded(rt, track, 2.0, pal.track)?;
@@ -1216,9 +1222,9 @@ impl Renderer {
                 &pct_str,
                 &self.fmt_rate,
                 DipRect {
-                    x: r.x + 77.0,
+                    x: pct_x,
                     y: row_y - 0.5,
-                    w: 27.0,
+                    w: pct_w,
                     h: 12.5,
                 },
                 pct_color,
@@ -1638,7 +1644,7 @@ impl Renderer {
 
             if meter_style == TaskbarMeterStyle::PillChip {
                 // 2-tier layout: `[R] 4h 33m  3%` on top, thicker progress bar below.
-                let chip_w = if tag.len() <= 1 { 14.0 } else { 20.0 };
+                let chip_w = if tag.len() <= 1 { 12.0 } else { 17.0 };
                 let chip_rect = DipRect {
                     x: m.x,
                     y: m.y + 4.0,
@@ -1653,9 +1659,9 @@ impl Renderer {
                 self.fill_rounded(rt, chip_rect, 3.0, chip_bg)?;
                 self.draw_text(rt, tag, &self.fmt_chip, chip_rect, pal.text)?;
 
-                let pct_w = 27.0;
+                let pct_w = 25.0;
                 if let Some(ref ts) = time_text {
-                    let time_x = chip_rect.x + chip_rect.w + 3.0;
+                    let time_x = chip_rect.x + chip_rect.w + 2.0;
                     let time_w = (m.x + m.w - pct_w - time_x).max(0.0);
                     if time_w >= 14.0 {
                         self.draw_text(
@@ -1693,8 +1699,8 @@ impl Renderer {
                 self.draw_bar_fill(rt, track_rect, 2.25, bar, pal)?;
             } else {
                 // 3-tier layout: `R  3%` on top, bar middle, crisp time token underneath.
-                let pct_w = 29.0;
-                let left_w = (m.w - pct_w).max(20.0);
+                let pct_w = 27.0;
+                let left_w = (m.w - pct_w).max(18.0);
                 self.draw_text(
                     rt,
                     tag,
@@ -1774,7 +1780,7 @@ impl Renderer {
 
         // Real provider icon (16x16 DIPs) with optional OpenCode copy-key hover highlight.
         let badge_rect = DipRect {
-            x: r.x + 7.0,
+            x: r.x + 5.0,
             y: r.y + (r.h - 16.0) * 0.5,
             w: 16.0,
             h: 16.0,
@@ -1791,9 +1797,9 @@ impl Renderer {
         )?;
 
         // Twin slim stacked bars + right-aligned percentage.
-        let bars_x = badge_rect.x + badge_rect.w + 6.0;
-        let bar_w = 42.0;
-        let pct_w = 26.0;
+        let bars_x = badge_rect.x + badge_rect.w + 4.0;
+        let bar_w = 28.0;
+        let pct_w = 25.0;
         let bar_h = 4.0;
 
         let draw_bar_row = |bar: &BarView, row_y: f32| -> Result<()> {
@@ -1840,7 +1846,7 @@ impl Renderer {
 
         // Extended column for Claude: hairline divider + live `$/h` rate + compact reset time.
         if slot.extended {
-            let sep_x = bars_x + bar_w + 3.0 + pct_w + 5.0;
+            let sep_x = bars_x + bar_w + 3.0 + pct_w + 3.0;
             self.fill_rounded(
                 rt,
                 DipRect {
@@ -1854,7 +1860,7 @@ impl Renderer {
             )?;
 
             let col_x = sep_x + 4.0;
-            let col_w = (r.x + r.w - 6.0 - col_x).max(20.0);
+            let col_w = (r.x + r.w - 4.0 - col_x).max(20.0);
             if let Some(ref rate) = item.spend_rate_text {
                 self.draw_text(
                     rt,
