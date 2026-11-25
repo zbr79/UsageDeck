@@ -3570,8 +3570,8 @@ pub async fn poll_settings_snapshot(core: &Core) -> SettingsSnapshot {
             crate::providers::opencode::accounts(core)
         ),
         tokio::time::timeout(
-            per_provider_timeout,
-            crate::providers::antigravity::accounts(core)
+            std::time::Duration::from_secs(20),
+            crate::providers::antigravity::accounts(core),
         ),
     );
 
