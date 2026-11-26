@@ -12,6 +12,11 @@
 //! boundary.
 
 use crate::clipboard;
+use crate::context_menu::{
+    ContextMenuAction, ContextMenuItem, ContextMenuWindow, MenuAnchor, MenuItemTone,
+    MenuKeyOutcome, WM_APP_CONTEXT_MENU_CLICK, WM_APP_CONTEXT_MENU_DISMISS,
+    WM_APP_CONTEXT_MENU_KEY, WM_APP_CONTEXT_MENU_LEAVE, WM_APP_CONTEXT_MENU_MOVE,
+};
 use crate::layout::{compute_strip_layout, exhausted_until_ms, PillStyle, StripLayout, StripMode};
 use crate::poller::{PollerCmd, SharedSnapshot, WM_APP_SNAPSHOT};
 use crate::render::{compute_update_flash_frame, Renderer};
@@ -19,7 +24,7 @@ use crate::settings_dialog;
 use crate::taskbar::{query_taskbar, StableStripAnchor, TaskbarMetrics, TaskbarTheme};
 use crate::tooltip::{
     pill_screen_rect_px, HoverCardAction, TooltipWindow, WM_APP_HOVER_CARD_CLICK,
-    WM_APP_HOVER_CARD_LEAVE, WM_APP_HOVER_CARD_MOVE,
+    WM_APP_HOVER_CARD_LEAVE, WM_APP_HOVER_CARD_MOVE, WM_APP_HOVER_CARD_RCLICK,
 };
 use crate::updater::UpdaterHandle;
 use std::cell::RefCell;
@@ -28,10 +33,11 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use usagedeck_core::default_data_dir;
+use usagedeck_core::providers::antigravity::AntigravitySetupIssue;
 use usagedeck_core::store::{CredentialVault, Store, ThemeMode};
-use usagedeck_core::view::ProviderKind;
+use usagedeck_core::view::{cached_settings_snapshot, ProviderItem, ProviderKind};
 use usagedeck_core::win::{fullscreen, launch};
-use windows::core::{w, Result, PCWSTR};
+use windows::core::{w, Result};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
@@ -40,16 +46,14 @@ use windows::Win32::UI::Shell::{
     Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreateIconFromResourceEx, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
-    DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW,
-    GetWindow, KillTimer, LoadCursorW, LoadIconW, PostMessageW, PostQuitMessage, RegisterClassExW,
-    RegisterWindowMessageW, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow,
-    TrackPopupMenu, TranslateMessage, CS_DBLCLKS, GW_HWNDPREV, HICON, HWND_TOPMOST, IDC_HAND,
-    IDI_APPLICATION, LR_DEFAULTCOLOR, MF_SEPARATOR, MF_STRING, MSG, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
-    TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_CONTEXTMENU, WM_DESTROY, WM_LBUTTONDBLCLK,
-    WM_LBUTTONUP, WM_MOUSEMOVE, WM_NULL, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMER,
-    WM_WINDOWPOSCHANGED, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    CreateIconFromResourceEx, CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyWindow,
+    DispatchMessageW, GetCursorPos, GetMessageW, GetWindow, KillTimer, LoadCursorW, LoadIconW,
+    PostMessageW, PostQuitMessage, RegisterClassExW, RegisterWindowMessageW, SetTimer,
+    SetWindowPos, ShowWindow, TranslateMessage, CS_DBLCLKS, GW_HWNDPREV, HICON, HWND_TOPMOST,
+    IDC_HAND, IDI_APPLICATION, LR_DEFAULTCOLOR, MSG, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE, WM_APP, WM_CONTEXTMENU, WM_DESTROY,
+    WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_MOUSEMOVE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETTINGCHANGE,
+    WM_TIMER, WM_WINDOWPOSCHANGED, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
     WS_EX_TOPMOST, WS_POPUP,
 };
 
@@ -75,11 +79,6 @@ const HOVER_OPEN_DELAY_MS: u32 = 1000;
 const HOVER_DISMISS_GRACE: Duration = Duration::from_millis(260);
 const TOAST_DURATION: Duration = Duration::from_millis(2200);
 
-const MENU_QUICK_SETTINGS: usize = 5001;
-const MENU_QUICK_REFRESH: usize = 5002;
-const MENU_QUICK_UPDATE: usize = 5003;
-const MENU_QUICK_QUIT: usize = 5004;
-
 const APP_ICON_BYTES: &[u8] = include_bytes!("../assets/icon.ico");
 
 /// Registered `TaskbarCreated` message ID stored in an atomic so `strip_wnd_proc` never
@@ -102,6 +101,7 @@ struct ToastNotice {
 struct AppState {
     renderer: Renderer,
     tooltip: Option<TooltipWindow>,
+    context_menu: Option<ContextMenuWindow>,
     shared: Arc<SharedSnapshot>,
     poller_tx: Option<Sender<PollerCmd>>,
     updater: UpdaterHandle,
@@ -123,6 +123,10 @@ struct AppState {
     active_hover_system: bool,
     hover_card_hovered: bool,
     hover_dismiss_at: Option<Instant>,
+    /// Target `(pill_idx, is_system)` for which hover-card reopen is suppressed until the
+    /// cursor moves to a different target or leaves the strip (prevents hover-card pop-back
+    /// right after closing a context menu).
+    suppress_hover_target: Option<(Option<usize>, bool)>,
     suppress_next_lbuttonup: bool,
     fullscreen_debounce: fullscreen::Debounce,
     strip_visible: bool,
@@ -287,17 +291,25 @@ fn open_settings_ui() {
 }
 
 fn open_settings_on_page_ui(provider: Option<ProviderKind>) {
-    let Some((strip_hwnd, poller_tx, updater_for_btn)) = try_with_state(|state| {
+    let Some((strip_hwnd, menu_to_hide, poller_tx, updater_for_btn)) = try_with_state(|state| {
         clear_hover_card_state(state);
+        let menu_hwnd = state
+            .context_menu
+            .as_mut()
+            .and_then(ContextMenuWindow::prepare_hide);
         state.updater.set_pause_auto_install(true);
         (
             state.strip_hwnd,
+            menu_hwnd,
             state.poller_tx.clone(),
             state.updater.clone(),
         )
     }) else {
         return;
     };
+    if let Some(menu_hwnd) = menu_to_hide {
+        ContextMenuWindow::hide_hwnd(menu_hwnd);
+    }
 
     settings_dialog::open_settings_dialog_on_page(
         strip_hwnd,
@@ -321,17 +333,25 @@ fn open_settings_on_page_ui(provider: Option<ProviderKind>) {
 }
 
 fn open_settings_on_widget_ui() {
-    let Some((strip_hwnd, poller_tx, updater_for_btn)) = try_with_state(|state| {
+    let Some((strip_hwnd, menu_to_hide, poller_tx, updater_for_btn)) = try_with_state(|state| {
         clear_hover_card_state(state);
+        let menu_hwnd = state
+            .context_menu
+            .as_mut()
+            .and_then(ContextMenuWindow::prepare_hide);
         state.updater.set_pause_auto_install(true);
         (
             state.strip_hwnd,
+            menu_hwnd,
             state.poller_tx.clone(),
             state.updater.clone(),
         )
     }) else {
         return;
     };
+    if let Some(menu_hwnd) = menu_to_hide {
+        ContextMenuWindow::hide_hwnd(menu_hwnd);
+    }
 
     settings_dialog::open_settings_dialog_on_widget(
         strip_hwnd,
@@ -522,22 +542,52 @@ fn copy_opencode_key(email: String, anchor: Option<RECT>) {
 }
 
 fn quit_app_ui() {
-    let Some(strip_hwnd) = try_with_state(|state| {
+    let Some((strip_hwnd, menu_to_hide)) = try_with_state(|state| {
         hide_tooltip(state);
+        let menu_hwnd = state
+            .context_menu
+            .as_mut()
+            .and_then(ContextMenuWindow::prepare_hide);
         state.updater.stop();
         if let Some(ref tx) = state.poller_tx {
             let _ = tx.send(PollerCmd::Stop);
         }
-        state.strip_hwnd
+        (state.strip_hwnd, menu_hwnd)
     }) else {
         return;
     };
+    if let Some(menu_hwnd) = menu_to_hide {
+        ContextMenuWindow::hide_hwnd(menu_hwnd);
+    }
 
     remove_tray_icon(strip_hwnd);
     // SAFETY: destroys our strip window outside any `STATE` borrow and exits the message loop cleanly.
     unsafe {
         let _ = DestroyWindow(strip_hwnd);
         PostQuitMessage(0);
+    }
+}
+
+fn is_context_menu_open(state: &AppState) -> bool {
+    state
+        .context_menu
+        .as_ref()
+        .is_some_and(ContextMenuWindow::is_open)
+}
+
+fn dismiss_context_menu_ui() -> bool {
+    let to_hide = try_with_state(|state| {
+        state
+            .context_menu
+            .as_mut()
+            .and_then(ContextMenuWindow::prepare_hide)
+    })
+    .flatten();
+    if let Some(menu_hwnd) = to_hide {
+        ContextMenuWindow::hide_hwnd(menu_hwnd);
+        true
+    } else {
+        false
     }
 }
 
@@ -575,6 +625,10 @@ fn cursor_in_hover_bridge(pt: POINT, card: RECT, pill: RECT) -> bool {
 }
 
 fn update_active_tooltip(state: &mut AppState) {
+    if is_context_menu_open(state) {
+        clear_hover_card_state(state);
+        return;
+    }
     let Some(metrics) = state.metrics else {
         clear_hover_card_state(state);
         return;
@@ -1099,13 +1153,15 @@ unsafe extern "system" fn strip_wnd_proc(
         WM_TIMER if wparam.0 == TIMER_HOVER_OPEN_ID => {
             let _ = KillTimer(Some(hwnd), TIMER_HOVER_OPEN_ID);
             let opened = try_with_state(|s| {
-                if !s.strip_visible {
+                if !s.strip_visible || is_context_menu_open(s) {
                     s.pending_hover_pill = None;
                     s.pending_hover_system = false;
                     return false;
                 }
                 if let Some(idx) = s.pending_hover_pill.take() {
-                    if s.strip_hovered_pill == Some(idx) {
+                    if s.strip_hovered_pill == Some(idx)
+                        && s.suppress_hover_target != Some((Some(idx), false))
+                    {
                         if let Some(ref mut tip) = s.tooltip {
                             let _ = tip.set_hovered_button(None);
                         }
@@ -1117,7 +1173,7 @@ unsafe extern "system" fn strip_wnd_proc(
                     }
                 } else if s.pending_hover_system {
                     s.pending_hover_system = false;
-                    if s.strip_hovered_system {
+                    if s.strip_hovered_system && s.suppress_hover_target != Some((None, true)) {
                         if let Some(ref mut tip) = s.tooltip {
                             let _ = tip.set_hovered_button(None);
                         }
@@ -1339,6 +1395,113 @@ unsafe extern "system" fn strip_wnd_proc(
             }
             LRESULT(0)
         }
+        WM_APP_HOVER_CARD_RCLICK => {
+            let _ = KillTimer(Some(hwnd), TIMER_HOVER_OPEN_ID);
+            let _ = KillTimer(Some(hwnd), TIMER_HOVER_CLOSE_ID);
+            let mut pt = POINT::default();
+            let _ = GetCursorPos(&mut pt);
+            let target = try_with_state(|s| {
+                let active_pill = s.active_hover_pill;
+                let active_sys = s.active_hover_system;
+                s.suppress_hover_target = Some((active_pill, active_sys));
+                clear_hover_card_state(s);
+                (active_pill, active_sys)
+            });
+            if let Some((active_pill, active_sys)) = target {
+                if let Some(pill_idx) = active_pill {
+                    show_pill_context_menu(pill_idx, Some(MenuAnchor::AtCursor { pt }));
+                } else if active_sys {
+                    show_system_context_menu(Some(MenuAnchor::AtCursor { pt }));
+                } else {
+                    show_tray_context_menu(pt);
+                }
+            }
+            LRESULT(0)
+        }
+        WM_APP_CONTEXT_MENU_MOVE => {
+            let x_px = (lparam.0 & 0xffff) as i16 as f32;
+            let y_px = ((lparam.0 >> 16) & 0xffff) as i16 as f32;
+            try_with_state(|s| {
+                if let Some(ref mut menu) = s.context_menu {
+                    menu.handle_mouse_move(x_px, y_px);
+                }
+            });
+            LRESULT(0)
+        }
+        WM_APP_CONTEXT_MENU_LEAVE => {
+            try_with_state(|s| {
+                if let Some(ref mut menu) = s.context_menu {
+                    menu.handle_mouse_leave();
+                }
+            });
+            LRESULT(0)
+        }
+        WM_APP_CONTEXT_MENU_CLICK => {
+            let x_px = (lparam.0 & 0xffff) as i16 as f32;
+            let y_px = ((lparam.0 >> 16) & 0xffff) as i16 as f32;
+            let picked = try_with_state(|s| {
+                let menu = s.context_menu.as_mut()?;
+                let action = menu.handle_click(x_px, y_px)?;
+                let anchor = menu.anchor_rect();
+                let hide_hwnd = menu.prepare_hide();
+                Some((action, anchor, hide_hwnd))
+            })
+            .flatten();
+            if let Some((action, anchor, hide_hwnd)) = picked {
+                if let Some(menu_hwnd) = hide_hwnd {
+                    ContextMenuWindow::hide_hwnd(menu_hwnd);
+                }
+                dispatch_context_menu_action(action, anchor);
+            }
+            LRESULT(0)
+        }
+        WM_APP_CONTEXT_MENU_KEY => {
+            let vk = (wparam.0 & 0xffff) as u16;
+            enum KeyDispatch {
+                None,
+                Dismiss(Option<HWND>),
+                Activate(ContextMenuAction, Option<RECT>, Option<HWND>),
+            }
+            let outcome = try_with_state(|s| {
+                let Some(ref mut menu) = s.context_menu else {
+                    return KeyDispatch::None;
+                };
+                match menu.handle_key(vk) {
+                    MenuKeyOutcome::Ignored | MenuKeyOutcome::SelectionChanged => KeyDispatch::None,
+                    MenuKeyOutcome::Dismiss => KeyDispatch::Dismiss(menu.prepare_hide()),
+                    MenuKeyOutcome::Activate(action) => {
+                        let anchor = menu.anchor_rect();
+                        KeyDispatch::Activate(action, anchor, menu.prepare_hide())
+                    }
+                }
+            })
+            .unwrap_or(KeyDispatch::None);
+
+            match outcome {
+                KeyDispatch::None => {}
+                KeyDispatch::Dismiss(hide_hwnd) => {
+                    if let Some(menu_hwnd) = hide_hwnd {
+                        ContextMenuWindow::hide_hwnd(menu_hwnd);
+                    }
+                    ensure_strip_above_tray_now();
+                    post_ensure_zorder();
+                }
+                KeyDispatch::Activate(action, anchor, hide_hwnd) => {
+                    if let Some(menu_hwnd) = hide_hwnd {
+                        ContextMenuWindow::hide_hwnd(menu_hwnd);
+                    }
+                    dispatch_context_menu_action(action, anchor);
+                }
+            }
+            LRESULT(0)
+        }
+        WM_APP_CONTEXT_MENU_DISMISS => {
+            if ContextMenuWindow::is_current_generation(wparam.0) && dismiss_context_menu_ui() {
+                ensure_strip_above_tray_now();
+                post_ensure_zorder();
+            }
+            LRESULT(0)
+        }
         WM_APP_QUIT => {
             quit_app_ui();
             LRESULT(0)
@@ -1363,13 +1526,36 @@ unsafe extern "system" fn strip_wnd_proc(
                 let hit_hide = layout.and_then(|l| l.hit_test_pill_hide(dx, dy));
                 let hit_system = layout.is_some_and(|l| l.hit_test_system(dx, dy));
 
+                // Never arm or open a hover card while our Fluent context menu is active.
+                if is_context_menu_open(s) {
+                    s.pending_hover_pill = None;
+                    s.pending_hover_system = false;
+                    return (false, TimerOp::Cancel, TimerOp::Cancel);
+                }
+
+                // Clear post-menu hover suppression as soon as the cursor moves to a new target.
+                let current_target = (hit_pill, hit_system);
+                if s.suppress_hover_target.is_some()
+                    && s.suppress_hover_target != Some(current_target)
+                {
+                    s.suppress_hover_target = None;
+                }
+                let hover_suppressed = s.suppress_hover_target == Some(current_target)
+                    && (hit_pill.is_some() || hit_system);
+
                 let mut open_op = TimerOp::None;
                 let mut close_op = TimerOp::None;
                 let prev_active = s.active_hover_pill;
                 let prev_active_sys = s.active_hover_system;
                 let card_already_open = prev_active.is_some() || prev_active_sys;
 
-                if let Some(idx) = hit_pill {
+                if hover_suppressed {
+                    if s.pending_hover_pill.is_some() || s.pending_hover_system {
+                        s.pending_hover_pill = None;
+                        s.pending_hover_system = false;
+                        open_op = TimerOp::Cancel;
+                    }
+                } else if let Some(idx) = hit_pill {
                     if card_already_open {
                         // Card already open: switch cleanly to adjacent pill with 0ms delay.
                         if prev_active != Some(idx) || prev_active_sys {
@@ -1469,6 +1655,7 @@ unsafe extern "system" fn strip_wnd_proc(
                 s.strip_tracking_leave = false;
                 s.pending_hover_pill = None;
                 s.pending_hover_system = false;
+                s.suppress_hover_target = None;
                 let arm_timer = if (s.active_hover_pill.is_some() || s.active_hover_system)
                     && !s.hover_card_hovered
                 {
@@ -1504,6 +1691,9 @@ unsafe extern "system" fn strip_wnd_proc(
             LRESULT(0)
         }
         WM_LBUTTONDBLCLK => {
+            if dismiss_context_menu_ui() {
+                return LRESULT(0);
+            }
             enum DblClickAction {
                 None,
                 LaunchProvider {
@@ -1603,7 +1793,11 @@ unsafe extern "system" fn strip_wnd_proc(
             LRESULT(0)
         }
         WM_LBUTTONUP => {
+            if dismiss_context_menu_ui() {
+                return LRESULT(0);
+            }
             let action = try_with_state(|s| {
+                s.suppress_hover_target = None;
                 if s.suppress_next_lbuttonup {
                     s.suppress_next_lbuttonup = false;
                     return StripClickAction::None;
@@ -1709,19 +1903,53 @@ unsafe extern "system" fn strip_wnd_proc(
             }
             LRESULT(0)
         }
+        WM_RBUTTONDOWN => {
+            let _ = KillTimer(Some(hwnd), TIMER_HOVER_OPEN_ID);
+            let _ = KillTimer(Some(hwnd), TIMER_HOVER_CLOSE_ID);
+            let _ = dismiss_context_menu_ui();
+            try_with_state(clear_hover_card_state);
+            LRESULT(0)
+        }
         WM_RBUTTONUP => {
             let _ = KillTimer(Some(hwnd), TIMER_HOVER_OPEN_ID);
             let _ = KillTimer(Some(hwnd), TIMER_HOVER_CLOSE_ID);
-            show_quick_context_menu(hwnd);
+            let target = try_with_state(|s| {
+                clear_hover_card_state(s);
+                let scale = s.metrics.map_or(1.0, |m| m.scale);
+                let (dx, dy) = cursor_dip(lparam, scale);
+                let layout = s.strip_layout.as_ref();
+                let hit_pill = layout.and_then(|l| l.hit_test_pill(dx, dy));
+                let hit_system = layout.is_some_and(|l| l.hit_test_system(dx, dy));
+                if hit_pill.is_some() || hit_system {
+                    s.suppress_hover_target = Some((hit_pill, hit_system));
+                }
+                (hit_pill, hit_system)
+            });
+            if let Some((hit_pill, hit_system)) = target {
+                if let Some(idx) = hit_pill {
+                    show_pill_context_menu(idx, None);
+                } else if hit_system {
+                    show_system_context_menu(None);
+                } else {
+                    let mut pt = POINT::default();
+                    let _ = GetCursorPos(&mut pt);
+                    show_tray_context_menu(pt);
+                }
+            }
             LRESULT(0)
         }
         WM_TRAY_ICON => {
             match lparam.0 as u32 {
-                WM_LBUTTONUP => open_settings_ui(),
+                WM_LBUTTONUP => {
+                    let _ = dismiss_context_menu_ui();
+                    open_settings_ui();
+                }
                 WM_RBUTTONUP | WM_CONTEXTMENU => {
                     let _ = KillTimer(Some(hwnd), TIMER_HOVER_OPEN_ID);
                     let _ = KillTimer(Some(hwnd), TIMER_HOVER_CLOSE_ID);
-                    show_quick_context_menu(hwnd);
+                    let mut pt = POINT::default();
+                    let _ = GetCursorPos(&mut pt);
+                    show_tray_context_menu(pt);
                 }
                 _ => {}
             }
@@ -1737,91 +1965,387 @@ unsafe extern "system" fn strip_wnd_proc(
     }
 }
 
-/// Show a native Win32 context menu at the cursor (for right-clicking the System Tray icon
-/// or right-clicking the taskbar strip) offering Settings, Refresh, Update, and Quit.
+fn update_menu_item(ready_ver: Option<&str>) -> ContextMenuItem {
+    match ready_ver {
+        Some(ver) => ContextMenuItem::Action {
+            label: format!("Install update v{ver}"),
+            action: ContextMenuAction::CheckOrInstallUpdate,
+            tone: MenuItemTone::Accent,
+        },
+        None => ContextMenuItem::Action {
+            label: "Check for updates".to_string(),
+            action: ContextMenuAction::CheckOrInstallUpdate,
+            tone: MenuItemTone::Normal,
+        },
+    }
+}
+
+fn build_provider_menu_items(
+    item: &ProviderItem,
+    updated_at_ms: i64,
+    ready_ver: Option<&str>,
+) -> Vec<ContextMenuItem> {
+    let provider = item.provider;
+    let header = if item.title.trim().is_empty() {
+        provider.display_name().to_string()
+    } else {
+        item.title.clone()
+    };
+
+    let mut items = vec![
+        ContextMenuItem::Header(header),
+        ContextMenuItem::Action {
+            label: format!("Open {}", provider.display_name()),
+            action: ContextMenuAction::OpenProvider {
+                provider,
+                watch_cursor: provider == ProviderKind::Cursor && item.can_open_cursor,
+            },
+            tone: MenuItemTone::Normal,
+        },
+    ];
+
+    if let Some(issue) = item.antigravity_setup_issue {
+        match issue {
+            AntigravitySetupIssue::NeedsAgyCli => items.push(ContextMenuItem::Action {
+                label: "Install Antigravity CLI".to_string(),
+                action: ContextMenuAction::InstallAntigravityCli,
+                tone: MenuItemTone::Accent,
+            }),
+            AntigravitySetupIssue::NeedsAgySignIn => items.push(ContextMenuItem::Action {
+                label: "Sign in to Antigravity".to_string(),
+                action: ContextMenuAction::SignInAntigravityCli,
+                tone: MenuItemTone::Accent,
+            }),
+        }
+    } else if provider == ProviderKind::OpenCode && !item.account_id.is_empty() {
+        items.push(ContextMenuItem::Action {
+            label: "Copy API key".to_string(),
+            action: ContextMenuAction::CopyOpenCodeKey(item.account_id.clone()),
+            tone: MenuItemTone::Normal,
+        });
+    } else if let Some(until_ms) = exhausted_until_ms(item, updated_at_ms) {
+        items.push(ContextMenuItem::Action {
+            label: "Hide until reset".to_string(),
+            action: ContextMenuAction::HideUntilReset {
+                provider,
+                account_id: item.account_id.clone(),
+                title: item.title.clone(),
+                until_ms,
+            },
+            tone: MenuItemTone::Normal,
+        });
+    }
+
+    items.push(ContextMenuItem::Action {
+        label: "Settings".to_string(),
+        action: ContextMenuAction::OpenProviderSettings(provider),
+        tone: MenuItemTone::Normal,
+    });
+    items.push(ContextMenuItem::Separator);
+    items.push(ContextMenuItem::Action {
+        label: "Refresh now".to_string(),
+        action: ContextMenuAction::RefreshNow,
+        tone: MenuItemTone::Normal,
+    });
+    items.push(update_menu_item(ready_ver));
+    items.push(ContextMenuItem::Action {
+        label: "Quit UsageDeck".to_string(),
+        action: ContextMenuAction::QuitApp,
+        tone: MenuItemTone::Danger,
+    });
+    items
+}
+
+fn build_system_menu_items(ready_ver: Option<&str>) -> Vec<ContextMenuItem> {
+    vec![
+        ContextMenuItem::Header("System".to_string()),
+        ContextMenuItem::Action {
+            label: "Open Task Manager".to_string(),
+            action: ContextMenuAction::OpenTaskManager,
+            tone: MenuItemTone::Normal,
+        },
+        ContextMenuItem::Action {
+            label: "Widget settings".to_string(),
+            action: ContextMenuAction::OpenWidgetSettings,
+            tone: MenuItemTone::Normal,
+        },
+        ContextMenuItem::Separator,
+        ContextMenuItem::Action {
+            label: "Refresh now".to_string(),
+            action: ContextMenuAction::RefreshNow,
+            tone: MenuItemTone::Normal,
+        },
+        update_menu_item(ready_ver),
+        ContextMenuItem::Action {
+            label: "Quit UsageDeck".to_string(),
+            action: ContextMenuAction::QuitApp,
+            tone: MenuItemTone::Danger,
+        },
+    ]
+}
+
+fn build_tray_menu_items(ready_ver: Option<&str>) -> Vec<ContextMenuItem> {
+    vec![
+        ContextMenuItem::Header(format!("UsageDeck v{}", env!("CARGO_PKG_VERSION"))),
+        ContextMenuItem::Action {
+            label: "Settings".to_string(),
+            action: ContextMenuAction::OpenSettings,
+            tone: MenuItemTone::Normal,
+        },
+        ContextMenuItem::Action {
+            label: "Refresh now".to_string(),
+            action: ContextMenuAction::RefreshNow,
+            tone: MenuItemTone::Normal,
+        },
+        ContextMenuItem::Action {
+            label: "Copy diagnostics".to_string(),
+            action: ContextMenuAction::CopyDiagnostics,
+            tone: MenuItemTone::Normal,
+        },
+        update_menu_item(ready_ver),
+        ContextMenuItem::Separator,
+        ContextMenuItem::Action {
+            label: "Quit UsageDeck".to_string(),
+            action: ContextMenuAction::QuitApp,
+            tone: MenuItemTone::Danger,
+        },
+    ]
+}
+
+fn show_pill_context_menu(pill_idx: usize, override_anchor: Option<MenuAnchor>) {
+    let menu_hwnd = try_with_state(|s| {
+        clear_hover_card_state(s);
+        let (snapshot, _) = s.shared.get();
+        let item = snapshot.items.get(pill_idx)?;
+        let ready = s.updater.ready_version();
+        let items = build_provider_menu_items(item, snapshot.updated_at_ms, ready.as_deref());
+        let metrics = s.metrics.or_else(query_taskbar);
+        let (dpi, theme, pill_anchor_rect, anchor) = if let Some(m) = metrics {
+            let theme = effective_theme(snapshot.theme_mode, m.theme);
+            let (sx, sy, _, _) = s.strip_pos;
+            let pill_rect = s
+                .strip_layout
+                .as_ref()
+                .and_then(|l| l.pill_rect(pill_idx))
+                .map(|r| pill_screen_rect_px(sx, sy, r, m.scale));
+            let anchor = override_anchor.unwrap_or_else(|| match pill_rect {
+                Some(rect) => MenuAnchor::AboveRect {
+                    rect,
+                    tray_top: m.tray_rect.top,
+                    monitor_rect: m.monitor_rect,
+                },
+                None => {
+                    let mut pt = POINT::default();
+                    // SAFETY: standard Win32 cursor query.
+                    unsafe {
+                        let _ = GetCursorPos(&mut pt);
+                    }
+                    MenuAnchor::AtCursor { pt }
+                }
+            });
+            (m.dpi, theme, pill_rect, anchor)
+        } else {
+            let mut pt = POINT::default();
+            // SAFETY: standard Win32 cursor query.
+            unsafe {
+                let _ = GetCursorPos(&mut pt);
+            }
+            (
+                96,
+                effective_theme(snapshot.theme_mode, TaskbarTheme::Dark),
+                None,
+                override_anchor.unwrap_or(MenuAnchor::AtCursor { pt }),
+            )
+        };
+        s.context_menu
+            .as_mut()?
+            .prepare_show(&items, anchor, pill_anchor_rect, dpi, theme)
+    })
+    .flatten();
+
+    if let Some(hwnd) = menu_hwnd {
+        ContextMenuWindow::activate_hwnd(hwnd);
+    }
+}
+
+fn show_system_context_menu(override_anchor: Option<MenuAnchor>) {
+    let menu_hwnd = try_with_state(|s| {
+        clear_hover_card_state(s);
+        let (snapshot, _) = s.shared.get();
+        let ready = s.updater.ready_version();
+        let items = build_system_menu_items(ready.as_deref());
+        let metrics = s.metrics.or_else(query_taskbar);
+        let (dpi, theme, sys_anchor_rect, anchor) = if let Some(m) = metrics {
+            let theme = effective_theme(snapshot.theme_mode, m.theme);
+            let (sx, sy, _, _) = s.strip_pos;
+            let sys_rect = s
+                .strip_layout
+                .as_ref()
+                .and_then(StripLayout::system_rect)
+                .map(|r| pill_screen_rect_px(sx, sy, r, m.scale));
+            let anchor = override_anchor.unwrap_or_else(|| match sys_rect {
+                Some(rect) => MenuAnchor::AboveRect {
+                    rect,
+                    tray_top: m.tray_rect.top,
+                    monitor_rect: m.monitor_rect,
+                },
+                None => {
+                    let mut pt = POINT::default();
+                    // SAFETY: standard Win32 cursor query.
+                    unsafe {
+                        let _ = GetCursorPos(&mut pt);
+                    }
+                    MenuAnchor::AtCursor { pt }
+                }
+            });
+            (m.dpi, theme, sys_rect, anchor)
+        } else {
+            let mut pt = POINT::default();
+            // SAFETY: standard Win32 cursor query.
+            unsafe {
+                let _ = GetCursorPos(&mut pt);
+            }
+            (
+                96,
+                effective_theme(snapshot.theme_mode, TaskbarTheme::Dark),
+                None,
+                override_anchor.unwrap_or(MenuAnchor::AtCursor { pt }),
+            )
+        };
+        s.context_menu
+            .as_mut()?
+            .prepare_show(&items, anchor, sys_anchor_rect, dpi, theme)
+    })
+    .flatten();
+
+    if let Some(hwnd) = menu_hwnd {
+        ContextMenuWindow::activate_hwnd(hwnd);
+    }
+}
+
+fn show_tray_context_menu(pt: POINT) {
+    let menu_hwnd = try_with_state(|s| {
+        clear_hover_card_state(s);
+        let (snapshot, _) = s.shared.get();
+        let ready = s.updater.ready_version();
+        let items = build_tray_menu_items(ready.as_deref());
+        let metrics = s.metrics.or_else(query_taskbar);
+        let (dpi, theme) = match metrics {
+            Some(m) => (m.dpi, effective_theme(snapshot.theme_mode, m.theme)),
+            None => (96, effective_theme(snapshot.theme_mode, TaskbarTheme::Dark)),
+        };
+        s.context_menu
+            .as_mut()?
+            .prepare_show(&items, MenuAnchor::AtCursor { pt }, None, dpi, theme)
+    })
+    .flatten();
+
+    if let Some(hwnd) = menu_hwnd {
+        ContextMenuWindow::activate_hwnd(hwnd);
+    }
+}
+
+fn copy_diagnostics_from_menu(anchor: Option<RECT>) {
+    let strip_hwnd_raw = STRIP_HWND_RAW.load(Ordering::Acquire);
+    std::thread::spawn(move || {
+        let fallback = format!("UsageDeck v{} (Windows)", env!("CARGO_PKG_VERSION"));
+        let text = default_data_dir()
+            .and_then(|dir| {
+                let store = Store::new(dir.clone(), Box::new(CredentialVault));
+                let settings = store.get_settings();
+                let snap = cached_settings_snapshot(&dir, settings);
+                (!snap.diagnostics_text.is_empty()).then_some(snap.diagnostics_text)
+            })
+            .unwrap_or(fallback);
+
+        let msg = match clipboard::copy_text(&text) {
+            Ok(()) => "Diagnostics copied",
+            Err(e) => {
+                log::warn!("copy diagnostics from context menu failed: {e}");
+                "Couldn't copy diagnostics"
+            }
+        };
+        if strip_hwnd_raw != 0 {
+            post_toast(strip_hwnd_raw, msg, anchor);
+        }
+    });
+}
+
+/// Dispatch an action selected from the Fluent context menu.
 ///
 /// Must ALWAYS be invoked strictly outside any `STATE` `RefCell` borrow.
-fn show_quick_context_menu(hwnd: HWND) {
-    let Some((poller_tx, updater, ready_ver)) = try_with_state(|s| {
-        clear_hover_card_state(s);
-        let ready = s.updater.ready_version();
-        (s.poller_tx.clone(), s.updater.clone(), ready)
-    }) else {
-        return;
-    };
-
-    let update_label: Vec<u16> = match ready_ver {
-        Some(ref ver) => format!("Install update v{ver}\0").encode_utf16().collect(),
-        None => "Check for updates\0".encode_utf16().collect(),
-    };
-
-    // SAFETY: TrackPopupMenu runs strictly outside any STATE RefCell borrow.
-    let cmd = unsafe {
-        let Ok(menu) = CreatePopupMenu() else {
-            return;
-        };
-        let _ = AppendMenuW(menu, MF_STRING, MENU_QUICK_SETTINGS, w!("Settings…"));
-        let _ = AppendMenuW(menu, MF_STRING, MENU_QUICK_REFRESH, w!("Refresh now"));
-        let _ = AppendMenuW(
-            menu,
-            MF_STRING,
-            MENU_QUICK_UPDATE,
-            PCWSTR(update_label.as_ptr()),
-        );
-        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-        let _ = AppendMenuW(menu, MF_STRING, MENU_QUICK_QUIT, w!("Quit UsageDeck"));
-
-        let mut pt = POINT::default();
-        let _ = GetCursorPos(&mut pt);
-        let _ = SetForegroundWindow(hwnd);
-        let picked = TrackPopupMenu(
-            menu,
-            TPM_RETURNCMD | TPM_LEFTALIGN | TPM_BOTTOMALIGN | TPM_RIGHTBUTTON,
-            pt.x,
-            pt.y,
-            Some(0),
-            hwnd,
-            None,
-        )
-        .0 as usize;
-        // Microsoft Win32 requirement for tray popup menus so clicking outside dismisses cleanly.
-        let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
-        let _ = DestroyMenu(menu);
-        picked
-    };
-
-    match cmd {
-        MENU_QUICK_SETTINGS => open_settings_ui(),
-        MENU_QUICK_REFRESH => {
+fn dispatch_context_menu_action(action: ContextMenuAction, anchor: Option<RECT>) {
+    match action {
+        ContextMenuAction::OpenProvider {
+            provider,
+            watch_cursor,
+        } => {
+            launch_provider_from_strip(provider, watch_cursor, anchor);
+        }
+        ContextMenuAction::OpenProviderSettings(provider) => {
+            open_settings_on_page_ui(Some(provider));
+        }
+        ContextMenuAction::OpenTaskManager => {
+            launch_task_manager_from_strip(anchor);
+        }
+        ContextMenuAction::OpenWidgetSettings => {
+            open_settings_on_widget_ui();
+        }
+        ContextMenuAction::OpenSettings => {
+            open_settings_ui();
+        }
+        ContextMenuAction::CopyOpenCodeKey(email) => {
+            copy_opencode_key(email, anchor);
+        }
+        ContextMenuAction::InstallAntigravityCli => {
+            launch_antigravity_setup_ui(false, anchor);
+        }
+        ContextMenuAction::SignInAntigravityCli => {
+            launch_antigravity_setup_ui(true, anchor);
+        }
+        ContextMenuAction::HideUntilReset {
+            provider,
+            account_id,
+            title,
+            until_ms,
+        } => {
+            hide_target_with_toast((provider, account_id, title, until_ms), anchor);
+        }
+        ContextMenuAction::RefreshNow => {
+            let poller_tx = try_with_state(|s| s.poller_tx.clone()).flatten();
             if let Some(ref tx) = poller_tx {
                 let _ = tx.send(PollerCmd::RefreshNow);
             }
             post_toast_from_any_thread("Refreshing usage…".to_string());
         }
-        MENU_QUICK_UPDATE => {
-            if updater.ready_version().is_some() {
-                if let Err(e) = updater.install_now() {
-                    log::warn!("install_now from quick menu failed: {e}");
+        ContextMenuAction::CopyDiagnostics => {
+            copy_diagnostics_from_menu(anchor);
+        }
+        ContextMenuAction::CheckOrInstallUpdate => {
+            if let Some(updater) = try_with_state(|s| s.updater.clone()) {
+                if updater.ready_version().is_some() {
+                    if let Err(e) = updater.install_now() {
+                        log::warn!("install_now from context menu failed: {e}");
+                        let _ = updater.check_now();
+                    }
+                } else {
                     let _ = updater.check_now();
+                    post_toast_from_any_thread("Checking for updates…".to_string());
                 }
-            } else {
-                let _ = updater.check_now();
-                post_toast_from_any_thread("Checking for updates…".to_string());
             }
         }
-        MENU_QUICK_QUIT => {
+        ContextMenuAction::QuitApp => {
             quit_app_ui();
             return;
         }
-        _ => {}
     }
 
     ensure_strip_above_tray_now();
     post_ensure_zorder();
 }
 
-/// Create the taskbar strip window, interactive hover card window, and tray icon,
-/// then run the Win32 message loop until quit.
+/// Create the taskbar strip window, interactive hover card window, Fluent context menu,
+/// and tray icon, then run the Win32 message loop until quit.
 pub fn run_ui(
     shared: Arc<SharedSnapshot>,
     updater: UpdaterHandle,
@@ -1831,6 +2355,7 @@ pub fn run_ui(
 ) -> Result<()> {
     let renderer = Renderer::new()?;
     let tooltip = TooltipWindow::new().ok();
+    let context_menu = ContextMenuWindow::new().ok();
     let tray_icon = load_app_icon();
 
     // SAFETY: Win32 class registration, window creation, timer, and standard message loop.
@@ -1872,6 +2397,9 @@ pub fn run_ui(
         if let Some(ref tip) = tooltip {
             tip.set_owner_hwnd(strip_hwnd);
         }
+        if let Some(ref menu) = context_menu {
+            menu.set_owner_hwnd(strip_hwnd);
+        }
 
         let poller_tx = crate::poller::start_poller(strip_hwnd.0 as isize, shared.clone(), demo);
 
@@ -1879,6 +2407,7 @@ pub fn run_ui(
             *cell.borrow_mut() = Some(AppState {
                 renderer,
                 tooltip,
+                context_menu,
                 shared,
                 poller_tx: Some(poller_tx),
                 updater,
@@ -1900,6 +2429,7 @@ pub fn run_ui(
                 active_hover_system: false,
                 hover_card_hovered: false,
                 hover_dismiss_at: None,
+                suppress_hover_target: None,
                 suppress_next_lbuttonup: false,
                 fullscreen_debounce: fullscreen::Debounce::default(),
                 strip_visible: false,
@@ -2006,5 +2536,44 @@ mod tests {
             card,
             pill
         ));
+    }
+
+    #[test]
+    fn tray_and_system_menus_have_expected_actions() {
+        let tray = build_tray_menu_items(Some("2.16.5"));
+        assert!(
+            matches!(tray.first(), Some(ContextMenuItem::Header(h)) if h.starts_with("UsageDeck v"))
+        );
+        assert!(tray.iter().any(|it| matches!(
+            it,
+            ContextMenuItem::Action {
+                action: ContextMenuAction::CopyDiagnostics,
+                ..
+            }
+        )));
+        assert!(tray.iter().any(|it| matches!(
+            it,
+            ContextMenuItem::Action {
+                label,
+                action: ContextMenuAction::CheckOrInstallUpdate,
+                tone: MenuItemTone::Accent,
+            } if label == "Install update v2.16.5"
+        )));
+
+        let sys = build_system_menu_items(None);
+        assert!(sys.iter().any(|it| matches!(
+            it,
+            ContextMenuItem::Action {
+                action: ContextMenuAction::OpenTaskManager,
+                ..
+            }
+        )));
+        assert!(sys.iter().any(|it| matches!(
+            it,
+            ContextMenuItem::Action {
+                action: ContextMenuAction::OpenWidgetSettings,
+                ..
+            }
+        )));
     }
 }

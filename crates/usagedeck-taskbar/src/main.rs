@@ -8,6 +8,7 @@
 mod autostart;
 mod cli;
 mod clipboard;
+mod context_menu;
 mod icons;
 mod layout;
 mod logging;
