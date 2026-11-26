@@ -1429,36 +1429,11 @@ impl TooltipWindow {
     ) -> Result<CardLayout<'a>> {
         let scale = metrics.scale.max(0.5);
         let mon_w_dip = (metrics.monitor_rect.right - metrics.monitor_rect.left) as f32 / scale;
-        let card_w_dip =
-            CARD_WIDTH_DIP.min((mon_w_dip - CARD_MARGIN_DIP * 2.0).max(CARD_MIN_WIDTH_DIP));
-        let content_x = CARD_PAD_X_DIP;
-        let content_w = (card_w_dip - CARD_PAD_X_DIP * 2.0).max(120.0);
 
-        let header_y = CARD_PAD_Y_DIP;
-        let icon_rect = DipRect {
-            x: content_x,
-            y: header_y + (HEADER_ROW_H_DIP - HEADER_ICON_DIP) * 0.5,
-            w: HEADER_ICON_DIP,
-            h: HEADER_ICON_DIP,
-        };
-        let title_x = content_x + HEADER_ICON_DIP + HEADER_ICON_GAP_DIP;
-
-        // Top-right Settings button.
+        // Top-right Settings button width.
         let (settings_tw, _) =
             self.measure_text("Settings", &self.fmt_button, 120.0, FOOTER_BTN_H_DIP)?;
         let settings_bw = (settings_tw.ceil() + FOOTER_BTN_PAD_X_DIP * 2.0).max(58.0);
-        let settings_btn = HoverCardButton {
-            label: "Settings".to_string(),
-            rect: DipRect {
-                x: content_x + content_w - settings_bw,
-                y: header_y + (HEADER_ROW_H_DIP - FOOTER_BTN_H_DIP) * 0.5,
-                w: settings_bw,
-                h: FOOTER_BTN_H_DIP,
-            },
-            action: HoverCardAction::OpenSettings(item.provider),
-            tone: HoverButtonTone::Accent,
-        };
-        let header_right_limit = settings_btn.rect.x - 8.0;
 
         // Collect inline header badges placed directly to the right of the provider name:
         // price/spend rate (clean neutral) -> reset count (purple) -> active alert badge.
@@ -1520,44 +1495,23 @@ impl TooltipWindow {
             .map(|(i, (_, bw))| bw + if i > 0 { BADGE_GAP_DIP } else { 0.0 })
             .sum();
 
-        let avail_left_w = (header_right_limit - title_x).max(HEADER_MIN_TITLE_W_DIP);
-        let max_title_w = if total_badges_w > 0.0 {
-            (avail_left_w - total_badges_w - 6.0).max(HEADER_MIN_TITLE_W_DIP)
-        } else {
-            avail_left_w
-        };
-        let title_text = self.truncate_to_width(&item.title, &self.fmt_title, max_title_w);
-        let (actual_tw, _) =
-            self.measure_text(&title_text, &self.fmt_title, max_title_w, HEADER_ROW_H_DIP)?;
-        let title_w = (actual_tw.ceil() + 2.0).min(max_title_w);
-        let title_rect = DipRect {
-            x: title_x,
-            y: header_y,
-            w: title_w,
-            h: HEADER_ROW_H_DIP,
-        };
-
-        let mut badges: Vec<HeaderBadge> = Vec::with_capacity(measured_specs.len());
-        let badge_y = header_y + (HEADER_ROW_H_DIP - BADGE_H_DIP) * 0.5;
-        let mut badge_x = title_x + title_w + 6.0;
-        for (spec, bw) in measured_specs {
-            if badge_x + bw > header_right_limit + 1.0 {
-                break;
+        let (full_title_tw, _) = self.measure_text(
+            &item.title,
+            &self.fmt_title,
+            CARD_WIDTH_DIP,
+            HEADER_ROW_H_DIP,
+        )?;
+        let mut header_needed_w = HEADER_ICON_DIP
+            + HEADER_ICON_GAP_DIP
+            + full_title_tw.ceil()
+            + 2.0
+            + if total_badges_w > 0.0 {
+                6.0 + total_badges_w
+            } else {
+                0.0
             }
-            badges.push(HeaderBadge {
-                text: spec.text,
-                rect: DipRect {
-                    x: badge_x,
-                    y: badge_y,
-                    w: bw,
-                    h: BADGE_H_DIP,
-                },
-                bg: spec.bg,
-                border: spec.border,
-                fg: spec.fg,
-            });
-            badge_x += bw + BADGE_GAP_DIP;
-        }
+            + 14.0
+            + settings_bw;
 
         // Optional subtitle below header (email only when show_provider_names is false, or re-auth).
         let raw_sub = pick_header_subtitle(
@@ -1565,77 +1519,46 @@ impl TooltipWindow {
             item.display_email.as_deref(),
             item.subtitle.as_deref(),
         );
-        let (subtitle, mut cursor_y) = if let Some(sub) = raw_sub {
-            let sub_max_w = (header_right_limit - title_x).max(40.0);
-            let trunc_sub = self.truncate_to_width(&sub, &self.fmt_subtitle, sub_max_w);
-            let sub_y = header_y + HEADER_ROW_H_DIP - 1.0;
-            (
-                Some((
-                    trunc_sub,
-                    DipRect {
-                        x: title_x,
-                        y: sub_y,
-                        w: sub_max_w,
-                        h: HEADER_SUB_H_DIP,
-                    },
-                )),
-                sub_y + HEADER_SUB_H_DIP,
-            )
-        } else {
-            (None, header_y + HEADER_ROW_H_DIP)
-        };
+        if let Some(ref sub) = raw_sub {
+            if let Ok((sub_tw, _)) =
+                self.measure_text(sub, &self.fmt_subtitle, CARD_WIDTH_DIP, HEADER_SUB_H_DIP)
+            {
+                header_needed_w = header_needed_w.max(
+                    HEADER_ICON_DIP + HEADER_ICON_GAP_DIP + sub_tw.ceil() + 14.0 + settings_bw,
+                );
+            }
+        }
 
-        // Usage Bars section (already filtered by settings.hidden_bars; no per-model splits).
+        // Active usage bars (already filtered by settings.hidden_bars; no per-model splits).
         let active_bars = if !item.hover_bars.is_empty() {
             &item.hover_bars
         } else {
             &item.flyout_bars
         };
-        let mut bars: Vec<MeasuredBar<'a>> = Vec::with_capacity(active_bars.len());
-        if !active_bars.is_empty() {
-            cursor_y += SECTION_GAP_DIP;
-            let usable_meta_w = (content_w - BAR_PCT_W_DIP - 6.0).max(60.0);
-
-            for (idx, bar) in active_bars.iter().enumerate() {
-                if idx > 0 {
-                    cursor_y += BAR_GAP_DIP;
-                }
-                let bar_y = cursor_y;
-                let raw_label = friendly_bar_label(&bar.label);
-                let raw_reset = format_reset_duration_words(bar.reset_short.as_deref());
-
-                let (label, label_w, reset_text) = if let Some(ref rs) = raw_reset {
-                    let max_lbl_w = (usable_meta_w * 0.42).max(52.0);
-                    let lbl = self.truncate_to_width(raw_label, &self.fmt_bar_label, max_lbl_w);
-                    let (lw, _) =
-                        self.measure_text(&lbl, &self.fmt_bar_label, max_lbl_w, BAR_META_H_DIP)?;
-                    let actual_lbl_w = (lw.ceil() + 2.0).min(max_lbl_w);
-                    let reset_avail_w = (usable_meta_w - actual_lbl_w - 6.0).max(0.0);
-                    let reset = if reset_avail_w >= 20.0 {
-                        Some(self.truncate_to_width(rs, &self.fmt_bar_reset, reset_avail_w))
-                    } else {
-                        None
-                    };
-                    (lbl, actual_lbl_w, reset)
-                } else {
-                    let lbl = self.truncate_to_width(raw_label, &self.fmt_bar_label, usable_meta_w);
-                    (lbl, usable_meta_w, None)
-                };
-
-                cursor_y += BAR_META_H_DIP + BAR_TRACK_GAP_DIP + BAR_TRACK_H_DIP;
-
-                bars.push(MeasuredBar {
-                    bar,
-                    y: bar_y,
-                    label,
-                    label_w,
-                    reset_text,
-                });
-            }
+        let mut bars_needed_w: f32 = 0.0;
+        for bar in active_bars {
+            let raw_label = friendly_bar_label(&bar.label);
+            let lbl_w = self
+                .measure_text(
+                    raw_label,
+                    &self.fmt_bar_label,
+                    CARD_WIDTH_DIP,
+                    BAR_META_H_DIP,
+                )
+                .map_or(0.0, |(w, _)| w.ceil() + 2.0);
+            let reset_w = format_reset_duration_words(bar.reset_short.as_deref())
+                .and_then(|rs| {
+                    self.measure_text(&rs, &self.fmt_bar_reset, CARD_WIDTH_DIP, BAR_META_H_DIP)
+                        .ok()
+                        .map(|(w, _)| w.ceil() + 2.0)
+                })
+                .unwrap_or(0.0);
+            let row_w =
+                lbl_w + if reset_w > 0.0 { 14.0 + reset_w } else { 0.0 } + 8.0 + BAR_PCT_W_DIP;
+            bars_needed_w = bars_needed_w.max(row_w);
         }
 
-        // Contextual footer row (only shown when a contextual action or hint is present).
-        let mut buttons: Vec<HoverCardButton> = vec![settings_btn];
+        // Contextual footer specs (only shown when a contextual action or hint is present).
         let mut footer_btn_specs: Vec<(String, HoverCardAction, HoverButtonTone)> = Vec::new();
         if item.exhausted {
             if let Some(until_ms) = item.exhausted_until_ms {
@@ -1686,6 +1609,166 @@ impl TooltipWindow {
             }
         }
 
+        let mut footer_needed_w: f32 = 0.0;
+        if !footer_btn_specs.is_empty() || !footer_text.is_empty() {
+            let mut btns_w: f32 = 0.0;
+            for (i, (label, _, _)) in footer_btn_specs.iter().enumerate() {
+                let (tw, _) =
+                    self.measure_text(label, &self.fmt_button, 120.0, FOOTER_BTN_H_DIP)?;
+                let bw = (tw.ceil() + FOOTER_BTN_PAD_X_DIP * 2.0).max(46.0);
+                btns_w += bw + if i > 0 { FOOTER_BTN_GAP_DIP } else { 0.0 };
+            }
+            let text_w = if !footer_text.is_empty() {
+                let footer_fmt = if footer_style == FooterStyle::Muted {
+                    &self.fmt_footer
+                } else {
+                    &self.fmt_footer_bold
+                };
+                self.measure_text(&footer_text, footer_fmt, CARD_WIDTH_DIP, FOOTER_MIN_H_DIP)
+                    .map_or(0.0, |(w, _)| w.ceil() + 2.0)
+            } else {
+                0.0
+            };
+            footer_needed_w = text_w
+                + if text_w > 0.0 && btns_w > 0.0 {
+                    12.0
+                } else {
+                    0.0
+                }
+                + btns_w;
+        }
+
+        let desired_content_w = header_needed_w.max(bars_needed_w).max(footer_needed_w);
+        let card_w_dip =
+            choose_provider_card_width_dip(active_bars.len(), desired_content_w, mon_w_dip);
+        let content_x = CARD_PAD_X_DIP;
+        let content_w = (card_w_dip - CARD_PAD_X_DIP * 2.0).max(120.0);
+
+        let header_y = CARD_PAD_Y_DIP;
+        let icon_rect = DipRect {
+            x: content_x,
+            y: header_y + (HEADER_ROW_H_DIP - HEADER_ICON_DIP) * 0.5,
+            w: HEADER_ICON_DIP,
+            h: HEADER_ICON_DIP,
+        };
+        let title_x = content_x + HEADER_ICON_DIP + HEADER_ICON_GAP_DIP;
+
+        let settings_btn = HoverCardButton {
+            label: "Settings".to_string(),
+            rect: DipRect {
+                x: content_x + content_w - settings_bw,
+                y: header_y + (HEADER_ROW_H_DIP - FOOTER_BTN_H_DIP) * 0.5,
+                w: settings_bw,
+                h: FOOTER_BTN_H_DIP,
+            },
+            action: HoverCardAction::OpenSettings(item.provider),
+            tone: HoverButtonTone::Accent,
+        };
+        let header_right_limit = settings_btn.rect.x - 8.0;
+
+        let avail_left_w = (header_right_limit - title_x).max(HEADER_MIN_TITLE_W_DIP);
+        let max_title_w = if total_badges_w > 0.0 {
+            (avail_left_w - total_badges_w - 6.0).max(HEADER_MIN_TITLE_W_DIP)
+        } else {
+            avail_left_w
+        };
+        let title_text = self.truncate_to_width(&item.title, &self.fmt_title, max_title_w);
+        let (actual_tw, _) =
+            self.measure_text(&title_text, &self.fmt_title, max_title_w, HEADER_ROW_H_DIP)?;
+        let title_w = (actual_tw.ceil() + 2.0).min(max_title_w);
+        let title_rect = DipRect {
+            x: title_x,
+            y: header_y,
+            w: title_w,
+            h: HEADER_ROW_H_DIP,
+        };
+
+        let mut badges: Vec<HeaderBadge> = Vec::with_capacity(measured_specs.len());
+        let badge_y = header_y + (HEADER_ROW_H_DIP - BADGE_H_DIP) * 0.5;
+        let mut badge_x = title_x + title_w + 6.0;
+        for (spec, bw) in measured_specs {
+            if badge_x + bw > header_right_limit + 1.0 {
+                break;
+            }
+            badges.push(HeaderBadge {
+                text: spec.text,
+                rect: DipRect {
+                    x: badge_x,
+                    y: badge_y,
+                    w: bw,
+                    h: BADGE_H_DIP,
+                },
+                bg: spec.bg,
+                border: spec.border,
+                fg: spec.fg,
+            });
+            badge_x += bw + BADGE_GAP_DIP;
+        }
+
+        let (subtitle, mut cursor_y) = if let Some(sub) = raw_sub {
+            let sub_max_w = (header_right_limit - title_x).max(40.0);
+            let trunc_sub = self.truncate_to_width(&sub, &self.fmt_subtitle, sub_max_w);
+            let sub_y = header_y + HEADER_ROW_H_DIP - 1.0;
+            (
+                Some((
+                    trunc_sub,
+                    DipRect {
+                        x: title_x,
+                        y: sub_y,
+                        w: sub_max_w,
+                        h: HEADER_SUB_H_DIP,
+                    },
+                )),
+                sub_y + HEADER_SUB_H_DIP,
+            )
+        } else {
+            (None, header_y + HEADER_ROW_H_DIP)
+        };
+
+        let mut bars: Vec<MeasuredBar<'a>> = Vec::with_capacity(active_bars.len());
+        if !active_bars.is_empty() {
+            cursor_y += SECTION_GAP_DIP;
+            let usable_meta_w = (content_w - BAR_PCT_W_DIP - 6.0).max(60.0);
+
+            for (idx, bar) in active_bars.iter().enumerate() {
+                if idx > 0 {
+                    cursor_y += BAR_GAP_DIP;
+                }
+                let bar_y = cursor_y;
+                let raw_label = friendly_bar_label(&bar.label);
+                let raw_reset = format_reset_duration_words(bar.reset_short.as_deref());
+
+                let (label, label_w, reset_text) = if let Some(ref rs) = raw_reset {
+                    let max_lbl_w = (usable_meta_w * 0.56).max(52.0);
+                    let lbl = self.truncate_to_width(raw_label, &self.fmt_bar_label, max_lbl_w);
+                    let (lw, _) =
+                        self.measure_text(&lbl, &self.fmt_bar_label, max_lbl_w, BAR_META_H_DIP)?;
+                    let actual_lbl_w = (lw.ceil() + 2.0).min(max_lbl_w);
+                    let reset_avail_w = (usable_meta_w - actual_lbl_w - 6.0).max(0.0);
+                    let reset = if reset_avail_w >= 20.0 {
+                        Some(self.truncate_to_width(rs, &self.fmt_bar_reset, reset_avail_w))
+                    } else {
+                        None
+                    };
+                    (lbl, actual_lbl_w, reset)
+                } else {
+                    let lbl = self.truncate_to_width(raw_label, &self.fmt_bar_label, usable_meta_w);
+                    (lbl, usable_meta_w, None)
+                };
+
+                cursor_y += BAR_META_H_DIP + BAR_TRACK_GAP_DIP + BAR_TRACK_H_DIP;
+
+                bars.push(MeasuredBar {
+                    bar,
+                    y: bar_y,
+                    label,
+                    label_w,
+                    reset_text,
+                });
+            }
+        }
+
+        let mut buttons: Vec<HoverCardButton> = vec![settings_btn];
         let (divider_y, footer_text, footer_rect) =
             if !footer_btn_specs.is_empty() || !footer_text.is_empty() {
                 cursor_y += SECTION_GAP_DIP;
@@ -2666,6 +2749,21 @@ impl Drop for TooltipWindow {
     }
 }
 
+/// Pick a proportional provider hover card width in DIPs based on bar count and measured content.
+///
+/// Keeps single-row cards (e.g. Codex with 1 bar) compact and balanced while preserving full
+/// width for multi-row cards (e.g. Antigravity's 4 pools) or cards with long badges/labels.
+fn choose_provider_card_width_dip(bar_count: usize, desired_content_w: f32, mon_w_dip: f32) -> f32 {
+    let max_w = CARD_WIDTH_DIP.min((mon_w_dip - CARD_MARGIN_DIP * 2.0).max(CARD_MIN_WIDTH_DIP));
+    let row_floor = match bar_count {
+        0 | 1 => 232.0,
+        2 => 286.0,
+        _ => 336.0,
+    };
+    let natural_w = desired_content_w + CARD_PAD_X_DIP * 2.0;
+    natural_w.max(row_floor).clamp(CARD_MIN_WIDTH_DIP, max_w)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2723,5 +2821,20 @@ mod tests {
             pick_header_subtitle("Cursor", None, Some("re-auth")).as_deref(),
             Some("re-auth")
         );
+    }
+
+    #[test]
+    fn provider_card_width_adapts_to_row_count_and_content() {
+        // Single-row card (e.g. Codex with 1 bar) stays compact instead of stretching to 352 DIP.
+        assert_eq!(choose_provider_card_width_dip(1, 150.0, 1920.0), 232.0);
+        // Single-row card with extra badges/reset text expands smoothly to fit its content.
+        assert_eq!(choose_provider_card_width_dip(1, 240.0, 1920.0), 268.0);
+        // Two-row card uses a balanced medium floor.
+        assert_eq!(choose_provider_card_width_dip(2, 200.0, 1920.0), 286.0);
+        // Multi-row card (e.g. Antigravity with 4 pools) keeps generous proportion up to 352 DIP.
+        assert_eq!(choose_provider_card_width_dip(4, 240.0, 1920.0), 336.0);
+        assert_eq!(choose_provider_card_width_dip(4, 400.0, 1920.0), 352.0);
+        // Respects narrow monitors cleanly.
+        assert_eq!(choose_provider_card_width_dip(4, 300.0, 260.0), 244.0);
     }
 }

@@ -18,8 +18,8 @@ pub const WIDE_PAD_X_DIP: f32 = 6.0;
 pub const WIDE_ICON_COL_DIP: f32 = 16.0;
 pub const WIDE_RATE_ICON_COL_DIP: f32 = 28.0;
 pub const WIDE_ICON_GAP_DIP: f32 = 5.0;
-pub const WIDE_METER_COL_DIP: f32 = 65.0;
-pub const WIDE_SINGLE_METER_COL_DIP: f32 = 70.0;
+pub const WIDE_METER_COL_DIP: f32 = 52.0;
+pub const WIDE_SINGLE_METER_COL_DIP: f32 = 56.0;
 pub const WIDE_METER_GAP_DIP: f32 = 6.0;
 pub const OVERFLOW_BADGE_WIDTH_DIP: f32 = 28.0;
 pub const SYSTEM_PILL_WIDTH_DIP: f32 = 88.0;
@@ -193,9 +193,9 @@ pub fn pill_width(item: &ProviderItem) -> f32 {
 }
 
 /// Width of a provider slot in `PillStyle::WideMeters`:
-/// - 2-bar provider without rate: `6 + 16 + 5 + 65 + 6 + 65 + 6 = 169` DIP
-/// - 2-bar provider with rate (Claude): `6 + 28 + 5 + 65 + 6 + 65 + 6 = 181` DIP
-/// - 1-bar provider without rate (Grok): `6 + 16 + 5 + 70 + 6 = 103` DIP
+/// - 2-bar provider without rate: `6 + 16 + 5 + 52 + 6 + 52 + 6 = 143` DIP
+/// - 2-bar provider with rate (Claude): `6 + 28 + 5 + 52 + 6 + 52 + 6 = 155` DIP
+/// - 1-bar provider without rate (Grok): `6 + 16 + 5 + 56 + 6 = 89` DIP
 pub fn wide_pill_width(item: &ProviderItem) -> f32 {
     let icon_col = if item.spend_rate_text.is_some() {
         WIDE_RATE_ICON_COL_DIP
@@ -825,8 +825,8 @@ mod tests {
     fn packs_all_four_demo_providers_in_wide_meters_when_space_allows() {
         let mut snap = demo_snapshot(1_700_000_000_000);
         snap.system = None;
-        // Claude (181) + 3 * 169 + 3 * 7 gap + 6 pad = 715 DIP
-        let layout = compute_strip_layout(&snap, 740.0, false);
+        // Claude (155) + 3 * 143 + 3 * 7 gap + 6 pad = 611 DIP
+        let layout = compute_strip_layout(&snap, 640.0, false);
         match layout.mode {
             StripMode::Pills {
                 slots,
@@ -838,9 +838,9 @@ mod tests {
                 assert!(system_slot.is_none());
                 assert!(slots.iter().all(|s| s.style == PillStyle::WideMeters));
                 assert!(slots[0].extended);
-                assert_eq!(slots[0].rect.w, 181.0);
+                assert_eq!(slots[0].rect.w, 155.0);
                 assert!(!slots[1].extended);
-                assert_eq!(slots[1].rect.w, 169.0);
+                assert_eq!(slots[1].rect.w, 143.0);
                 for slot in &slots {
                     assert_eq!(slot.meter_rects.len(), 2);
                     assert_eq!(slot.meter_rects[0].w, WIDE_METER_COL_DIP);
@@ -890,7 +890,7 @@ mod tests {
     }
 
     #[test]
-    fn single_bar_provider_uses_103_dip_wide_meter_slot() {
+    fn single_bar_provider_uses_89_dip_wide_meter_slot() {
         let now = 1_700_000_000_000i64;
         let mut snap = demo_snapshot(now);
         snap.system = None;
@@ -928,7 +928,7 @@ mod tests {
                 assert_eq!(slots.len(), 1);
                 assert!(overflow_badge.is_none());
                 assert_eq!(slots[0].style, PillStyle::WideMeters);
-                assert_eq!(slots[0].rect.w, 103.0);
+                assert_eq!(slots[0].rect.w, 89.0);
                 assert_eq!(slots[0].meter_rects.len(), 1);
                 assert_eq!(slots[0].meter_rects[0].w, WIDE_SINGLE_METER_COL_DIP);
             }
@@ -940,9 +940,9 @@ mod tests {
     fn keeps_wide_meters_with_overflow_when_at_least_two_fit() {
         let mut snap = demo_snapshot(1_700_000_000_000);
         snap.system = None;
-        // At 680 DIP cap, 3 demo providers (181 + 169 + 169 + 3*7 + 28 + 6 = 574 DIP) fit in WideMeters + `+1`,
-        // while all 4 (715 DIP) do not.
-        let layout = compute_strip_layout(&snap, 680.0, false);
+        // At 560 DIP cap, 3 demo providers (155 + 143 + 143 + 3*7 + 28 + 6 = 496 DIP) fit in WideMeters + `+1`,
+        // while all 4 (611 DIP) do not.
+        let layout = compute_strip_layout(&snap, 560.0, false);
         match layout.mode {
             StripMode::Pills {
                 slots,
@@ -952,7 +952,7 @@ mod tests {
                 assert_eq!(slots.len(), 3);
                 assert_eq!(overflow_badge.map(|(_, n)| n), Some(1));
                 assert!(slots.iter().all(|s| s.style == PillStyle::WideMeters));
-                assert!(layout.width_dip <= 680.0);
+                assert!(layout.width_dip <= 560.0);
             }
             other => panic!("expected WideMeters Pills with overflow, got {other:?}"),
         }
