@@ -98,13 +98,12 @@ fn main() {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
     }
 
-    // Start the pure-Rust background auto-updater; pauses silent restart while Settings is open.
+    // Start the pure-Rust background auto-updater; downloads silently in the background and pauses
+    // silent restart while Settings is open.
     let pause_flag = Arc::new(AtomicBool::new(false));
     let updater_handle = updater::start_updater_with_options(updater::UpdaterOptions {
         pause_auto_install: pause_flag,
-        on_update_starting: Some(Arc::new(|version| {
-            window::post_toast_from_any_thread(format!("Updating to v{version}…"));
-        })),
+        on_update_starting: None,
         on_status_change: Some(Arc::new(|status| {
             let text = format_update_status(status);
             settings_dialog::set_update_status_text(&text);
