@@ -964,6 +964,21 @@ impl Renderer {
                 rgba(0, 0, 0, 0.01),
             )?;
 
+            // When an update just finished, briefly hide all strip panels together and show
+            // "Update complete" centered in the middle of the strip, then bring all panels back.
+            if let Some(flash) = update_flash {
+                let target_w = 172.0f32.min((layout.width_dip - 4.0).max(60.0));
+                let target_h = (layout.height_dip - 4.0).clamp(24.0, 38.0);
+                let centered = DipRect {
+                    x: (layout.width_dip - target_w) * 0.5,
+                    y: (layout.height_dip - target_h) * 0.5,
+                    w: target_w,
+                    h: target_h,
+                };
+                self.draw_update_complete_card(rt, centered, theme, flash)?;
+                return Ok(());
+            }
+
             match &layout.mode {
                 StripMode::Hidden => {}
                 StripMode::Empty { rect, label } => {
@@ -1018,7 +1033,7 @@ impl Renderer {
                     overflow_badge,
                     system_slot,
                 } => {
-                    for (slot_pos, slot) in slots.iter().enumerate() {
+                    for slot in slots {
                         if let Some(item) = snapshot.items.get(slot.item_index) {
                             let pill_hovered = hovered_pill == Some(slot.item_index);
                             let icon_hovered = hovered_icon_pill == Some(slot.item_index);
@@ -1043,11 +1058,6 @@ impl Renderer {
                                 snapshot.taskbar_meter_style,
                                 meter_now_ms,
                             )?;
-                            if slot_pos == 0 {
-                                if let Some(flash) = update_flash {
-                                    self.draw_update_complete_card(rt, slot.rect, theme, flash)?;
-                                }
-                            }
                         }
                     }
                     // Subtle 1px vertical hairline dividers centered between adjacent providers
@@ -1127,11 +1137,6 @@ impl Renderer {
                             hovered_system,
                             forced_contrast_backdrop,
                         )?;
-                        if slots.is_empty() {
-                            if let Some(flash) = update_flash {
-                                self.draw_update_complete_card(rt, *sys_rect, theme, flash)?;
-                            }
-                        }
                     }
                 }
             }

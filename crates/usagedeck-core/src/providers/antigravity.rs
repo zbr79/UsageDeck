@@ -1866,11 +1866,54 @@ fn merge_usage(primary: &mut AntigravityUsage, secondary: AntigravityUsage) {
     }
 }
 
-fn has_gemini_group(usage: &AntigravityUsage) -> bool {
-    usage
+fn has_primary_gemini_group(usage: &AntigravityUsage) -> bool {
+    usage.groups.iter().any(|g| {
+        let lower = g.name.to_ascii_lowercase();
+        lower.contains("gemini") && !lower.contains("argon")
+    })
+}
+
+fn max_usage_percent(usage: &AntigravityUsage) -> f64 {
+    let mut peak = usage
+        .five_hour_percent
+        .unwrap_or(0.0)
+        .max(usage.weekly_percent.unwrap_or(0.0));
+    for g in &usage.groups {
+        if let Some(p) = g.five_hour_percent {
+            peak = peak.max(p);
+        }
+        if let Some(p) = g.weekly_percent {
+            peak = peak.max(p);
+        }
+    }
+    peak
+}
+
+fn format_usage_groups_diag(usage: &AntigravityUsage) -> String {
+    let fmt_pct = |v: Option<f64>| match v {
+        Some(p) => format!("{:.0}%", p.round()),
+        None => "-".to_string(),
+    };
+    if usage.groups.is_empty() {
+        return format!(
+            "Groups: summary (5h {}, weekly {})",
+            fmt_pct(usage.five_hour_percent),
+            fmt_pct(usage.weekly_percent),
+        );
+    }
+    let parts: Vec<String> = usage
         .groups
         .iter()
-        .any(|g| g.name.to_ascii_lowercase().contains("gemini"))
+        .map(|g| {
+            format!(
+                "{} (5h {}, weekly {})",
+                g.name,
+                fmt_pct(g.five_hour_percent),
+                fmt_pct(g.weekly_percent),
+            )
+        })
+        .collect();
+    format!("Groups: {}", parts.join(" | "))
 }
 
 /// Parse a `retrieveUserQuotaSummary` JSON reply into `AntigravityUsage`.
@@ -2425,10 +2468,13 @@ async fn fetch_cloud_for_cred(
     cred: &AntigravityCredential,
     email: Option<String>,
     expired_hint: bool,
-) -> Result<AntigravityUsage, CloudError> {
+) -> Result<(AntigravityUsage, &'static str), CloudError> {
+    // Prefer production (`cloudcode-pa.googleapis.com`) first: `daily-cloudcode-pa.googleapis.com`
+    // is Google's separate daily/staging quota backend and can return a nearly-empty `0%`/`1%`
+    // bucket while production Antigravity Desktop / `agy` holds the user's real usage.
     match post_quota_summary(
         http,
-        DAILY_QUOTA_URL,
+        PROD_QUOTA_URL,
         &cred.access_token,
         email.clone(),
         cred.project_id.as_deref(),
@@ -2436,12 +2482,11 @@ async fn fetch_cloud_for_cred(
     )
     .await
     {
-        Ok(mut daily) => {
-            // Guard against partial daily responses that omit the Gemini group.
-            if !has_gemini_group(&daily) {
-                if let Ok(prod) = post_quota_summary(
+        Ok(mut prod) => {
+            if !has_primary_gemini_group(&prod) {
+                if let Ok(daily) = post_quota_summary(
                     http,
-                    PROD_QUOTA_URL,
+                    DAILY_QUOTA_URL,
                     &cred.access_token,
                     email,
                     cred.project_id.as_deref(),
@@ -2449,10 +2494,28 @@ async fn fetch_cloud_for_cred(
                 )
                 .await
                 {
-                    merge_usage(&mut daily, prod);
+                    merge_usage(&mut prod, daily);
+                    return Ok((prod, "prod+daily"));
+                }
+            } else if max_usage_percent(&prod) < 1.5 {
+                // If prod looks untouched (< 1.5%), check daily once in case this account runs on
+                // a daily/canary Antigravity build whose real usage lives on `daily-cloudcode-pa`.
+                if let Ok(daily) = post_quota_summary(
+                    http,
+                    DAILY_QUOTA_URL,
+                    &cred.access_token,
+                    email,
+                    cred.project_id.as_deref(),
+                    expired_hint,
+                )
+                .await
+                {
+                    if max_usage_percent(&daily) >= 2.0 {
+                        return Ok((daily, "daily"));
+                    }
                 }
             }
-            Ok(daily)
+            Ok((prod, "prod"))
         }
         Err(e)
             if matches!(
@@ -2462,10 +2525,10 @@ async fn fetch_cloud_for_cred(
         {
             Err(e)
         }
-        Err(daily_err) => {
+        Err(prod_err) => {
             match post_quota_summary(
                 http,
-                PROD_QUOTA_URL,
+                DAILY_QUOTA_URL,
                 &cred.access_token,
                 email.clone(),
                 cred.project_id.as_deref(),
@@ -2473,7 +2536,7 @@ async fn fetch_cloud_for_cred(
             )
             .await
             {
-                Ok(prod) => Ok(prod),
+                Ok(daily) => Ok((daily, "daily")),
                 Err(e)
                     if matches!(
                         e.err,
@@ -2483,8 +2546,11 @@ async fn fetch_cloud_for_cred(
                     Err(e)
                 }
                 Err(_) => {
-                    // Final cloud fallback: per-model quotas via fetchAvailableModels.
-                    for url in [DAILY_MODELS_URL, PROD_MODELS_URL] {
+                    // Final cloud fallback: per-model quotas via fetchAvailableModels (prod first).
+                    for (url, tag) in [
+                        (PROD_MODELS_URL, "prod-models"),
+                        (DAILY_MODELS_URL, "daily-models"),
+                    ] {
                         if let Ok(models) = post_available_models(
                             http,
                             url,
@@ -2495,10 +2561,10 @@ async fn fetch_cloud_for_cred(
                         )
                         .await
                         {
-                            return Ok(models);
+                            return Ok((models, tag));
                         }
                     }
-                    Err(daily_err)
+                    Err(prod_err)
                 }
             }
         }
@@ -3046,9 +3112,13 @@ async fn fetch(
     let finish = |lines: &mut Vec<String>,
                   trace: &[String],
                   outcome: &str,
+                  usage: Option<&AntigravityUsage>,
                   issue: Option<AntigravitySetupIssue>| {
         if !trace.is_empty() {
             lines.push(format!("Attempts: {}", trace.join(" | ")));
+        }
+        if let Some(u) = usage {
+            lines.push(format_usage_groups_diag(u));
         }
         lines.push(format!("Outcome: {outcome}"));
         save_diag_report(lines);
@@ -3065,7 +3135,13 @@ async fn fetch(
                         .await
                 {
                     if usage.weekly_percent.is_some() {
-                        finish(&mut diag_lines, &trace, "ok (local server)", None);
+                        finish(
+                            &mut diag_lines,
+                            &trace,
+                            "ok (local server)",
+                            Some(&usage),
+                            None,
+                        );
                         return Ok(usage);
                     }
                     // Local GetUserStatus succeeded (5-hour live pools) — keep it and try cloud/CLI
@@ -3099,18 +3175,53 @@ async fn fetch(
             .or_else(|| local_partial.as_ref().and_then(|u| u.email.clone()))
             .or_else(|| fallback_email.clone());
         match fetch_cloud_for_cred(&http, cred, email, false).await {
-            Ok(mut cloud_usage) => {
-                trace.push(format!("cloud cred#{cred_num} -> ok"));
+            Ok((mut cloud_usage, source)) => {
+                trace.push(format!("cloud cred#{cred_num} ({source}) -> ok"));
+                // Safety net: if a cloud reply looks nearly empty (< 2% across all pools) while
+                // `agy` CLI is installed, cross-check `agy` once so a mismatched default project
+                // or backend bucket can never snap live usage down to 0%/1%.
+                let mut outcome_label = format!("ok (cloud:{source})");
+                if max_usage_percent(&cloud_usage) < 2.0 && agy_bin.is_some() {
+                    match fetch_via_agy_cli(agy_bin.clone(), fallback_email.clone()).await {
+                        Ok((agy_usage, mode)) => {
+                            if max_usage_percent(&agy_usage) > max_usage_percent(&cloud_usage) + 1.0
+                            {
+                                trace.push(format!(
+                                    "agy CLI -> ok ({mode}; overrode near-empty cloud)"
+                                ));
+                                cloud_usage = agy_usage;
+                                outcome_label = "ok (agy CLI)".to_string();
+                            } else {
+                                trace.push(format!("agy CLI -> ok ({mode}; confirmed cloud)"));
+                            }
+                        }
+                        Err(reason) => {
+                            trace.push(format!("agy CLI verify -> {reason}"));
+                        }
+                    }
+                }
                 if let Some(local) = local_partial {
                     let mut combined = local;
                     merge_usage(&mut combined, cloud_usage);
-                    finish(&mut diag_lines, &trace, "ok (local + cloud)", None);
+                    finish(
+                        &mut diag_lines,
+                        &trace,
+                        &format!("ok (local + {outcome_label})"),
+                        Some(&combined),
+                        None,
+                    );
                     return Ok(combined);
                 }
                 if cloud_usage.email.is_none() {
                     cloud_usage.email = fallback_email;
                 }
-                finish(&mut diag_lines, &trace, "ok (cloud)", None);
+                finish(
+                    &mut diag_lines,
+                    &trace,
+                    &outcome_label,
+                    Some(&cloud_usage),
+                    None,
+                );
                 return Ok(cloud_usage);
             }
             Err(e) if e.err == ProviderError::RateLimited => {
@@ -3120,11 +3231,12 @@ async fn fetch(
                         &mut diag_lines,
                         &trace,
                         "ok (local 5h; cloud rate-limited)",
+                        Some(&local),
                         None,
                     );
                     return Ok(local);
                 }
-                finish(&mut diag_lines, &trace, "failed (rate-limited)", None);
+                finish(&mut diag_lines, &trace, "failed (rate-limited)", None, None);
                 return Err(ProviderError::RateLimited.into());
             }
             Err(e) => {
@@ -3143,10 +3255,16 @@ async fn fetch(
             if let Some(local) = local_partial {
                 let mut combined = local;
                 merge_usage(&mut combined, usage);
-                finish(&mut diag_lines, &trace, "ok (local + agy CLI)", None);
+                finish(
+                    &mut diag_lines,
+                    &trace,
+                    "ok (local + agy CLI)",
+                    Some(&combined),
+                    None,
+                );
                 return Ok(combined);
             }
-            finish(&mut diag_lines, &trace, "ok (agy CLI)", None);
+            finish(&mut diag_lines, &trace, "ok (agy CLI)", Some(&usage), None);
             return Ok(usage);
         }
         Err(reason) => {
@@ -3166,18 +3284,30 @@ async fn fetch(
             .or_else(|| local_partial.as_ref().and_then(|u| u.email.clone()))
             .or_else(|| fallback_email.clone());
         match fetch_cloud_for_cred(&http, cred, email, true).await {
-            Ok(mut cloud_usage) => {
-                trace.push(format!("cloud cred#{cred_num} -> ok"));
+            Ok((mut cloud_usage, source)) => {
+                trace.push(format!("cloud cred#{cred_num} ({source}) -> ok"));
                 if let Some(local) = local_partial {
                     let mut combined = local;
                     merge_usage(&mut combined, cloud_usage);
-                    finish(&mut diag_lines, &trace, "ok (local + cloud)", None);
+                    finish(
+                        &mut diag_lines,
+                        &trace,
+                        &format!("ok (local + cloud:{source})"),
+                        Some(&combined),
+                        None,
+                    );
                     return Ok(combined);
                 }
                 if cloud_usage.email.is_none() {
                     cloud_usage.email = fallback_email;
                 }
-                finish(&mut diag_lines, &trace, "ok (cloud)", None);
+                finish(
+                    &mut diag_lines,
+                    &trace,
+                    &format!("ok (cloud:{source})"),
+                    Some(&cloud_usage),
+                    None,
+                );
                 return Ok(cloud_usage);
             }
             Err(e) if e.err == ProviderError::RateLimited => {
@@ -3187,11 +3317,12 @@ async fn fetch(
                         &mut diag_lines,
                         &trace,
                         "ok (local 5h; cloud rate-limited)",
+                        Some(&local),
                         None,
                     );
                     return Ok(local);
                 }
-                finish(&mut diag_lines, &trace, "failed (rate-limited)", None);
+                finish(&mut diag_lines, &trace, "failed (rate-limited)", None, None);
                 return Err(ProviderError::RateLimited.into());
             }
             Err(e) => {
@@ -3208,6 +3339,7 @@ async fn fetch(
             &mut diag_lines,
             &trace,
             "ok (local 5h; cloud/CLI unavailable)",
+            Some(&local),
             None,
         );
         return Ok(local);
@@ -3225,6 +3357,7 @@ async fn fetch(
         &mut diag_lines,
         &trace,
         &format!("failed ({last_err})"),
+        None,
         issue,
     );
     Err(last_err.into())
@@ -4010,6 +4143,49 @@ Gemini 4 Argon\tGemini 4 Argon Weekly Limit\t100%\t2026-12-01T05:16:42Z
         assert_eq!(
             expand_windows_env_vars("%USAGEDECK_NONEXISTENT_VAR_XYZ%\\agy\\bin"),
             "%USAGEDECK_NONEXISTENT_VAR_XYZ%\\agy\\bin"
+        );
+    }
+
+    #[test]
+    fn primary_gemini_and_group_diag_helpers() {
+        let argon_only = AntigravityUsage {
+            five_hour_percent: Some(1.0),
+            weekly_percent: Some(0.0),
+            groups: vec![AntigravityQuotaGroup {
+                name: "Gemini 4 Argon".to_string(),
+                five_hour_percent: Some(1.0),
+                weekly_percent: Some(0.0),
+                ..AntigravityQuotaGroup::default()
+            }],
+            ..AntigravityUsage::default()
+        };
+        assert!(!has_primary_gemini_group(&argon_only));
+        assert!((max_usage_percent(&argon_only) - 1.0).abs() < 1e-6);
+
+        let full = AntigravityUsage {
+            five_hour_percent: Some(100.0),
+            weekly_percent: Some(93.0),
+            groups: vec![
+                AntigravityQuotaGroup {
+                    name: "Gemini".to_string(),
+                    five_hour_percent: Some(38.0),
+                    weekly_percent: Some(93.0),
+                    ..AntigravityQuotaGroup::default()
+                },
+                AntigravityQuotaGroup {
+                    name: "Claude & GPT".to_string(),
+                    five_hour_percent: Some(100.0),
+                    weekly_percent: Some(50.0),
+                    ..AntigravityQuotaGroup::default()
+                },
+            ],
+            ..AntigravityUsage::default()
+        };
+        assert!(has_primary_gemini_group(&full));
+        assert!((max_usage_percent(&full) - 100.0).abs() < 1e-6);
+        assert_eq!(
+            format_usage_groups_diag(&full),
+            "Groups: Gemini (5h 38%, weekly 93%) | Claude & GPT (5h 100%, weekly 50%)"
         );
     }
 }
