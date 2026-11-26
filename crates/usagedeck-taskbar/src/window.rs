@@ -372,6 +372,42 @@ fn open_cursor_and_watch_ui() {
     }
 }
 
+fn launch_antigravity_setup_ui(sign_in_only: bool, anchor: Option<RECT>) {
+    let strip_hwnd_raw = try_with_state(|s| s.strip_hwnd.0 as isize).unwrap_or(0);
+    let res = if sign_in_only {
+        usagedeck_core::providers::antigravity::launch_agy_signin_terminal()
+    } else {
+        usagedeck_core::providers::antigravity::launch_agy_install_terminal()
+    };
+    match res {
+        Ok(()) => {
+            try_with_state(|s| {
+                if let Some(ref tx) = s.poller_tx {
+                    let _ = tx.send(PollerCmd::WatchAntigravitySetup);
+                }
+            });
+            if strip_hwnd_raw != 0 {
+                let msg = if sign_in_only {
+                    "Opened Antigravity CLI sign-in — UsageDeck will refresh automatically"
+                } else {
+                    "Opened Antigravity CLI installer — UsageDeck will refresh automatically"
+                };
+                post_toast(strip_hwnd_raw, msg.to_string(), anchor);
+            }
+        }
+        Err(e) => {
+            log::warn!("antigravity guided setup failed: {e}");
+            if strip_hwnd_raw != 0 {
+                post_toast(
+                    strip_hwnd_raw,
+                    format!("Could not launch Antigravity setup: {e}"),
+                    anchor,
+                );
+            }
+        }
+    }
+}
+
 fn launch_provider_from_strip(provider: ProviderKind, watch_cursor: bool, anchor: Option<RECT>) {
     let strip_hwnd_raw = try_with_state(|s| s.strip_hwnd.0 as isize).unwrap_or(0);
     let poller_tx = if watch_cursor {
@@ -1285,6 +1321,18 @@ unsafe extern "system" fn strip_wnd_proc(
                         let _ = KillTimer(Some(hwnd), TIMER_HOVER_CLOSE_ID);
                         try_with_state(clear_hover_card_state);
                         open_cursor_and_watch_ui();
+                        sync_and_paint_strip_ui();
+                    }
+                    HoverCardAction::InstallAntigravityCli => {
+                        let _ = KillTimer(Some(hwnd), TIMER_HOVER_CLOSE_ID);
+                        try_with_state(clear_hover_card_state);
+                        launch_antigravity_setup_ui(false, anchor);
+                        sync_and_paint_strip_ui();
+                    }
+                    HoverCardAction::SignInAntigravityCli => {
+                        let _ = KillTimer(Some(hwnd), TIMER_HOVER_CLOSE_ID);
+                        try_with_state(clear_hover_card_state);
+                        launch_antigravity_setup_ui(true, anchor);
                         sync_and_paint_strip_ui();
                     }
                 }

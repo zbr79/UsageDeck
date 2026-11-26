@@ -1315,10 +1315,41 @@ fn execute_action(hwnd: HWND, action: Action) {
             }
         }
         Action::RefreshData => {
+            usagedeck_core::providers::antigravity::clear_cache();
             state.loading = true;
             state.rebuild_layout();
             state.invalidate();
             deferred = DeferredAction::PollSnapshot;
+        }
+        Action::InstallAntigravityCli => {
+            usagedeck_core::providers::antigravity::clear_cache();
+            match usagedeck_core::providers::antigravity::launch_agy_install_terminal() {
+                Ok(()) => {
+                    state.show_toast(
+                        "Opened Antigravity CLI installer — click Refresh once finished",
+                    );
+                    deferred = DeferredAction::NotifyChanged(state.on_changed.clone());
+                }
+                Err(e) => {
+                    log::warn!("install antigravity cli failed: {e}");
+                    state.show_toast(format!("Could not launch installer: {e}"));
+                }
+            }
+        }
+        Action::SignInAntigravityCli => {
+            usagedeck_core::providers::antigravity::clear_cache();
+            match usagedeck_core::providers::antigravity::launch_agy_signin_terminal() {
+                Ok(()) => {
+                    state.show_toast(
+                        "Opened Antigravity CLI sign-in — click Refresh once signed in",
+                    );
+                    deferred = DeferredAction::NotifyChanged(state.on_changed.clone());
+                }
+                Err(e) => {
+                    log::warn!("signin antigravity cli failed: {e}");
+                    state.show_toast(format!("Could not launch agy sign-in: {e}"));
+                }
+            }
         }
         Action::OpenAccountMenu {
             provider,

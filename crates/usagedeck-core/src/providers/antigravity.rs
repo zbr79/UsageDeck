@@ -76,18 +76,100 @@ static CACHE: LazyLock<CachedProvider<AntigravityUsage>> = LazyLock::new(|| {
     )
 });
 
+/// Actionable Antigravity setup state surfaced directly in the taskbar pill, hover card, and
+/// Settings so users never have to guess why Antigravity 2.34+ isn't showing quota.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AntigravitySetupIssue {
+    /// Antigravity Desktop 2.34+ hardened its local RPC (stdin token) and/or cached desktop token
+    /// expired, and Google's official `agy` CLI is not installed yet.
+    NeedsAgyCli,
+    /// Google's official `agy` CLI is installed, but needs a one-time sign-in.
+    NeedsAgySignIn,
+}
+
 /// Secret-free diagnostic snapshot of the most recent Antigravity discovery & fetch pass.
 static LAST_DIAG: LazyLock<Mutex<Option<(i64, String)>>> = LazyLock::new(|| Mutex::new(None));
+static LAST_SETUP_ISSUE: LazyLock<Mutex<Option<AntigravitySetupIssue>>> =
+    LazyLock::new(|| Mutex::new(None));
 
 /// Most recent secret-free Antigravity discovery/fetch report `(timestamp_ms, text)`.
 pub fn last_diag_report() -> Option<(i64, String)> {
     LAST_DIAG.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
+/// Most recent actionable setup issue for Antigravity (cleared as soon as live quota succeeds).
+pub fn setup_issue() -> Option<AntigravitySetupIssue> {
+    *LAST_SETUP_ISSUE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn set_setup_issue(issue: Option<AntigravitySetupIssue>) {
+    *LAST_SETUP_ISSUE.lock().unwrap_or_else(|e| e.into_inner()) = issue;
+}
+
+/// Invalidate Antigravity's in-memory TTL cache so the next poll re-checks immediately (used
+/// after the user installs or signs in to `agy`).
+pub fn clear_cache() {
+    CACHE.invalidate(None);
+}
+
 fn save_diag_report(lines: &[String]) {
     let now_ms = Utc::now().timestamp_millis();
     let body = lines.join("\n");
     *LAST_DIAG.lock().unwrap_or_else(|e| e.into_inner()) = Some((now_ms, body));
+}
+
+/// Open a visible Windows PowerShell window that installs Google's official Antigravity CLI
+/// (`agy`) via `https://antigravity.google/cli/install.ps1` and launches `agy` for sign-in.
+pub fn launch_agy_install_terminal() -> Result<(), String> {
+    let script = concat!(
+        "$ErrorActionPreference = 'Continue'; ",
+        "Write-Host '=== UsageDeck: Installing Google Antigravity CLI (agy) ===' -ForegroundColor Cyan; ",
+        "Write-Host ''; ",
+        "irm https://antigravity.google/cli/install.ps1 | iex; ",
+        "$candidates = @(",
+        "  (Join-Path $env:LOCALAPPDATA 'agy\\bin\\agy.exe'), ",
+        "  (Join-Path $env:LOCALAPPDATA 'Antigravity\\agy.exe'), ",
+        "  (Join-Path $env:LOCALAPPDATA 'Antigravity\\bin\\agy.exe')",
+        "); ",
+        "$agy = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1; ",
+        "if (-not $agy) { $cmd = Get-Command agy -ErrorAction SilentlyContinue; if ($cmd) { $agy = $cmd.Source } }; ",
+        "if ($agy) { ",
+        "  Write-Host ''; ",
+        "  Write-Host 'Antigravity CLI installed! Launching agy to verify sign-in (close once signed in)...' -ForegroundColor Green; ",
+        "  & $agy ",
+        "} else { ",
+        "  Write-Host ''; ",
+        "  Write-Host 'Install finished. Open a new terminal and run `agy` if prompted to sign in.' -ForegroundColor Yellow ",
+        "}"
+    );
+    std::process::Command::new("powershell.exe")
+        .args([
+            "-NoLogo",
+            "-NoExit",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            script,
+        ])
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("failed to launch PowerShell: {e}"))
+}
+
+/// Open a visible Windows PowerShell window running the installed `agy` CLI so the user can
+/// complete a one-time Google sign-in.
+pub fn launch_agy_signin_terminal() -> Result<(), String> {
+    let bin = find_agy_binary().ok_or_else(|| "agy CLI not found".to_string())?;
+    let escaped = bin.to_string_lossy().replace('\'', "''");
+    let script = format!(
+        "Write-Host '=== UsageDeck: Sign in to Google Antigravity CLI (agy) ===' -ForegroundColor Cyan; & '{escaped}'"
+    );
+    std::process::Command::new("powershell.exe")
+        .args(["-NoLogo", "-NoExit", "-Command", &script])
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("failed to launch PowerShell: {e}"))
 }
 
 /// One named Antigravity quota pool (e.g. `"Gemini"`, `"Claude & GPT"`, `"Gemini 4 Argon"`).
@@ -548,11 +630,12 @@ fn listening_loopback_ports_for_pid(pid: u32) -> Vec<u16> {
     ports
 }
 
-fn discover_local_servers_with_diag() -> (Vec<LocalAntigravityServer>, String) {
+fn discover_local_servers_with_diag() -> (Vec<LocalAntigravityServer>, String, bool) {
     if !super::codex::real_sign_ins() {
         return (
             Vec::new(),
             "Local servers: skipped (real sign-ins disabled)".to_string(),
+            false,
         );
     }
     // SAFETY: read-only ToolHelp process snapshot, closed before returning.
@@ -560,6 +643,7 @@ fn discover_local_servers_with_diag() -> (Vec<LocalAntigravityServer>, String) {
         return (
             Vec::new(),
             "Local servers: CreateToolhelp32Snapshot failed".to_string(),
+            false,
         );
     };
     let mut entry = PROCESSENTRY32W {
@@ -592,6 +676,7 @@ fn discover_local_servers_with_diag() -> (Vec<LocalAntigravityServer>, String) {
     let total_candidates = candidates.len();
     let mut servers = Vec::new();
     let mut skips: Vec<String> = Vec::new();
+    let mut saw_v234_server = false;
     for (pid, exe) in candidates {
         // SAFETY: read-only process handle, closed below.
         let Ok(handle) = (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) })
@@ -608,6 +693,9 @@ fn discover_local_servers_with_diag() -> (Vec<LocalAntigravityServer>, String) {
         let Some(parsed) = parse_language_server_cmdline(&exe, cmdline_str, exe_path.as_deref())
         else {
             let reason = classify_skipped_language_server(cmdline.as_deref(), exe_path.as_deref());
+            if reason.starts_with("v2.34+") {
+                saw_v234_server = true;
+            }
             skips.push(format!("{exe}: skipped ({reason})"));
             continue;
         };
@@ -640,7 +728,7 @@ fn discover_local_servers_with_diag() -> (Vec<LocalAntigravityServer>, String) {
     if !skips.is_empty() {
         diag.push_str(&format!(" [{}]", skips.join("; ")));
     }
-    (servers, diag)
+    (servers, diag, saw_v234_server)
 }
 
 // ---- credential discovery (read-only) -------------------------------------------------------
@@ -2946,19 +3034,25 @@ async fn fetch(
     creds: Vec<AntigravityCredential>,
     local_servers: Vec<LocalAntigravityServer>,
     agy_bin: Option<PathBuf>,
+    saw_v234_server: bool,
     mut diag_lines: Vec<String>,
 ) -> Result<AntigravityUsage, FetchError<AntigravityUsage>> {
     let fallback_email = creds.iter().find_map(|c| c.email.clone());
+    let has_agy_bin = agy_bin.is_some();
     let mut local_partial: Option<AntigravityUsage> = None;
     let mut trace: Vec<String> = Vec::new();
     let now = Utc::now();
 
-    let finish = |lines: &mut Vec<String>, trace: &[String], outcome: &str| {
+    let finish = |lines: &mut Vec<String>,
+                  trace: &[String],
+                  outcome: &str,
+                  issue: Option<AntigravitySetupIssue>| {
         if !trace.is_empty() {
             lines.push(format!("Attempts: {}", trace.join(" | ")));
         }
         lines.push(format!("Outcome: {outcome}"));
         save_diag_report(lines);
+        set_setup_issue(issue);
     };
 
     // 1. Prefer live local language_server / agy Connect-RPC when running — always holds a fresh
@@ -2971,7 +3065,7 @@ async fn fetch(
                         .await
                 {
                     if usage.weekly_percent.is_some() {
-                        finish(&mut diag_lines, &trace, "ok (local server)");
+                        finish(&mut diag_lines, &trace, "ok (local server)", None);
                         return Ok(usage);
                     }
                     // Local GetUserStatus succeeded (5-hour live pools) — keep it and try cloud/CLI
@@ -3010,22 +3104,27 @@ async fn fetch(
                 if let Some(local) = local_partial {
                     let mut combined = local;
                     merge_usage(&mut combined, cloud_usage);
-                    finish(&mut diag_lines, &trace, "ok (local + cloud)");
+                    finish(&mut diag_lines, &trace, "ok (local + cloud)", None);
                     return Ok(combined);
                 }
                 if cloud_usage.email.is_none() {
                     cloud_usage.email = fallback_email;
                 }
-                finish(&mut diag_lines, &trace, "ok (cloud)");
+                finish(&mut diag_lines, &trace, "ok (cloud)", None);
                 return Ok(cloud_usage);
             }
             Err(e) if e.err == ProviderError::RateLimited => {
                 trace.push(format!("cloud cred#{cred_num} -> rate-limited"));
                 if let Some(local) = local_partial {
-                    finish(&mut diag_lines, &trace, "ok (local 5h; cloud rate-limited)");
+                    finish(
+                        &mut diag_lines,
+                        &trace,
+                        "ok (local 5h; cloud rate-limited)",
+                        None,
+                    );
                     return Ok(local);
                 }
-                finish(&mut diag_lines, &trace, "failed (rate-limited)");
+                finish(&mut diag_lines, &trace, "failed (rate-limited)", None);
                 return Err(ProviderError::RateLimited.into());
             }
             Err(e) => {
@@ -3037,19 +3136,23 @@ async fn fetch(
 
     // 3. Official `agy` CLI (`--output-format json -p /usage`) — handles Antigravity 2.34+ where
     //    `language_server.exe` moved its CSRF token to stdin and cached desktop access tokens expire.
+    let mut agy_failed_signin = false;
     match fetch_via_agy_cli(agy_bin, fallback_email.clone()).await {
         Ok((usage, mode)) => {
             trace.push(format!("agy CLI -> ok ({mode})"));
             if let Some(local) = local_partial {
                 let mut combined = local;
                 merge_usage(&mut combined, usage);
-                finish(&mut diag_lines, &trace, "ok (local + agy CLI)");
+                finish(&mut diag_lines, &trace, "ok (local + agy CLI)", None);
                 return Ok(combined);
             }
-            finish(&mut diag_lines, &trace, "ok (agy CLI)");
+            finish(&mut diag_lines, &trace, "ok (agy CLI)", None);
             return Ok(usage);
         }
         Err(reason) => {
+            if has_agy_bin && reason != "timeout" {
+                agy_failed_signin = true;
+            }
             trace.push(format!("agy CLI -> {reason}"));
         }
     }
@@ -3068,22 +3171,27 @@ async fn fetch(
                 if let Some(local) = local_partial {
                     let mut combined = local;
                     merge_usage(&mut combined, cloud_usage);
-                    finish(&mut diag_lines, &trace, "ok (local + cloud)");
+                    finish(&mut diag_lines, &trace, "ok (local + cloud)", None);
                     return Ok(combined);
                 }
                 if cloud_usage.email.is_none() {
                     cloud_usage.email = fallback_email;
                 }
-                finish(&mut diag_lines, &trace, "ok (cloud)");
+                finish(&mut diag_lines, &trace, "ok (cloud)", None);
                 return Ok(cloud_usage);
             }
             Err(e) if e.err == ProviderError::RateLimited => {
                 trace.push(format!("cloud cred#{cred_num} -> rate-limited"));
                 if let Some(local) = local_partial {
-                    finish(&mut diag_lines, &trace, "ok (local 5h; cloud rate-limited)");
+                    finish(
+                        &mut diag_lines,
+                        &trace,
+                        "ok (local 5h; cloud rate-limited)",
+                        None,
+                    );
                     return Ok(local);
                 }
-                finish(&mut diag_lines, &trace, "failed (rate-limited)");
+                finish(&mut diag_lines, &trace, "failed (rate-limited)", None);
                 return Err(ProviderError::RateLimited.into());
             }
             Err(e) => {
@@ -3100,46 +3208,63 @@ async fn fetch(
             &mut diag_lines,
             &trace,
             "ok (local 5h; cloud/CLI unavailable)",
+            None,
         );
         return Ok(local);
     }
 
-    finish(&mut diag_lines, &trace, &format!("failed ({last_err})"));
+    let issue = if !has_agy_bin && (saw_v234_server || last_err == ProviderError::AuthRejected) {
+        Some(AntigravitySetupIssue::NeedsAgyCli)
+    } else if agy_failed_signin {
+        Some(AntigravitySetupIssue::NeedsAgySignIn)
+    } else {
+        None
+    };
+
+    finish(
+        &mut diag_lines,
+        &trace,
+        &format!("failed ({last_err})"),
+        issue,
+    );
     Err(last_err.into())
 }
 
 /// Rows for Antigravity (`TrackedAccount<AntigravityUsage>` each).
 pub async fn accounts(core: &Core) -> Vec<Value> {
-    let (creds, local_servers, agy_bin, mut diag_lines) = tokio::task::spawn_blocking(|| {
-        let (local_servers, server_diag) = discover_local_servers_with_diag();
-        let (creds, cred_diags) = read_credentials_with_diag();
-        let agy_bin = if !super::codex::real_sign_ins() {
-            None
-        } else {
-            find_agy_binary()
-        };
-        let mut diag_lines = Vec::with_capacity(2 + cred_diags.len());
-        diag_lines.push(server_diag);
-        diag_lines.extend(cred_diags);
-        diag_lines.push(format!(
-            "agy CLI: {}",
-            if agy_bin.is_some() {
-                "found"
+    let (creds, local_servers, agy_bin, saw_v234_server, mut diag_lines) =
+        tokio::task::spawn_blocking(|| {
+            let (local_servers, server_diag, saw_v234_server) = discover_local_servers_with_diag();
+            let (creds, cred_diags) = read_credentials_with_diag();
+            let agy_bin = if !super::codex::real_sign_ins() {
+                None
             } else {
-                "not found (checked %LOCALAPPDATA%\\agy\\bin, %LOCALAPPDATA%\\Antigravity, PATH)"
-            }
+                find_agy_binary()
+            };
+            let mut diag_lines = Vec::with_capacity(2 + cred_diags.len());
+            diag_lines.push(server_diag);
+            diag_lines.extend(cred_diags);
+            diag_lines.push(format!(
+                "agy CLI: {}",
+                if agy_bin.is_some() {
+                    "found"
+                } else {
+                    "not found (checked %LOCALAPPDATA%\\agy\\bin, %LOCALAPPDATA%\\Antigravity, PATH)"
+                }
+            ));
+            (creds, local_servers, agy_bin, saw_v234_server, diag_lines)
+        })
+        .await
+        .unwrap_or((
+            Vec::new(),
+            Vec::new(),
+            None,
+            false,
+            vec!["Discovery task panicked".to_string()],
         ));
-        (creds, local_servers, agy_bin, diag_lines)
-    })
-    .await
-    .unwrap_or((
-        Vec::new(),
-        Vec::new(),
-        None,
-        vec!["Discovery task panicked".to_string()],
-    ));
 
-    let detected = !creds.is_empty() || !local_servers.is_empty() || agy_bin.is_some();
+    let detected =
+        !creds.is_empty() || !local_servers.is_empty() || agy_bin.is_some() || saw_v234_server;
     let diag_for_fetch = diag_lines.clone();
     let live: Vec<LiveAccount<'_, AntigravityUsage>> = if detected {
         let email = creds.iter().find_map(|c| c.email.clone());
@@ -3157,7 +3282,14 @@ pub async fn accounts(core: &Core) -> Vec<Value> {
             load: Box::pin(async move {
                 CACHE
                     .get(&core.cache, &id, move |_| {
-                        fetch(http, creds, local_servers, agy_bin, diag_for_fetch)
+                        fetch(
+                            http,
+                            creds,
+                            local_servers,
+                            agy_bin,
+                            saw_v234_server,
+                            diag_for_fetch,
+                        )
                     })
                     .await
             }),
@@ -3174,6 +3306,7 @@ pub async fn accounts(core: &Core) -> Vec<Value> {
             "not found: no running language_server/agy, no state.vscdb/keyring/file tokens, no agy CLI";
         diag_lines.push(format!("Outcome: {reason}"));
         save_diag_report(&diag_lines);
+        set_setup_issue(None);
         super::record_provider_status(PROVIDER, reason, false);
     } else {
         let (ok, summary) = super::summarize_tracked_rows(&rows);
