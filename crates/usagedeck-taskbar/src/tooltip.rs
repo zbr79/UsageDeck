@@ -82,6 +82,8 @@ pub enum HoverCardAction {
     },
     CopyOpenCodeKey(String),
     OpenCursor,
+    InstallAntigravityCli,
+    SignInAntigravityCli,
 }
 
 // Compact toast / micro-tooltip layout constants.
@@ -1644,6 +1646,28 @@ impl TooltipWindow {
                 HoverCardAction::OpenCursor,
                 HoverButtonTone::Warn,
             ));
+        } else if item.provider == ProviderKind::Antigravity {
+            match item.antigravity_setup_issue {
+                Some(
+                    usagedeck_core::providers::antigravity::AntigravitySetupIssue::NeedsAgyCli,
+                ) => {
+                    footer_btn_specs.push((
+                        "Install CLI".to_string(),
+                        HoverCardAction::InstallAntigravityCli,
+                        HoverButtonTone::Warn,
+                    ));
+                }
+                Some(
+                    usagedeck_core::providers::antigravity::AntigravitySetupIssue::NeedsAgySignIn,
+                ) => {
+                    footer_btn_specs.push((
+                        "Sign in".to_string(),
+                        HoverCardAction::SignInAntigravityCli,
+                        HoverButtonTone::Warn,
+                    ));
+                }
+                None => {}
+            }
         }
 
         let (divider_y, footer_text, footer_rect) =

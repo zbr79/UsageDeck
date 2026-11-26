@@ -19,12 +19,16 @@ pub const WM_APP_SNAPSHOT: u32 = WM_APP + 1;
 const POLL_INTERVAL: Duration = Duration::from_secs(60);
 const CURSOR_BURST_INTERVAL: Duration = Duration::from_secs(10);
 const CURSOR_BURST_WINDOW: Duration = Duration::from_secs(120);
+const ANTIGRAVITY_BURST_INTERVAL: Duration = Duration::from_secs(6);
+const ANTIGRAVITY_BURST_WINDOW: Duration = Duration::from_secs(180);
 const SYSTEM_SAMPLE_INTERVAL: Duration = Duration::from_secs(2);
 
 pub enum PollerCmd {
     RefreshNow,
     /// Poll every 10s for up to 2 minutes after opening Cursor to pick up renewed sign-in.
     WatchCursorSignIn,
+    /// Poll every 6s for up to 3 minutes after launching the guided Antigravity CLI installer/sign-in.
+    WatchAntigravitySetup,
     Stop,
 }
 
@@ -150,7 +154,9 @@ pub fn start_poller(
                 post_snapshot_ready(target_hwnd);
                 while let Ok(cmd) = rx.recv() {
                     match cmd {
-                        PollerCmd::RefreshNow | PollerCmd::WatchCursorSignIn => {
+                        PollerCmd::RefreshNow
+                        | PollerCmd::WatchCursorSignIn
+                        | PollerCmd::WatchAntigravitySetup => {
                             shared.set(demo_snapshot(claude_logs::now_ms()));
                             post_snapshot_ready(target_hwnd);
                         }
@@ -175,16 +181,25 @@ pub fn start_poller(
             post_snapshot_ready(target_hwnd);
 
             let mut cursor_burst_until: Option<Instant> = None;
+            let mut antigravity_burst_until: Option<Instant> = None;
 
             loop {
-                let wait = match cursor_burst_until {
-                    Some(deadline) if Instant::now() < deadline => CURSOR_BURST_INTERVAL,
-                    Some(_) => {
+                let now_inst = Instant::now();
+                let mut wait = POLL_INTERVAL;
+                if let Some(deadline) = cursor_burst_until {
+                    if now_inst < deadline {
+                        wait = wait.min(CURSOR_BURST_INTERVAL);
+                    } else {
                         cursor_burst_until = None;
-                        POLL_INTERVAL
                     }
-                    None => POLL_INTERVAL,
-                };
+                }
+                if let Some(deadline) = antigravity_burst_until {
+                    if now_inst < deadline {
+                        wait = wait.min(ANTIGRAVITY_BURST_INTERVAL);
+                    } else {
+                        antigravity_burst_until = None;
+                    }
+                }
                 match rx.recv_timeout(wait) {
                     Ok(PollerCmd::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     Ok(PollerCmd::WatchCursorSignIn) => {
@@ -196,10 +211,26 @@ pub fn start_poller(
                         shared.set(snap);
                         post_snapshot_ready(target_hwnd);
                     }
+                    Ok(PollerCmd::WatchAntigravitySetup) => {
+                        antigravity_burst_until = Some(Instant::now() + ANTIGRAVITY_BURST_WINDOW);
+                        usagedeck_core::providers::antigravity::clear_cache();
+                        let snap = rt.block_on(poll_snapshot(&core));
+                        if antigravity_ready(&snap) {
+                            antigravity_burst_until = None;
+                        }
+                        shared.set(snap);
+                        post_snapshot_ready(target_hwnd);
+                    }
                     Ok(PollerCmd::RefreshNow) | Err(mpsc::RecvTimeoutError::Timeout) => {
+                        if antigravity_burst_until.is_some() {
+                            usagedeck_core::providers::antigravity::clear_cache();
+                        }
                         let snap = rt.block_on(poll_snapshot(&core));
                         if cursor_burst_until.is_some() && cursor_signed_in(&snap) {
                             cursor_burst_until = None;
+                        }
+                        if antigravity_burst_until.is_some() && antigravity_ready(&snap) {
+                            antigravity_burst_until = None;
                         }
                         shared.set(snap);
                         post_snapshot_ready(target_hwnd);
@@ -216,6 +247,15 @@ fn cursor_signed_in(snap: &TaskbarSnapshot) -> bool {
     snap.items
         .iter()
         .any(|i| i.provider == ProviderKind::Cursor && !i.auth_expired)
+}
+
+fn antigravity_ready(snap: &TaskbarSnapshot) -> bool {
+    snap.items.iter().any(|i| {
+        i.provider == ProviderKind::Antigravity
+            && !i.auth_expired
+            && !i.taskbar_bars.is_empty()
+            && i.antigravity_setup_issue.is_none()
+    })
 }
 
 fn post_snapshot_ready(raw_hwnd: isize) {

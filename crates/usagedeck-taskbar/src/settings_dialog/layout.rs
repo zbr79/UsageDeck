@@ -126,6 +126,8 @@ pub enum Action {
     SetSpendRange(SpendRange),
     AddOpenCodeAccount,
     ToggleDeepSeekPeakWarning,
+    InstallAntigravityCli,
+    SignInAntigravityCli,
 }
 
 #[derive(Clone, Debug)]
@@ -1438,16 +1440,35 @@ fn build_provider_page(b: &mut ContentBuilder, kind: ProviderKind, input: &Layou
 
     match rows {
         None => build_loading_card(b),
-        Some([]) => build_empty_state_card(
-            b,
-            &format!(
-                "UsageDeck reads {}'s own sign-in. Sign in with {} and the account shows up here.",
-                kind.display_name(),
-                kind.display_name()
-            ),
-            None,
-        ),
+        Some([]) => {
+            if kind == ProviderKind::Antigravity {
+                build_empty_state_card(
+                    b,
+                    "UsageDeck reads Antigravity limits via Google's official Antigravity CLI (agy) or desktop sign-in.",
+                    Some((
+                        "Install Antigravity CLI",
+                        Action::InstallAntigravityCli,
+                    )),
+                );
+            } else {
+                build_empty_state_card(
+                    b,
+                    &format!(
+                        "UsageDeck reads {}'s own sign-in. Sign in with {} and the account shows up here.",
+                        kind.display_name(),
+                        kind.display_name()
+                    ),
+                    None,
+                );
+            }
+        }
         Some(list) => build_account_table(b, kind, list, input.settings),
+    }
+
+    if kind == ProviderKind::Antigravity {
+        if let Some(issue) = input.snapshot.and_then(|s| s.antigravity_setup_issue) {
+            build_antigravity_setup_card(b, issue, input);
+        }
     }
 
     let scoped_label = if kind == ProviderKind::Claude {
@@ -1470,6 +1491,89 @@ fn build_provider_page(b: &mut ContentBuilder, kind: ProviderKind, input: &Layou
     if kind == ProviderKind::Claude {
         build_claude_pace_section(b, input);
     }
+}
+
+fn build_antigravity_setup_card(
+    b: &mut ContentBuilder,
+    issue: usagedeck_core::providers::antigravity::AntigravitySetupIssue,
+    input: &LayoutInput<'_>,
+) {
+    use usagedeck_core::providers::antigravity::AntigravitySetupIssue;
+
+    let (title, body, primary_label, primary_action) = match issue {
+        AntigravitySetupIssue::NeedsAgyCli => (
+            "Finish Antigravity setup",
+            "Antigravity Desktop 2.34+ blocks direct local quota reads and expires cached desktop tokens after an hour. Install Google's official Antigravity CLI (agy) once so UsageDeck can read your 5-hour and weekly limits automatically.",
+            "Install Antigravity CLI",
+            Action::InstallAntigravityCli,
+        ),
+        AntigravitySetupIssue::NeedsAgySignIn => (
+            "Sign in to Antigravity CLI",
+            "Google's Antigravity CLI (agy) is installed, but needs a one-time Google sign-in before UsageDeck can read your limits.",
+            "Sign in with agy",
+            Action::SignInAntigravityCli,
+        ),
+    };
+
+    b.y += 12.0;
+    let card_h = 128.0;
+    let card = DipRect::new(b.x, b.y, b.w, card_h);
+    b.items.push(ContentItem::Card { rect: card });
+
+    b.items.push(ContentItem::Text {
+        rect: DipRect::new(b.x + 16.0, b.y + 14.0, b.w - 32.0, 20.0),
+        text: title.to_string(),
+        size: 13.5,
+        semi_bold: true,
+        muted: false,
+        warn: true,
+        align_right: false,
+        align_center: false,
+        mono: false,
+        wrap: false,
+    });
+    b.items.push(ContentItem::Text {
+        rect: DipRect::new(b.x + 16.0, b.y + 38.0, b.w - 32.0, 42.0),
+        text: body.to_string(),
+        size: 12.0,
+        semi_bold: false,
+        muted: true,
+        warn: false,
+        align_right: false,
+        align_center: false,
+        mono: false,
+        wrap: true,
+    });
+
+    let btn_y = b.y + card_h - 44.0;
+    let primary_w = estimate_btn_width(primary_label, ButtonStyle::Primary);
+    let primary_rect = DipRect::new(b.x + 16.0, btn_y, primary_w, 30.0);
+    b.items.push(ContentItem::Button {
+        rect: primary_rect,
+        label: primary_label.to_string(),
+        style: ButtonStyle::Primary,
+        disabled: false,
+        action: primary_action.clone(),
+    });
+    b.add_hit(primary_rect, primary_action, true);
+
+    let ref_label = if input.loading {
+        "Refreshing…"
+    } else {
+        "Check again"
+    };
+    let ref_w = estimate_btn_width(ref_label, ButtonStyle::Secondary);
+    let ref_rect = DipRect::new(primary_rect.x + primary_rect.w + 8.0, btn_y, ref_w, 30.0);
+    b.items.push(ContentItem::Button {
+        rect: ref_rect,
+        label: ref_label.to_string(),
+        style: ButtonStyle::Secondary,
+        disabled: input.loading,
+        action: Action::RefreshData,
+    });
+    b.add_hit(ref_rect, Action::RefreshData, !input.loading);
+
+    b.y += card_h + 4.0;
 }
 
 // ---- Page 7: OpenCode -----------------------------------------------------------------------

@@ -990,13 +990,6 @@ impl Renderer {
                         hovered,
                         forced_contrast_backdrop,
                     )?;
-                    if !hovered && matches!(severity, BarSeverity::Danger | BarSeverity::Warn) {
-                        let accent = match severity {
-                            BarSeverity::Danger => pal.danger,
-                            _ => pal.warn,
-                        };
-                        self.draw_status_accent_bar(rt, *rect, accent)?;
-                    }
                     let dot = DipRect {
                         x: rect.x + 8.0,
                         y: rect.y + (rect.h - 8.0) * 0.5,
@@ -1306,26 +1299,6 @@ impl Renderer {
         )
     }
 
-    fn draw_status_accent_bar(
-        &self,
-        rt: &ID2D1DCRenderTarget,
-        rect: DipRect,
-        color: D2D1_COLOR_F,
-    ) -> Result<()> {
-        let accent_w = (rect.w * 0.42).clamp(24.0, 64.0);
-        self.fill_rounded(
-            rt,
-            DipRect {
-                x: rect.x + (rect.w - accent_w) * 0.5,
-                y: rect.y + rect.h - 2.0,
-                w: accent_w,
-                h: 2.0,
-            },
-            1.0,
-            color,
-        )
-    }
-
     /// Paint the brief animated "Update complete" notification card right on top of the first
     /// taskbar card, clipped strictly to its slot bounds.
     fn draw_update_complete_card(
@@ -1534,12 +1507,6 @@ impl Renderer {
         let r = slot.rect;
         // Option 1 borderless at rest (unless theme mismatches taskbar); subtle Fluent rounded plate on hover.
         self.draw_slot_plate(rt, r, pal, theme, hovered, forced_contrast_backdrop)?;
-
-        // Subtle 2 DIP bottom status accent bar when exhausted or auth-expired and not hovered.
-        if !hovered && (item.exhausted || item.auth_expired) {
-            let accent = if item.exhausted { pal.danger } else { pal.warn };
-            self.draw_status_accent_bar(rt, r, accent)?;
-        }
 
         let icon_col_x = r.x + WIDE_PAD_X_DIP;
         let show_copy_hover =
@@ -1773,10 +1740,6 @@ impl Renderer {
     ) -> Result<()> {
         let r = slot.rect;
         self.draw_slot_plate(rt, r, pal, theme, hovered, forced_contrast_backdrop)?;
-        if !hovered && (item.exhausted || item.auth_expired) {
-            let accent = if item.exhausted { pal.danger } else { pal.warn };
-            self.draw_status_accent_bar(rt, r, accent)?;
-        }
 
         // Real provider icon (16x16 DIPs) with optional OpenCode copy-key hover highlight.
         let badge_rect = DipRect {
@@ -1801,6 +1764,33 @@ impl Renderer {
         let bar_w = 28.0;
         let pct_w = 25.0;
         let bar_h = 4.0;
+
+        if item.taskbar_bars.is_empty() {
+            let msg = item.subtitle.as_deref().unwrap_or("--");
+            let msg_w = (r.x + r.w - 5.0 - bars_x).max(20.0);
+            self.draw_text(
+                rt,
+                msg,
+                &self.fmt_label_left,
+                DipRect {
+                    x: bars_x,
+                    y: r.y,
+                    w: msg_w,
+                    h: r.h,
+                },
+                if item.auth_expired {
+                    pal.warn
+                } else {
+                    pal.muted
+                },
+            )?;
+            if hovered {
+                if let Some(hr) = slot.hide_rect {
+                    self.draw_pill_hide_chip(rt, hr, theme, pal, hide_hovered)?;
+                }
+            }
+            return Ok(());
+        }
 
         let draw_bar_row = |bar: &BarView, row_y: f32| -> Result<()> {
             let track_rect = DipRect {

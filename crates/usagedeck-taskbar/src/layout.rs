@@ -914,6 +914,7 @@ mod tests {
             stale: false,
             exhausted: false,
             can_open_cursor: false,
+            antigravity_setup_issue: None,
             tooltip: String::new(),
         };
         snap.items = vec![grok];
@@ -1158,6 +1159,7 @@ mod tests {
             stale: false,
             exhausted: true,
             can_open_cursor: false,
+            antigravity_setup_issue: None,
             secondary: false,
             display_email: None,
             tooltip: String::new(),

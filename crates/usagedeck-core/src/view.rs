@@ -7,7 +7,7 @@
 
 use crate::claude_logs::{self, ModelShare, ModelUsd};
 use crate::history;
-use crate::providers::antigravity::AntigravityUsage;
+use crate::providers::antigravity::{AntigravitySetupIssue, AntigravityUsage};
 use crate::providers::claude::{ClaudeScopedWindow, ClaudeUsage};
 use crate::providers::claude_resets::{ClaudeResetGroup, ClaudeResetKind, ClaudeResets};
 use crate::providers::codex::CodexUsage;
@@ -220,6 +220,8 @@ pub struct ProviderItem {
     pub stale: bool,
     pub exhausted: bool,
     pub can_open_cursor: bool,
+    #[serde(default)]
+    pub antigravity_setup_issue: Option<AntigravitySetupIssue>,
     pub tooltip: String,
 }
 
@@ -303,6 +305,8 @@ pub struct SettingsSnapshot {
     pub grok: Vec<SettingsAccountRow>,
     pub opencode: Vec<SettingsAccountRow>,
     pub antigravity: Vec<SettingsAccountRow>,
+    #[serde(default)]
+    pub antigravity_setup_issue: Option<AntigravitySetupIssue>,
     pub pace: SettingsPaceData,
     /// `(label, value, is_bad)` rows for Settings -> Cursor -> Diagnostics.
     pub cursor_diag_rows: Vec<(String, String, bool)>,
@@ -1086,9 +1090,12 @@ pub async fn poll_snapshot(core: &Core) -> TaskbarSnapshot {
             WidgetProvider::Codex => build_codex_items(&codex_rows, &settings, now_ms),
             WidgetProvider::Grok => build_grok_items(&grok_rows, &settings, now_ms),
             WidgetProvider::Opencode => build_opencode_items(&opencode_rows, &settings, now_ms),
-            WidgetProvider::Antigravity => {
-                build_antigravity_items(&antigravity_rows, &settings, now_ms)
-            }
+            WidgetProvider::Antigravity => build_antigravity_items(
+                &antigravity_rows,
+                &settings,
+                now_ms,
+                crate::providers::antigravity::setup_issue(),
+            ),
         };
         items.extend(built);
         snoozed_count += hidden_count;
@@ -1131,6 +1138,7 @@ struct PendingItem {
     stale: bool,
     exhausted: bool,
     can_open_cursor: bool,
+    antigravity_setup_issue: Option<AntigravitySetupIssue>,
 }
 
 fn finalize_tracked_items(
@@ -1179,6 +1187,7 @@ fn finalize_tracked_items(
                 stale: p.stale,
                 exhausted: p.exhausted,
                 can_open_cursor: p.can_open_cursor,
+                antigravity_setup_issue: p.antigravity_setup_issue,
                 tooltip,
             }
         })
@@ -1393,6 +1402,7 @@ where
             stale,
             exhausted,
             can_open_cursor: false,
+            antigravity_setup_issue: None,
         });
     }
 
@@ -1558,6 +1568,7 @@ fn build_cursor_items(
             stale,
             exhausted,
             can_open_cursor: auth_expired,
+            antigravity_setup_issue: None,
         });
     }
 
@@ -1673,6 +1684,7 @@ fn build_codex_items(
             stale,
             exhausted,
             can_open_cursor: false,
+            antigravity_setup_issue: None,
         });
     }
 
@@ -1772,6 +1784,7 @@ fn build_grok_items(
             stale,
             exhausted,
             can_open_cursor: false,
+            antigravity_setup_issue: None,
         });
     }
 
@@ -1781,10 +1794,157 @@ fn build_grok_items(
     )
 }
 
+fn antigravity_setup_hover_details(issue: AntigravitySetupIssue) -> Vec<(String, String)> {
+    match issue {
+        AntigravitySetupIssue::NeedsAgyCli => vec![
+            (
+                "Status".to_string(),
+                "Antigravity 2.34+ needs official agy CLI".to_string(),
+            ),
+            (
+                "Why".to_string(),
+                "Desktop app blocks direct local quota reads".to_string(),
+            ),
+            (
+                "Fix".to_string(),
+                "Click Install CLI below to set up automatically".to_string(),
+            ),
+        ],
+        AntigravitySetupIssue::NeedsAgySignIn => vec![
+            (
+                "Status".to_string(),
+                "Antigravity CLI (agy) needs sign-in".to_string(),
+            ),
+            (
+                "Fix".to_string(),
+                "Click Sign in below to connect your account".to_string(),
+            ),
+        ],
+    }
+}
+
+/// Choose the primary 5h / weekly windows for Antigravity's taskbar strip and Settings row.
+///
+/// Antigravity splits quota across multiple model pools (`Gemini`, `Claude & GPT`, `Gemini 4 Argon`).
+/// Taking `max()` across every pool causes a saturated secondary pool (`Claude & GPT` at 100%)
+/// to override the main `Gemini` pool on the taskbar pill. Prefer the primary `Gemini` pool when
+/// present, falling back to the top-level aggregate when missing.
+fn antigravity_primary_windows(
+    u: &AntigravityUsage,
+) -> (Option<f64>, Option<String>, Option<f64>, Option<String>) {
+    let primary = u
+        .groups
+        .iter()
+        .find(|g| g.name.eq_ignore_ascii_case("gemini"))
+        .or_else(|| {
+            u.groups.iter().find(|g| {
+                let lower = g.name.to_ascii_lowercase();
+                lower.contains("gemini") && !lower.contains("argon")
+            })
+        });
+    if let Some(g) = primary {
+        let (five_pct, five_reset) =
+            if g.five_hour_percent.is_some() || g.five_hour_resets_at.is_some() {
+                (g.five_hour_percent, g.five_hour_resets_at.clone())
+            } else {
+                (u.five_hour_percent, u.five_hour_resets_at.clone())
+            };
+        let (week_pct, week_reset) = if g.weekly_percent.is_some() || g.weekly_resets_at.is_some() {
+            (g.weekly_percent, g.weekly_resets_at.clone())
+        } else {
+            (u.weekly_percent, u.weekly_resets_at.clone())
+        };
+        return (five_pct, five_reset, week_pct, week_reset);
+    }
+    (
+        u.five_hour_percent,
+        u.five_hour_resets_at.clone(),
+        u.weekly_percent,
+        u.weekly_resets_at.clone(),
+    )
+}
+
+/// Determine whether an Antigravity account is completely out of quota ("Limit full").
+///
+/// With multiple model pools (`Gemini`, `Claude & GPT`, ...), Antigravity is only exhausted when
+/// *every* active core pool is blocked at 100% — not when just a secondary pool (like Claude & GPT)
+/// hits 100% while the main Gemini pool still has quota left.
+fn antigravity_exhausted_state(
+    u: &AntigravityUsage,
+    flyout_bars: &[BarView],
+    now_ms: i64,
+) -> (bool, Option<u64>) {
+    if u.groups.len() <= 1 {
+        let exhausted = flyout_bars
+            .iter()
+            .any(|b| b.severity == BarSeverity::Danger);
+        let until_ms = compute_exhausted_until_ms(exhausted, flyout_bars, now_ms);
+        return (exhausted, until_ms);
+    }
+
+    let core_groups: Vec<_> = u
+        .groups
+        .iter()
+        .filter(|g| {
+            !g.name.to_ascii_lowercase().contains("argon")
+                && (g.five_hour_percent.is_some() || g.weekly_percent.is_some())
+        })
+        .collect();
+    let pools = if core_groups.is_empty() {
+        u.groups
+            .iter()
+            .filter(|g| g.five_hour_percent.is_some() || g.weekly_percent.is_some())
+            .collect::<Vec<_>>()
+    } else {
+        core_groups
+    };
+    if pools.is_empty() {
+        let exhausted = flyout_bars
+            .iter()
+            .any(|b| b.severity == BarSeverity::Danger);
+        let until_ms = compute_exhausted_until_ms(exhausted, flyout_bars, now_ms);
+        return (exhausted, until_ms);
+    }
+
+    let parse_future_ms = |iso: Option<&str>| -> Option<u64> {
+        let dt = DateTime::parse_from_rfc3339(iso?.trim()).ok()?;
+        let ms = dt.timestamp_millis();
+        (ms > now_ms).then_some(ms as u64)
+    };
+
+    let mut earliest_pool_unblock: Option<u64> = None;
+    for g in &pools {
+        let five_full = severity_of(g.five_hour_percent) == BarSeverity::Danger;
+        let week_full = severity_of(g.weekly_percent) == BarSeverity::Danger;
+        if !five_full && !week_full {
+            // At least one core pool still has usable quota.
+            return (false, None);
+        }
+        // A blocked pool becomes usable once all of its blocked windows reset.
+        let mut pool_unblock: Option<u64> = None;
+        if five_full {
+            if let Some(ms) = parse_future_ms(g.five_hour_resets_at.as_deref()) {
+                pool_unblock = Some(pool_unblock.map_or(ms, |prev| prev.max(ms)));
+            }
+        }
+        if week_full {
+            if let Some(ms) = parse_future_ms(g.weekly_resets_at.as_deref()) {
+                pool_unblock = Some(pool_unblock.map_or(ms, |prev| prev.max(ms)));
+            }
+        }
+        if let Some(ms) = pool_unblock {
+            earliest_pool_unblock = Some(earliest_pool_unblock.map_or(ms, |prev| prev.min(ms)));
+        }
+    }
+
+    (true, earliest_pool_unblock)
+}
+
 fn build_antigravity_items(
     rows: &[Value],
     settings: &Settings,
     now_ms: i64,
+    setup_issue: Option<AntigravitySetupIssue>,
 ) -> (Vec<ProviderItem>, usize) {
     let hidden = hidden_bars_for(settings, ProviderKind::Antigravity);
     let mut pending = Vec::new();
@@ -1808,25 +1968,66 @@ fn build_antigravity_items(
         let usage: Option<AntigravityUsage> = row
             .get("usage")
             .and_then(|v| serde_json::from_value(v.clone()).ok());
-        let Some(u) = usage else { continue };
+        let Some(u) = usage else {
+            // Surface actionable setup guidance on the taskbar instead of vanishing silently
+            // when Antigravity 2.34+ is running without `agy` CLI (or `agy` needs sign-in).
+            if let Some(issue) = setup_issue {
+                let display_email = row
+                    .get("label")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .filter(|s| !s.eq_ignore_ascii_case("antigravity"));
+                let subtitle = match issue {
+                    AntigravitySetupIssue::NeedsAgyCli => Some("setup".to_string()),
+                    AntigravitySetupIssue::NeedsAgySignIn => Some("sign in".to_string()),
+                };
+                let mut hover_details = antigravity_setup_hover_details(issue);
+                if let Some(ref email) = display_email {
+                    if !email.is_empty() {
+                        hover_details.insert(0, ("Account".to_string(), email.clone()));
+                    }
+                }
+                pending.push(PendingItem {
+                    account_id: id.to_string(),
+                    display_email,
+                    flyout_bars: Vec::new(),
+                    taskbar_bars: Vec::new(),
+                    hover_bars: Vec::new(),
+                    hover_details,
+                    resets_badge: None,
+                    exhausted_until_ms: None,
+                    spend_rate_text: None,
+                    spend_rate_severity: BarSeverity::Muted,
+                    reset_short: None,
+                    subtitle,
+                    auth_expired: true,
+                    stale: true,
+                    exhausted: false,
+                    can_open_cursor: false,
+                    antigravity_setup_issue: Some(issue),
+                });
+            }
+            continue;
+        };
 
+        let (five_pct, five_reset, week_pct, week_reset) = antigravity_primary_windows(&u);
         let mut raw_bars = Vec::new();
-        if u.five_hour_percent.is_some() || u.five_hour_resets_at.is_some() {
+        if five_pct.is_some() || five_reset.is_some() {
             raw_bars.push(BarView::new(
                 "fiveHour",
                 "5h",
-                u.five_hour_percent,
-                u.five_hour_resets_at.clone(),
+                five_pct,
+                five_reset,
                 now_ms,
                 auth_expired,
             ));
         }
-        if u.weekly_percent.is_some() || u.weekly_resets_at.is_some() {
+        if week_pct.is_some() || week_reset.is_some() {
             raw_bars.push(BarView::new(
                 "weekly",
                 "Weekly",
-                u.weekly_percent,
-                u.weekly_resets_at.clone(),
+                week_pct,
+                week_reset,
                 now_ms,
                 auth_expired,
             ));
@@ -1880,9 +2081,7 @@ fn build_antigravity_items(
             non_empty_hover_bars(flyout_bars.clone())
         };
         let taskbar_bars = pick_taskbar_bars(&flyout_bars);
-        let exhausted = flyout_bars
-            .iter()
-            .any(|b| b.severity == BarSeverity::Danger);
+        let (exhausted, exhausted_until_ms) = antigravity_exhausted_state(&u, &flyout_bars, now_ms);
         if is_snoozed(settings, ProviderKind::Antigravity, id, exhausted, now_ms) {
             snoozed += 1;
             continue;
@@ -1892,10 +2091,12 @@ fn build_antigravity_items(
             .first()
             .and_then(|b| b.reset_short.clone())
             .or_else(|| flyout_bars.get(1).and_then(|b| b.reset_short.clone()));
-        let subtitle = if auth_expired {
-            Some("re-auth".to_string())
-        } else {
-            None
+        let active_issue = if auth_expired { setup_issue } else { None };
+        let subtitle = match active_issue {
+            Some(AntigravitySetupIssue::NeedsAgyCli) => Some("setup".to_string()),
+            Some(AntigravitySetupIssue::NeedsAgySignIn) => Some("sign in".to_string()),
+            None if auth_expired => Some("re-auth".to_string()),
+            None => None,
         };
         let display_email = row
             .get("label")
@@ -1909,7 +2110,9 @@ fn build_antigravity_items(
                 hover_details.push(("Account".to_string(), email.clone()));
             }
         }
-        let exhausted_until_ms = compute_exhausted_until_ms(exhausted, &flyout_bars, now_ms);
+        if let Some(issue) = active_issue {
+            hover_details.extend(antigravity_setup_hover_details(issue));
+        }
 
         pending.push(PendingItem {
             account_id: id.to_string(),
@@ -1928,6 +2131,7 @@ fn build_antigravity_items(
             stale,
             exhausted,
             can_open_cursor: false,
+            antigravity_setup_issue: active_issue,
         });
     }
 
@@ -2091,6 +2295,7 @@ fn build_opencode_items(
                 stale,
                 exhausted: card_exhausted,
                 can_open_cursor: false,
+                antigravity_setup_issue: None,
                 tooltip,
             },
         });
@@ -2869,6 +3074,7 @@ fn build_settings_antigravity_rows(
     rows: &[Value],
     settings: &Settings,
     now_ms: i64,
+    setup_issue: Option<AntigravitySetupIssue>,
 ) -> Vec<SettingsAccountRow> {
     let hidden_bars = hidden_bars_for(settings, ProviderKind::Antigravity);
     let mut out: Vec<SettingsAccountRow> = rows
@@ -2889,7 +3095,12 @@ fn build_settings_antigravity_rows(
             let status =
                 resolve_subscription_status(settings, ProviderKind::Antigravity, &id, None, now_ms);
             let active = raw_active && !status.unsubscribed;
-            let warning = auth_expired.then(|| "re-auth".to_string());
+            let warning = match setup_issue {
+                Some(AntigravitySetupIssue::NeedsAgyCli) => Some("setup".to_string()),
+                Some(AntigravitySetupIssue::NeedsAgySignIn) => Some("sign in".to_string()),
+                None if auth_expired => Some("re-auth".to_string()),
+                None => None,
+            };
             let usage: Option<AntigravityUsage> = row
                 .get("usage")
                 .and_then(|v| serde_json::from_value(v.clone()).ok());
@@ -2901,6 +3112,15 @@ fn build_settings_antigravity_rows(
                 .unwrap_or_else(|| id.clone());
 
             let Some(u) = usage else {
+                let note = match setup_issue {
+                    Some(AntigravitySetupIssue::NeedsAgyCli) => {
+                        "Needs official Antigravity CLI (agy) — click Install below"
+                    }
+                    Some(AntigravitySetupIssue::NeedsAgySignIn) => {
+                        "Antigravity CLI (agy) needs sign-in — click Sign in below"
+                    }
+                    None => "Not signed in or unavailable",
+                };
                 return SettingsAccountRow {
                     provider: ProviderKind::Antigravity,
                     id,
@@ -2915,7 +3135,7 @@ fn build_settings_antigravity_rows(
                     warning,
                     bars: Vec::new(),
                     extra_text: None,
-                    note: Some("Not signed in or unavailable".to_string()),
+                    note: Some(note.to_string()),
                     cached_at,
                     unsubscribed: status.unsubscribed,
                     subscription_ends_at: status.ends_at,
@@ -2925,25 +3145,16 @@ fn build_settings_antigravity_rows(
             };
 
             let dimmed = auth_expired || status.unsubscribed;
+            let (five_pct, five_reset, week_pct, week_reset) = antigravity_primary_windows(&u);
             let mut raw_bars = Vec::new();
-            if u.five_hour_percent.is_some() || u.five_hour_resets_at.is_some() {
+            if five_pct.is_some() || five_reset.is_some() {
                 raw_bars.push(BarView::new(
-                    "fiveHour",
-                    "5h",
-                    u.five_hour_percent,
-                    u.five_hour_resets_at.clone(),
-                    now_ms,
-                    dimmed,
+                    "fiveHour", "5h", five_pct, five_reset, now_ms, dimmed,
                 ));
             }
-            if u.weekly_percent.is_some() || u.weekly_resets_at.is_some() {
+            if week_pct.is_some() || week_reset.is_some() {
                 raw_bars.push(BarView::new(
-                    "weekly",
-                    "Weekly",
-                    u.weekly_percent,
-                    u.weekly_resets_at.clone(),
-                    now_ms,
-                    dimmed,
+                    "weekly", "Weekly", week_pct, week_reset, now_ms, dimmed,
                 ));
             }
             let bars = {
@@ -3529,13 +3740,20 @@ pub fn cached_settings_snapshot(
         "",
     );
 
+    let ag_issue = crate::providers::antigravity::setup_issue();
     SettingsSnapshot {
         claude: build_settings_claude_rows(&claude_rows, &settings, now_ms),
         codex: build_settings_codex_rows(&codex_rows, &settings, now_ms),
         cursor: build_settings_cursor_rows(&cursor_resp, &settings, now_ms),
         grok: build_settings_grok_rows(&grok_rows, &settings, now_ms),
         opencode: build_settings_opencode_rows(&opencode_rows, &settings, now_ms),
-        antigravity: build_settings_antigravity_rows(&antigravity_rows, &settings, now_ms),
+        antigravity: build_settings_antigravity_rows(
+            &antigravity_rows,
+            &settings,
+            now_ms,
+            ag_issue,
+        ),
+        antigravity_setup_issue: ag_issue,
         settings,
         pace: SettingsPaceData::default(),
         cursor_diag_rows: diag_rows,
@@ -3676,7 +3894,9 @@ pub async fn poll_settings_snapshot(core: &Core) -> SettingsSnapshot {
     let cursor = build_settings_cursor_rows(&cursor_resp, &settings, now_ms);
     let grok = build_settings_grok_rows(&grok_rows, &settings, now_ms);
     let opencode = build_settings_opencode_rows(&opencode_rows, &settings, now_ms);
-    let antigravity = build_settings_antigravity_rows(&antigravity_rows, &settings, now_ms);
+    let ag_issue = crate::providers::antigravity::setup_issue();
+    let antigravity =
+        build_settings_antigravity_rows(&antigravity_rows, &settings, now_ms, ag_issue);
 
     SettingsSnapshot {
         settings,
@@ -3686,6 +3906,7 @@ pub async fn poll_settings_snapshot(core: &Core) -> SettingsSnapshot {
         grok,
         opencode,
         antigravity,
+        antigravity_setup_issue: ag_issue,
         pace,
         cursor_diag_rows: diag_rows,
         diagnostics_text,
@@ -3810,6 +4031,7 @@ pub fn demo_snapshot(now_ms: i64) -> TaskbarSnapshot {
                 stale: false,
                 exhausted: false,
                 can_open_cursor: false,
+                antigravity_setup_issue: None,
                 tooltip: claude_tooltip,
             },
             ProviderItem {
@@ -3837,6 +4059,7 @@ pub fn demo_snapshot(now_ms: i64) -> TaskbarSnapshot {
                 stale: false,
                 exhausted: false,
                 can_open_cursor: false,
+                antigravity_setup_issue: None,
                 tooltip: cursor_tooltip,
             },
             ProviderItem {
@@ -3862,6 +4085,7 @@ pub fn demo_snapshot(now_ms: i64) -> TaskbarSnapshot {
                 stale: false,
                 exhausted: true,
                 can_open_cursor: false,
+                antigravity_setup_issue: None,
                 tooltip: codex_tooltip,
             },
             ProviderItem {
@@ -3884,6 +4108,7 @@ pub fn demo_snapshot(now_ms: i64) -> TaskbarSnapshot {
                 stale: false,
                 exhausted: false,
                 can_open_cursor: false,
+                antigravity_setup_issue: None,
                 tooltip: opencode_tooltip,
             },
         ],
@@ -4845,9 +5070,15 @@ mod tests {
                 ]
             }
         })];
-        let (items, _) = build_antigravity_items(&rows, &Settings::default(), NOW);
+        let (items, _) = build_antigravity_items(&rows, &Settings::default(), NOW, None);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].taskbar_bars.len(), 2);
+        // Taskbar strip reflects the main Gemini pool (12% / 8%), not the saturated Claude & GPT pool.
+        assert_eq!(items[0].taskbar_bars[0].percent, Some(12.0));
+        assert_eq!(items[0].taskbar_bars[1].percent, Some(8.0));
+        // Card must NOT be marked "Limit full" while Gemini still has quota left.
+        assert!(!items[0].exhausted);
+        assert_eq!(items[0].exhausted_until_ms, None);
         let hover_labels: Vec<&str> = items[0]
             .hover_bars
             .iter()
@@ -4862,6 +5093,68 @@ mod tests {
                 "Claude & GPT · Weekly",
             ]
         );
+
+        // When ALL core pools (Gemini AND Claude & GPT) are at 100%, the card IS exhausted,
+        // and snooze-until-reset uses the earliest reset so it wakes up when either pool unlocks.
+        let both_full = vec![json!({
+            "id": "dev@example.com",
+            "label": "dev@example.com",
+            "active": true,
+            "stale": false,
+            "usage": {
+                "email": "dev@example.com",
+                "fiveHourPercent": 100.0,
+                "weeklyPercent": 45.0,
+                "groups": [
+                    {
+                        "name": "Gemini",
+                        "fiveHourPercent": 100.0,
+                        "fiveHourResetsAt": iso_in(210),
+                        "weeklyPercent": 40.0,
+                        "weeklyResetsAt": iso_in(4320)
+                    },
+                    {
+                        "name": "Claude & GPT",
+                        "fiveHourPercent": 100.0,
+                        "fiveHourResetsAt": iso_in(120),
+                        "weeklyPercent": 45.0,
+                        "weeklyResetsAt": iso_in(4320)
+                    }
+                ]
+            }
+        })];
+        let (full_items, _) = build_antigravity_items(&both_full, &Settings::default(), NOW, None);
+        assert!(full_items[0].exhausted);
+        assert_eq!(
+            full_items[0].exhausted_until_ms,
+            Some((NOW + 120 * 60_000) as u64)
+        );
+
+        // When Antigravity 2.34+ needs agy CLI and has no cached usage yet, keep a guided "setup"
+        // pill on the taskbar instead of vanishing silently.
+        let missing_cli = vec![json!({
+            "id": "dev@example.com",
+            "label": "dev@example.com",
+            "active": true,
+            "stale": true,
+            "error": "auth-rejected"
+        })];
+        let (setup_items, _) = build_antigravity_items(
+            &missing_cli,
+            &Settings::default(),
+            NOW,
+            Some(AntigravitySetupIssue::NeedsAgyCli),
+        );
+        assert_eq!(setup_items.len(), 1);
+        assert_eq!(setup_items[0].subtitle.as_deref(), Some("setup"));
+        assert_eq!(
+            setup_items[0].antigravity_setup_issue,
+            Some(AntigravitySetupIssue::NeedsAgyCli)
+        );
+        assert!(setup_items[0]
+            .hover_details
+            .iter()
+            .any(|(k, v)| k == "Fix" && v.contains("Install CLI")));
     }
 
     #[test]
