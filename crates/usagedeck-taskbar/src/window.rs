@@ -17,7 +17,9 @@ use crate::context_menu::{
     MenuKeyOutcome, WM_APP_CONTEXT_MENU_CLICK, WM_APP_CONTEXT_MENU_DISMISS,
     WM_APP_CONTEXT_MENU_KEY, WM_APP_CONTEXT_MENU_LEAVE, WM_APP_CONTEXT_MENU_MOVE,
 };
-use crate::layout::{compute_strip_layout, exhausted_until_ms, PillStyle, StripLayout, StripMode};
+use crate::layout::{
+    compute_strip_layout, exhausted_until_ms, PillSlot, PillStyle, StripLayout, StripMode,
+};
 use crate::poller::{PollerCmd, SharedSnapshot, WM_APP_SNAPSHOT};
 use crate::render::{compute_update_flash_frame, Renderer};
 use crate::settings_dialog;
@@ -34,14 +36,18 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use usagedeck_core::default_data_dir;
 use usagedeck_core::providers::antigravity::AntigravitySetupIssue;
-use usagedeck_core::store::{CredentialVault, Store, ThemeMode};
+use usagedeck_core::store::{
+    CredentialVault, Store, ThemeMode, WidgetProvider, DEFAULT_PROVIDER_ORDER,
+};
 use usagedeck_core::view::{cached_settings_snapshot, ProviderItem, ProviderKind};
 use usagedeck_core::win::{fullscreen, launch};
 use windows::core::{w, Result};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
-use windows::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
+};
 use windows::Win32::UI::Shell::{
     Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
 };
@@ -51,10 +57,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
     PostMessageW, PostQuitMessage, RegisterClassExW, RegisterWindowMessageW, SetTimer,
     SetWindowPos, ShowWindow, TranslateMessage, CS_DBLCLKS, GW_HWNDPREV, HICON, HWND_TOPMOST,
     IDC_HAND, IDI_APPLICATION, LR_DEFAULTCOLOR, MSG, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE, WM_APP, WM_CONTEXTMENU, WM_DESTROY,
-    WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_MOUSEMOVE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETTINGCHANGE,
-    WM_TIMER, WM_WINDOWPOSCHANGED, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_POPUP,
+    SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE, WM_APP, WM_CAPTURECHANGED, WM_CONTEXTMENU,
+    WM_DESTROY, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_RBUTTONDOWN,
+    WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMER, WM_WINDOWPOSCHANGED, WNDCLASSEXW, WS_EX_LAYERED,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 const WM_MOUSELEAVE: u32 = 0x02A3;
@@ -78,6 +84,7 @@ const TIMER_HOVER_OPEN_ID: usize = 5;
 const HOVER_OPEN_DELAY_MS: u32 = 1000;
 const HOVER_DISMISS_GRACE: Duration = Duration::from_millis(260);
 const TOAST_DURATION: Duration = Duration::from_millis(2200);
+const DRAG_THRESHOLD_DIP: f32 = 6.0;
 
 const APP_ICON_BYTES: &[u8] = include_bytes!("../assets/icon.ico");
 
@@ -128,6 +135,10 @@ struct AppState {
     /// right after closing a context menu).
     suppress_hover_target: Option<(Option<usize>, bool)>,
     suppress_next_lbuttonup: bool,
+    drag_source_pill: Option<usize>,
+    drag_start_x_dip: f32,
+    drag_active: bool,
+    drag_target_slot: Option<usize>,
     fullscreen_debounce: fullscreen::Debounce,
     strip_visible: bool,
     toast: Option<ToastNotice>,
@@ -500,6 +511,96 @@ fn hide_card_until_reset_ui(provider: ProviderKind, account_id: String, until_ms
             let _ = tx.send(PollerCmd::RefreshNow);
         }
     });
+}
+
+/// Given the visible taskbar pill slots, the dragged slot's index `src_pos`, and the cursor's
+/// horizontal strip coordinate `dx` (in DIPs), compute which slot index the card will drop onto.
+fn compute_drag_target_slot(slots: &[PillSlot], src_pos: usize, dx: f32) -> usize {
+    if slots.is_empty() || src_pos >= slots.len() {
+        return src_pos;
+    }
+    for (i, slot) in slots.iter().enumerate().take(src_pos) {
+        let mid = slot.rect.x + slot.rect.w * 0.5;
+        if dx <= mid {
+            return i;
+        }
+    }
+    for i in ((src_pos + 1)..slots.len()).rev() {
+        let mid = slots[i].rect.x + slots[i].rect.w * 0.5;
+        if dx >= mid {
+            return i;
+        }
+    }
+    src_pos
+}
+
+/// Move `src` in `order` directly before (`insert_after == false`) or after
+/// (`insert_after == true`) `dst`. Returns `true` if `order` changed.
+fn reorder_provider_order(
+    order: &mut Vec<WidgetProvider>,
+    src: WidgetProvider,
+    dst: WidgetProvider,
+    insert_after: bool,
+) -> bool {
+    if src == dst {
+        return false;
+    }
+    for wp in DEFAULT_PROVIDER_ORDER {
+        if !order.contains(&wp) {
+            order.push(wp);
+        }
+    }
+    let before = order.clone();
+    let Some(src_idx) = order.iter().position(|&p| p == src) else {
+        return false;
+    };
+    order.remove(src_idx);
+    let Some(dst_idx) = order.iter().position(|&p| p == dst) else {
+        *order = before;
+        return false;
+    };
+    let insert_idx = if insert_after { dst_idx + 1 } else { dst_idx };
+    order.insert(insert_idx, src);
+    *order != before
+}
+
+/// Optimistically update the live taskbar snapshot order and persist `settings.provider_order`
+/// on a background thread so dragging cards feels instantaneous.
+fn reorder_providers_ui(src: ProviderKind, dst: ProviderKind, insert_after: bool) {
+    if src == dst {
+        return;
+    }
+    let updated_live =
+        try_with_state(|state| state.shared.reorder_provider(src, dst, insert_after))
+            .unwrap_or(false);
+    if !updated_live {
+        return;
+    }
+    let src_wp = src.to_widget_provider();
+    let dst_wp = dst.to_widget_provider();
+    std::thread::spawn(move || {
+        let Some(dir) = default_data_dir() else {
+            return;
+        };
+        let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        else {
+            return;
+        };
+        let store = Store::new(dir, Box::new(CredentialVault));
+        let _ = rt.block_on(store.update_settings(|mut s| {
+            reorder_provider_order(&mut s.provider_order, src_wp, dst_wp, insert_after);
+            s
+        }));
+    });
+}
+
+fn clear_drag_state(state: &mut AppState) {
+    state.drag_source_pill = None;
+    state.drag_start_x_dip = 0.0;
+    state.drag_active = false;
+    state.drag_target_slot = None;
 }
 
 fn copy_opencode_key(email: String, anchor: Option<RECT>) {
@@ -879,6 +980,11 @@ fn sync_and_paint_strip_ui() {
 
         let effective_hovered_pill = state.strip_hovered_pill.or(state.active_hover_pill);
         let effective_hovered_system = state.strip_hovered_system || state.active_hover_system;
+        let drag_state = if state.drag_active {
+            state.drag_source_pill.zip(state.drag_target_slot)
+        } else {
+            None
+        };
         if let Err(e) = state.renderer.render_strip(
             state.strip_hwnd,
             x,
@@ -894,6 +1000,7 @@ fn sync_and_paint_strip_ui() {
             effective_hovered_system,
             forced_contrast_backdrop,
             update_flash,
+            drag_state,
         ) {
             log::warn!("render_strip failed: {e}");
         }
@@ -1506,6 +1613,62 @@ unsafe extern "system" fn strip_wnd_proc(
             quit_app_ui();
             LRESULT(0)
         }
+        WM_LBUTTONDOWN => {
+            if dismiss_context_menu_ui() {
+                try_with_state(|s| {
+                    s.suppress_next_lbuttonup = true;
+                });
+                return LRESULT(0);
+            }
+            let should_capture = try_with_state(|s| {
+                let scale = s.metrics.map_or(1.0, |m| m.scale);
+                let (dx, dy) = cursor_dip(lparam, scale);
+                let layout = s.strip_layout.as_ref()?;
+                let StripMode::Pills { slots, .. } = &layout.mode else {
+                    return None;
+                };
+                if slots.len() < 2 {
+                    return None;
+                }
+                if layout.hit_test_pill_hide(dx, dy).is_some() {
+                    return None;
+                }
+                let hit_pill = layout.hit_test_pill(dx, dy)?;
+                if let Some(icon_idx) = layout.hit_test_pill_icon(dx, dy) {
+                    let (snapshot, _) = s.shared.get();
+                    if let Some(item) = snapshot.items.get(icon_idx) {
+                        if item.provider == ProviderKind::OpenCode
+                            || (item.provider == ProviderKind::Cursor && item.can_open_cursor)
+                        {
+                            return None;
+                        }
+                    }
+                }
+                s.drag_source_pill = Some(hit_pill);
+                s.drag_start_x_dip = dx;
+                s.drag_active = false;
+                s.drag_target_slot = None;
+                Some(())
+            })
+            .flatten()
+            .is_some();
+            if should_capture {
+                let _ = SetCapture(hwnd);
+            }
+            LRESULT(0)
+        }
+        WM_CAPTURECHANGED => {
+            let needs_repaint = try_with_state(|s| {
+                let was_active = s.drag_active;
+                clear_drag_state(s);
+                was_active
+            })
+            .unwrap_or(false);
+            if needs_repaint {
+                sync_and_paint_strip_ui();
+            }
+            LRESULT(0)
+        }
         WM_MOUSEMOVE => {
             #[derive(Clone, Copy)]
             enum TimerOp {
@@ -1520,6 +1683,30 @@ unsafe extern "system" fn strip_wnd_proc(
                 }
                 let scale = s.metrics.map_or(1.0, |m| m.scale);
                 let (dx, dy) = cursor_dip(lparam, scale);
+
+                // Horizontal drag-to-reorder tracking for taskbar provider cards.
+                if let Some(src_item) = s.drag_source_pill {
+                    let mut just_started = false;
+                    if !s.drag_active {
+                        if (dx - s.drag_start_x_dip).abs() < DRAG_THRESHOLD_DIP {
+                            return (false, TimerOp::None, TimerOp::None);
+                        }
+                        s.drag_active = true;
+                        just_started = true;
+                        clear_hover_card_state(s);
+                    }
+                    let new_target = s.strip_layout.as_ref().and_then(|l| match &l.mode {
+                        StripMode::Pills { slots, .. } => slots
+                            .iter()
+                            .position(|sl| sl.item_index == src_item)
+                            .map(|src_pos| compute_drag_target_slot(slots, src_pos, dx)),
+                        _ => None,
+                    });
+                    let changed = just_started || s.drag_target_slot != new_target;
+                    s.drag_target_slot = new_target;
+                    return (changed, TimerOp::Cancel, TimerOp::Cancel);
+                }
+
                 let layout = s.strip_layout.as_ref();
                 let hit_pill = layout.and_then(|l| l.hit_test_pill(dx, dy));
                 let hit_icon = layout.and_then(|l| l.hit_test_pill_icon(dx, dy));
@@ -1691,6 +1878,15 @@ unsafe extern "system" fn strip_wnd_proc(
             LRESULT(0)
         }
         WM_LBUTTONDBLCLK => {
+            let was_capturing = try_with_state(|s| {
+                let c = s.drag_source_pill.is_some();
+                clear_drag_state(s);
+                c
+            })
+            .unwrap_or(false);
+            if was_capturing {
+                let _ = ReleaseCapture();
+            }
             if dismiss_context_menu_ui() {
                 return LRESULT(0);
             }
@@ -1793,6 +1989,48 @@ unsafe extern "system" fn strip_wnd_proc(
             LRESULT(0)
         }
         WM_LBUTTONUP => {
+            let (was_capturing, was_active_drag, drag_move) = try_with_state(|s| {
+                let capturing = s.drag_source_pill.is_some();
+                let active = s.drag_active;
+                let move_op = if active {
+                    if let (Some(src_idx), Some(dst_slot_pos)) =
+                        (s.drag_source_pill, s.drag_target_slot)
+                    {
+                        s.strip_layout.as_ref().and_then(|l| match &l.mode {
+                            StripMode::Pills { slots, .. } => {
+                                let src_slot_pos =
+                                    slots.iter().position(|sl| sl.item_index == src_idx)?;
+                                let dst_slot = slots.get(dst_slot_pos)?;
+                                if src_slot_pos == dst_slot_pos {
+                                    return None;
+                                }
+                                let (snap, _) = s.shared.get();
+                                let src_prov = snap.items.get(src_idx)?.provider;
+                                let dst_prov = snap.items.get(dst_slot.item_index)?.provider;
+                                Some((src_prov, dst_prov, dst_slot_pos > src_slot_pos))
+                            }
+                            _ => None,
+                        })
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                clear_drag_state(s);
+                (capturing, active, move_op)
+            })
+            .unwrap_or((false, false, None));
+            if was_capturing {
+                let _ = ReleaseCapture();
+            }
+            if was_active_drag {
+                if let Some((src_prov, dst_prov, insert_after)) = drag_move {
+                    reorder_providers_ui(src_prov, dst_prov, insert_after);
+                }
+                sync_and_paint_strip_ui();
+                return LRESULT(0);
+            }
             if dismiss_context_menu_ui() {
                 return LRESULT(0);
             }
@@ -1907,7 +2145,16 @@ unsafe extern "system" fn strip_wnd_proc(
             let _ = KillTimer(Some(hwnd), TIMER_HOVER_OPEN_ID);
             let _ = KillTimer(Some(hwnd), TIMER_HOVER_CLOSE_ID);
             let _ = dismiss_context_menu_ui();
-            try_with_state(clear_hover_card_state);
+            let was_capturing = try_with_state(|s| {
+                let c = s.drag_source_pill.is_some();
+                clear_drag_state(s);
+                clear_hover_card_state(s);
+                c
+            })
+            .unwrap_or(false);
+            if was_capturing {
+                let _ = ReleaseCapture();
+            }
             LRESULT(0)
         }
         WM_RBUTTONUP => {
@@ -2431,6 +2678,10 @@ pub fn run_ui(
                 hover_dismiss_at: None,
                 suppress_hover_target: None,
                 suppress_next_lbuttonup: false,
+                drag_source_pill: None,
+                drag_start_x_dip: 0.0,
+                drag_active: false,
+                drag_target_slot: None,
                 fullscreen_debounce: fullscreen::Debounce::default(),
                 strip_visible: false,
                 toast: None,
@@ -2575,5 +2826,95 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn drag_target_slot_uses_adjacent_midpoints() {
+        use crate::layout::DipRect;
+        let mk = |item_index: usize, x: f32, w: f32| PillSlot {
+            item_index,
+            rect: DipRect {
+                x,
+                y: 2.0,
+                w,
+                h: 34.0,
+            },
+            icon_rect: DipRect {
+                x,
+                y: 2.0,
+                w: 16.0,
+                h: 34.0,
+            },
+            hide_rect: None,
+            extended: false,
+            style: PillStyle::WideMeters,
+            meter_rects: Vec::new(),
+        };
+        let slots = vec![mk(0, 0.0, 100.0), mk(1, 107.0, 100.0), mk(2, 214.0, 100.0)];
+
+        // Dragging slot 0 rightwards: mid(1) = 157, mid(2) = 264.
+        assert_eq!(compute_drag_target_slot(&slots, 0, 120.0), 0);
+        assert_eq!(compute_drag_target_slot(&slots, 0, 158.0), 1);
+        assert_eq!(compute_drag_target_slot(&slots, 0, 265.0), 2);
+
+        // Dragging slot 2 leftwards: mid(1) = 157, mid(0) = 50.
+        assert_eq!(compute_drag_target_slot(&slots, 2, 190.0), 2);
+        assert_eq!(compute_drag_target_slot(&slots, 2, 156.0), 1);
+        assert_eq!(compute_drag_target_slot(&slots, 2, 48.0), 0);
+
+        // Dragging middle slot 1 stays at 1 inside (50, 264).
+        assert_eq!(compute_drag_target_slot(&slots, 1, 150.0), 1);
+        assert_eq!(compute_drag_target_slot(&slots, 1, 49.0), 0);
+        assert_eq!(compute_drag_target_slot(&slots, 1, 265.0), 2);
+    }
+
+    #[test]
+    fn reorder_provider_order_moves_before_and_after() {
+        let mut order = DEFAULT_PROVIDER_ORDER.to_vec();
+        // Drag Opencode after Codex (rightward).
+        assert!(reorder_provider_order(
+            &mut order,
+            WidgetProvider::Opencode,
+            WidgetProvider::Codex,
+            true
+        ));
+        assert_eq!(
+            order,
+            vec![
+                WidgetProvider::Cursor,
+                WidgetProvider::Grok,
+                WidgetProvider::Codex,
+                WidgetProvider::Opencode,
+                WidgetProvider::Claude,
+                WidgetProvider::Antigravity,
+            ]
+        );
+
+        // Drag Antigravity before Codex (leftward).
+        assert!(reorder_provider_order(
+            &mut order,
+            WidgetProvider::Antigravity,
+            WidgetProvider::Codex,
+            false
+        ));
+        assert_eq!(
+            order,
+            vec![
+                WidgetProvider::Cursor,
+                WidgetProvider::Grok,
+                WidgetProvider::Antigravity,
+                WidgetProvider::Codex,
+                WidgetProvider::Opencode,
+                WidgetProvider::Claude,
+            ]
+        );
+
+        // Same provider is a no-op.
+        assert!(!reorder_provider_order(
+            &mut order,
+            WidgetProvider::Codex,
+            WidgetProvider::Codex,
+            true
+        ));
     }
 }

@@ -9,7 +9,8 @@ use crate::settings_dialog::theme::{
     plan_badge_tone, spend_series, BadgeTone, SpendRange,
 };
 use usagedeck_core::store::{
-    AppSkin, PanelTheme, Settings, TaskbarMeterStyle, ThemeMode, WidgetProvider,
+    AppSkin, PanelTheme, Settings, TaskbarExhaustedStyle, TaskbarMeterStyle, ThemeMode,
+    WidgetProvider,
 };
 use usagedeck_core::view::{
     BarSeverity, BarView, ProviderKind, SettingsAccountRow, SettingsSnapshot,
@@ -99,6 +100,7 @@ pub enum Action {
     SetAppSkin(AppSkin),
     SetWidgetTheme(ThemeMode),
     SetMeterStyle(TaskbarMeterStyle),
+    SetExhaustedStyle(TaskbarExhaustedStyle),
     MoveProviderUp(WidgetProvider),
     MoveProviderDown(WidgetProvider),
     ToggleProviderEnabled(WidgetProvider),
@@ -288,6 +290,14 @@ pub enum ContentItem {
     MeterStyleCard {
         rect: DipRect,
         style: TaskbarMeterStyle,
+        title: &'static str,
+        subtitle: &'static str,
+        selected: bool,
+        action: Action,
+    },
+    ExhaustedStyleCard {
+        rect: DipRect,
+        style: TaskbarExhaustedStyle,
         title: &'static str,
         subtitle: &'static str,
         selected: bool,
@@ -1165,23 +1175,23 @@ fn build_style_page(b: &mut ContentBuilder, input: &LayoutInput<'_>) {
     let styles: [(TaskbarMeterStyle, &'static str, &'static str); 4] = [
         (
             TaskbarMeterStyle::ClockBelow,
-            "Hours & minutes",
-            "R / W / M + % on top, bar in the middle, clear 4h 33m · 5d countdown underneath.",
+            "Classic (Option 1)",
+            "R / W / M + % on top, crisp 4px bar in the middle, 4h 33m · 5d countdown underneath.",
         ),
         (
-            TaskbarMeterStyle::MinimalBelow,
-            "Minimal rounded",
-            "Single-unit rounded time (4.5h · 5d) underneath — zero minute-by-minute jitter.",
+            TaskbarMeterStyle::BoldMeter,
+            "Bold meter",
+            "Option 1 with a thicker, higher-contrast bar and brighter countdown for instant scanning.",
         ),
         (
-            TaskbarMeterStyle::ResetAtBelow,
-            "Reset wall clock",
-            "Shows directly when quota resets (→ 8:40p · → Sat) — no countdown math.",
+            TaskbarMeterStyle::SegmentedBar,
+            "Segmented blocks",
+            "Option 1 with 5 crisp 20% bar segments so fill level reads immediately without numbers.",
         ),
         (
-            TaskbarMeterStyle::PillChip,
-            "Compact pill chip",
-            "2-tier layout with a subtle [R] badge + 4h 33m beside % and a thicker bar below.",
+            TaskbarMeterStyle::TintedTag,
+            "Tinted tag",
+            "Option 1 with a subtle [R] / [W] micro-badge on top and ↺ reset countdown underneath.",
         ),
     ];
 
@@ -1201,12 +1211,61 @@ fn build_style_page(b: &mut ContentBuilder, input: &LayoutInput<'_>) {
         b.add_hit(rect, action, true);
         b.y += card_h + 10.0;
     }
+
+    b.add_section_heading("Out of usage design", 18.0);
+
+    let exhausted_styles: [(TaskbarExhaustedStyle, &'static str, &'static str); 4] = [
+        (
+            TaskbarExhaustedStyle::SoftRedWash,
+            "Soft red glass",
+            "Translucent crimson plate and thin soft-red border framing the maxed-out card.",
+        ),
+        (
+            TaskbarExhaustedStyle::ResetCountdown,
+            "Reset countdown",
+            "Replaces maxed-out bars with a calm centered \"Limit full · ↺ 2h 14m\" countdown.",
+        ),
+        (
+            TaskbarExhaustedStyle::MutedDim,
+            "Dimmed & calm",
+            "Softly fades out-of-usage cards so active providers with remaining quota stand out.",
+        ),
+        (
+            TaskbarExhaustedStyle::FullBadge,
+            "Compact FULL badge",
+            "Keeps both meters visible and swaps 100% for a crisp mini red FULL pill badge.",
+        ),
+    ];
+
+    for (style, title, subtitle) in exhausted_styles {
+        let rect = DipRect::new(b.x, b.y, b.w, card_h);
+        let action = Action::SetExhaustedStyle(style);
+        let selected = input.settings.taskbar_exhausted_style == style;
+        b.items.push(ContentItem::ExhaustedStyleCard {
+            rect,
+            style,
+            title,
+            subtitle,
+            selected,
+            action: action.clone(),
+        });
+        b.add_hit(rect, action, true);
+        b.y += card_h + 10.0;
+    }
 }
 
 // ---- Page 2: Widget -------------------------------------------------------------------------
 
 fn build_widget_page(b: &mut ContentBuilder, input: &LayoutInput<'_>) {
-    b.add_page_header(None, "Widget", None, &[]);
+    b.add_page_header(
+        None,
+        "Widget",
+        Some(
+            "Tip: You can also drag provider cards directly on the taskbar to reorder them."
+                .to_string(),
+        ),
+        &[],
+    );
     b.add_section_heading("Providers", 0.0);
 
     let snoozed = snoozed_entries(input.settings, input.now_ms);

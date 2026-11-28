@@ -51,6 +51,7 @@ impl SharedSnapshot {
                 app_skin: usagedeck_core::store::AppSkin::default(),
                 snoozed_count: 0,
                 taskbar_meter_style: usagedeck_core::store::TaskbarMeterStyle::default(),
+                taskbar_exhausted_style: usagedeck_core::store::TaskbarExhaustedStyle::default(),
                 system_monitor_enabled: true,
                 system: None,
             }
@@ -92,6 +93,49 @@ impl SharedSnapshot {
         } else {
             false
         }
+    }
+
+    /// Optimistically reorder all items belonging to `src` before/after `dst`'s group in the live
+    /// taskbar snapshot so drag-to-reorder snaps immediately without waiting for a network poll.
+    pub fn reorder_provider(
+        &self,
+        src: ProviderKind,
+        dst: ProviderKind,
+        insert_after: bool,
+    ) -> bool {
+        if src == dst {
+            return false;
+        }
+        let mut guard = self.inner.lock().unwrap();
+        let mut moved = Vec::new();
+        let mut remaining = Vec::with_capacity(guard.items.len());
+        for item in guard.items.drain(..) {
+            if item.provider == src {
+                moved.push(item);
+            } else {
+                remaining.push(item);
+            }
+        }
+        if moved.is_empty() {
+            guard.items = remaining;
+            return false;
+        }
+        let insert_idx = if insert_after {
+            remaining
+                .iter()
+                .rposition(|it| it.provider == dst)
+                .map(|i| i + 1)
+        } else {
+            remaining.iter().position(|it| it.provider == dst)
+        };
+        let Some(idx) = insert_idx else {
+            remaining.extend(moved);
+            guard.items = remaining;
+            return false;
+        };
+        remaining.splice(idx..idx, moved);
+        guard.items = remaining;
+        true
     }
 
     pub fn system_monitor_enabled(&self) -> bool {

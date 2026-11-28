@@ -1191,6 +1191,21 @@ fn execute_action(hwnd: HWND, action: Action) {
                 deferred = DeferredAction::NotifyChanged(state.on_changed.clone());
             }
         }
+        Action::SetExhaustedStyle(style) => {
+            if state.settings.taskbar_exhausted_style == style {
+                return;
+            }
+            if state
+                .save_settings(|mut s| {
+                    s.taskbar_exhausted_style = style;
+                    s
+                })
+                .is_ok()
+            {
+                state.show_toast("Out-of-usage style updated");
+                deferred = DeferredAction::NotifyChanged(state.on_changed.clone());
+            }
+        }
         Action::QuitApp => {
             deferred = DeferredAction::QuitApp;
         }

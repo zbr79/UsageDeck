@@ -13,7 +13,7 @@ use crate::settings_dialog::layout::{
     SIDEBAR_W_DIP,
 };
 use crate::settings_dialog::theme::{rgba, with_alpha, BadgeColors, SettingsPalette};
-use usagedeck_core::store::TaskbarMeterStyle;
+use usagedeck_core::store::{TaskbarExhaustedStyle, TaskbarMeterStyle};
 use usagedeck_core::view::{BarSeverity, ProviderKind};
 use windows::core::{w, Result};
 use windows::Win32::Foundation::{HWND, RECT};
@@ -915,6 +915,22 @@ impl SettingsRenderer {
                     )?;
                 }
             }
+            ContentItem::ExhaustedStyleCard {
+                rect,
+                style,
+                title,
+                subtitle,
+                selected,
+                action,
+            } => {
+                let r = rect.offset_y(-scroll);
+                if visible(r) {
+                    let is_hover = hovered == Some(action);
+                    self.draw_exhausted_style_card(
+                        rt, pal, r, *style, title, subtitle, *selected, is_hover,
+                    )?;
+                }
+            }
         }
         Ok(())
     }
@@ -975,67 +991,29 @@ impl SettingsRenderer {
         self.fill_rounded(rt, preview, 6.0, rgba(38, 28, 32, 0.96))?;
         self.stroke_rounded(rt, preview, 6.0, 1.0, rgba(255, 255, 255, 0.14))?;
 
-        let sample_meters: [(&str, &str, f32, &str); 2] = match style {
-            TaskbarMeterStyle::ClockBelow => {
-                [("R", "3%", 0.08, "4h 33m"), ("W", "31%", 0.31, "5d")]
-            }
-            TaskbarMeterStyle::MinimalBelow => {
-                [("R", "3%", 0.08, "4.5h"), ("W", "31%", 0.31, "5d")]
-            }
-            TaskbarMeterStyle::ResetAtBelow => {
-                [("R", "3%", 0.08, "→ 8:40p"), ("W", "31%", 0.31, "→ Sat")]
-            }
-            TaskbarMeterStyle::PillChip => [("R", "3%", 0.08, "4h 33m"), ("W", "31%", 0.31, "5d")],
-        };
+        let sample_meters: [(&str, &str, f32, &str); 2] =
+            [("R", "24%", 0.24, "4h 33m"), ("W", "62%", 0.62, "5d")];
 
         let col_w = 85.0;
         let col_gap = 10.0;
         let start_x = preview.x + (preview.w - (col_w * 2.0 + col_gap)) * 0.5;
         let p_text = rgba(255, 255, 255, 0.96);
         let p_muted = rgba(232, 232, 240, 0.80);
-        let p_sub = rgba(232, 232, 240, 0.64);
+        let p_sub = if style == TaskbarMeterStyle::BoldMeter {
+            rgba(232, 232, 240, 0.82)
+        } else {
+            rgba(232, 232, 240, 0.64)
+        };
         let p_track = rgba(255, 255, 255, 0.22);
         let p_ok = rgba(0, 212, 146, 1.0);
 
         for (idx, (tag, pct, frac, time_str)) in sample_meters.iter().enumerate() {
             let mx = start_x + idx as f32 * (col_w + col_gap);
-            if style == TaskbarMeterStyle::PillChip {
-                let chip = DipRect::new(mx, preview.y + 8.0, 14.0, 13.0);
+            if style == TaskbarMeterStyle::TintedTag {
+                let chip = DipRect::new(mx, preview.y + 4.5, 14.0, 12.5);
                 self.fill_rounded(rt, chip, 3.0, rgba(255, 255, 255, 0.14))?;
                 self.draw_dynamic_text(
                     rt, tag, 8.5, true, false, false, true, false, chip, p_text,
-                )?;
-                self.draw_dynamic_text(
-                    rt,
-                    time_str,
-                    8.5,
-                    false,
-                    false,
-                    false,
-                    false,
-                    false,
-                    DipRect::new(mx + 17.0, preview.y + 8.0, col_w - 42.0, 13.0),
-                    p_sub,
-                )?;
-                self.draw_dynamic_text(
-                    rt,
-                    pct,
-                    9.5,
-                    true,
-                    false,
-                    true,
-                    false,
-                    false,
-                    DipRect::new(mx + col_w - 26.0, preview.y + 7.5, 26.0, 13.5),
-                    p_text,
-                )?;
-                let track = DipRect::new(mx, preview.y + 27.0, col_w, 4.5);
-                self.fill_rounded(rt, track, 2.25, p_track)?;
-                self.fill_rounded(
-                    rt,
-                    DipRect::new(track.x, track.y, (track.w * *frac).max(4.0), track.h),
-                    2.25,
-                    p_ok,
                 )?;
             } else {
                 self.draw_dynamic_text(
@@ -1050,42 +1028,323 @@ impl SettingsRenderer {
                     DipRect::new(mx, preview.y + 4.5, 20.0, 13.0),
                     p_muted,
                 )?;
+            }
+
+            let pct_size = if style == TaskbarMeterStyle::BoldMeter {
+                10.0
+            } else {
+                9.5
+            };
+            self.draw_dynamic_text(
+                rt,
+                pct,
+                pct_size,
+                true,
+                false,
+                true,
+                false,
+                false,
+                DipRect::new(mx + col_w - 30.0, preview.y + 4.5, 30.0, 13.0),
+                p_text,
+            )?;
+
+            match style {
+                TaskbarMeterStyle::ClockBelow | TaskbarMeterStyle::TintedTag => {
+                    let track = DipRect::new(mx, preview.y + 19.5, col_w, 4.0);
+                    self.fill_rounded(rt, track, 2.0, p_track)?;
+                    self.fill_rounded(
+                        rt,
+                        DipRect::new(track.x, track.y, (track.w * *frac).max(4.0), track.h),
+                        2.0,
+                        p_ok,
+                    )?;
+                }
+                TaskbarMeterStyle::BoldMeter => {
+                    let track = DipRect::new(mx, preview.y + 18.5, col_w, 6.0);
+                    self.fill_rounded(rt, track, 3.0, rgba(255, 255, 255, 0.25))?;
+                    let fill_w = (track.w * *frac).max(6.0);
+                    self.fill_rounded(
+                        rt,
+                        DipRect::new(track.x, track.y, fill_w, track.h),
+                        3.0,
+                        p_ok,
+                    )?;
+                    self.fill_rounded(
+                        rt,
+                        DipRect::new(track.x + 1.0, track.y + 0.5, (fill_w - 2.0).max(2.0), 1.5),
+                        0.75,
+                        rgba(255, 255, 255, 0.26),
+                    )?;
+                }
+                TaskbarMeterStyle::SegmentedBar => {
+                    let segs = 5usize;
+                    let gap = 2.0f32;
+                    let seg_w = (col_w - gap * (segs as f32 - 1.0)) / segs as f32;
+                    for s in 0..segs {
+                        let sx = mx + s as f32 * (seg_w + gap);
+                        let sr = DipRect::new(sx, preview.y + 19.0, seg_w, 5.0);
+                        self.fill_rounded(rt, sr, 1.5, p_track)?;
+                        let lo = s as f32 / segs as f32;
+                        let hi = (s + 1) as f32 / segs as f32;
+                        let seg_fill = ((*frac - lo) / (hi - lo)).clamp(0.0, 1.0);
+                        if seg_fill > 0.02 {
+                            self.fill_rounded(
+                                rt,
+                                DipRect::new(sr.x, sr.y, (sr.w * seg_fill).max(2.5), sr.h),
+                                1.5,
+                                p_ok,
+                            )?;
+                        }
+                    }
+                }
+            }
+
+            let time_label = if style == TaskbarMeterStyle::TintedTag {
+                format!("↺ {time_str}")
+            } else {
+                (*time_str).to_string()
+            };
+            let time_y = if style == TaskbarMeterStyle::BoldMeter {
+                preview.y + 26.5
+            } else {
+                preview.y + 25.5
+            };
+            self.draw_dynamic_text(
+                rt,
+                &time_label,
+                8.5,
+                false,
+                false,
+                false,
+                false,
+                false,
+                DipRect::new(mx, time_y, col_w, 12.0),
+                p_sub,
+            )?;
+        }
+
+        // Title + subtitle on the left of the preview box.
+        let text_x = radio.x + radio.w + 14.0;
+        let text_w = (preview.x - text_x - 16.0).max(80.0);
+        self.draw_dynamic_text(
+            rt,
+            title,
+            14.0,
+            true,
+            false,
+            false,
+            false,
+            false,
+            DipRect::new(text_x, r.y + 18.0, text_w, 20.0),
+            pal.text,
+        )?;
+        self.draw_dynamic_text(
+            rt,
+            subtitle,
+            12.0,
+            false,
+            false,
+            false,
+            false,
+            true,
+            DipRect::new(text_x, r.y + 40.0, text_w, 34.0),
+            pal.muted,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_exhausted_style_card(
+        &self,
+        rt: &ID2D1DCRenderTarget,
+        pal: &SettingsPalette,
+        r: DipRect,
+        style: TaskbarExhaustedStyle,
+        title: &str,
+        subtitle: &str,
+        selected: bool,
+        hovered: bool,
+    ) -> Result<()> {
+        let bg = if selected {
+            with_alpha(pal.accent, 0.08)
+        } else if hovered {
+            pal.surface_hover
+        } else {
+            pal.card
+        };
+        let border = if selected {
+            pal.accent
+        } else if hovered {
+            pal.border
+        } else {
+            pal.card_border
+        };
+        let border_w = if selected { 1.5 } else { 1.0 };
+        self.fill_rounded(rt, r, 6.0, bg)?;
+        self.stroke_rounded(rt, r, 6.0, border_w, border)?;
+
+        let radio = DipRect::new(r.x + 16.0, r.y + (r.h - 16.0) * 0.5, 16.0, 16.0);
+        self.stroke_rounded(
+            rt,
+            radio,
+            8.0,
+            1.5,
+            if selected { pal.accent } else { pal.border },
+        )?;
+        if selected {
+            let dot = DipRect::new(radio.x + 4.0, radio.y + 4.0, 8.0, 8.0);
+            self.fill_rounded(rt, dot, 4.0, pal.accent)?;
+        }
+
+        // Right-aligned dark taskbar miniature preview (`198 × 44 DIP`) of a 100% exhausted card.
+        let preview_w = 198.0;
+        let preview_h = 44.0;
+        let preview = DipRect::new(
+            r.x + r.w - 16.0 - preview_w,
+            r.y + (r.h - preview_h) * 0.5,
+            preview_w,
+            preview_h,
+        );
+        self.fill_rounded(rt, preview, 6.0, rgba(38, 28, 32, 0.96))?;
+        self.stroke_rounded(rt, preview, 6.0, 1.0, rgba(255, 255, 255, 0.14))?;
+
+        let pill = DipRect::new(
+            preview.x + 6.0,
+            preview.y + 5.0,
+            preview.w - 12.0,
+            preview.h - 10.0,
+        );
+        let p_danger = rgba(239, 68, 68, 1.0);
+        let p_danger_soft = rgba(248, 113, 113, 0.95);
+        let p_text = rgba(255, 255, 255, 0.96);
+        let p_muted = rgba(232, 232, 240, 0.80);
+        let p_sub = rgba(232, 232, 240, 0.64);
+
+        match style {
+            TaskbarExhaustedStyle::SoftRedWash => {
+                self.fill_rounded(rt, pill, 5.0, rgba(239, 68, 68, 0.16))?;
+                self.stroke_rounded(rt, pill, 5.0, 1.0, rgba(239, 68, 68, 0.52))?;
+            }
+            TaskbarExhaustedStyle::ResetCountdown => {
+                self.fill_rounded(rt, pill, 5.0, rgba(239, 68, 68, 0.10))?;
+                self.stroke_rounded(rt, pill, 5.0, 1.0, rgba(239, 68, 68, 0.34))?;
+            }
+            TaskbarExhaustedStyle::MutedDim | TaskbarExhaustedStyle::FullBadge => {}
+        }
+
+        if style == TaskbarExhaustedStyle::ResetCountdown {
+            self.draw_dynamic_text(
+                rt,
+                "Limit full",
+                9.0,
+                true,
+                false,
+                false,
+                true,
+                false,
+                DipRect::new(pill.x + 6.0, pill.y + 3.0, pill.w - 12.0, 13.0),
+                p_danger_soft,
+            )?;
+            self.draw_dynamic_text(
+                rt,
+                "↺ 2h 14m",
+                10.0,
+                true,
+                false,
+                false,
+                true,
+                false,
+                DipRect::new(pill.x + 6.0, pill.y + 17.0, pill.w - 12.0, 14.0),
+                p_text,
+            )?;
+        } else {
+            let dim = if style == TaskbarExhaustedStyle::MutedDim {
+                0.52
+            } else {
+                1.0
+            };
+            let col_w = 78.0;
+            let col_gap = 10.0;
+            let start_x = pill.x + (pill.w - (col_w * 2.0 + col_gap)) * 0.5;
+            let sample = [("R", "100%", 1.0f32, "2h 14m"), ("W", "68%", 0.68, "5d")];
+            for (idx, (tag, pct, frac, time_str)) in sample.iter().enumerate() {
+                let mx = start_x + idx as f32 * (col_w + col_gap);
+                let is_full = idx == 0;
                 self.draw_dynamic_text(
                     rt,
-                    pct,
-                    9.5,
+                    tag,
+                    9.0,
                     true,
                     false,
-                    true,
                     false,
                     false,
-                    DipRect::new(mx + col_w - 28.0, preview.y + 4.5, 28.0, 13.0),
-                    p_text,
+                    false,
+                    DipRect::new(mx, pill.y + 1.0, 18.0, 12.0),
+                    with_alpha(p_muted, p_muted.a * dim),
                 )?;
-                let track = DipRect::new(mx, preview.y + 19.5, col_w, 4.0);
-                self.fill_rounded(rt, track, 2.0, p_track)?;
+
+                if style == TaskbarExhaustedStyle::FullBadge && is_full {
+                    let badge = DipRect::new(mx + col_w - 30.0, pill.y + 1.0, 30.0, 12.0);
+                    self.fill_rounded(rt, badge, 3.0, rgba(239, 68, 68, 0.90))?;
+                    self.draw_dynamic_text(
+                        rt,
+                        "FULL",
+                        7.5,
+                        true,
+                        false,
+                        false,
+                        true,
+                        false,
+                        badge,
+                        rgba(255, 255, 255, 0.98),
+                    )?;
+                } else {
+                    let pct_col = if is_full {
+                        with_alpha(p_danger_soft, p_danger_soft.a * dim.max(0.68))
+                    } else {
+                        with_alpha(p_text, p_text.a * dim)
+                    };
+                    self.draw_dynamic_text(
+                        rt,
+                        pct,
+                        9.0,
+                        true,
+                        false,
+                        true,
+                        false,
+                        false,
+                        DipRect::new(mx + col_w - 32.0, pill.y + 1.0, 32.0, 12.0),
+                        pct_col,
+                    )?;
+                }
+
+                let track = DipRect::new(mx, pill.y + 15.0, col_w, 4.0);
+                self.fill_rounded(rt, track, 2.0, rgba(255, 255, 255, 0.22 * dim))?;
+                let fill_col = if is_full {
+                    with_alpha(p_danger, dim.max(0.55))
+                } else {
+                    with_alpha(rgba(0, 212, 146, 1.0), dim)
+                };
                 self.fill_rounded(
                     rt,
-                    DipRect::new(track.x, track.y, (track.w * *frac).max(4.0), track.h),
+                    DipRect::new(track.x, track.y, track.w * *frac, track.h),
                     2.0,
-                    p_ok,
+                    fill_col,
                 )?;
                 self.draw_dynamic_text(
                     rt,
                     time_str,
-                    8.5,
+                    8.0,
                     false,
                     false,
                     false,
                     false,
                     false,
-                    DipRect::new(mx, preview.y + 25.5, col_w, 12.0),
-                    p_sub,
+                    DipRect::new(mx, pill.y + 20.5, col_w, 11.0),
+                    with_alpha(p_sub, p_sub.a * dim.max(0.65)),
                 )?;
             }
         }
 
-        // Title + subtitle on the left of the preview box.
         let text_x = radio.x + radio.w + 14.0;
         let text_w = (preview.x - text_x - 16.0).max(80.0);
         self.draw_dynamic_text(

@@ -535,19 +535,40 @@ pub enum AppSkin {
     GeminiGem,
 }
 
-/// Visual style for taskbar usage meters and reset time display (selectable in Settings → Style).
+/// Visual style for taskbar usage meters (selectable in Settings → Style).
+///
+/// All four options share the clean Option 1 3-tier layout (`R`/`W`/`M` + `%` on top,
+/// progress meter in the middle, `4h 33m` / `5d` countdown underneath).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum TaskbarMeterStyle {
-    /// 3-tier: `R`/`W`/`M` + `%` on top, bar middle, crisp `4:33` / `5d` clock countdown below.
+    /// Option 1 (Classic): `R`/`W`/`M` + `%` on top, 4px bar middle, `4h 33m` / `5d` below.
     #[default]
     ClockBelow,
-    /// 3-tier: `R`/`W`/`M` + `%` on top, bar middle, rounded single-unit `4.5h` / `5d` below.
-    MinimalBelow,
-    /// 3-tier: `R`/`W`/`M` + `%` on top, bar middle, local reset clock `→ 8:40p` / `→ Sat` below.
-    ResetAtBelow,
-    /// 2-tier: subtle `[R]` micro-pill + `4:33` + `%` on top, thicker bar below.
-    PillChip,
+    /// Option 2 (Bold meter): Option 1 with a thicker 5.5px bar and higher-contrast countdown.
+    #[serde(alias = "minimalBelow")]
+    BoldMeter,
+    /// Option 3 (Segmented blocks): Option 1 with 5 crisp 20% segments for instant reading.
+    #[serde(alias = "resetAtBelow")]
+    SegmentedBar,
+    /// Option 4 (Tinted tag): Option 1 with a subtle `[R]`/`[W]` tag badge and `↺` reset prefix.
+    #[serde(alias = "pillChip")]
+    TintedTag,
+}
+
+/// Visual treatment for an exhausted (100% / out of usage) provider card on the taskbar.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TaskbarExhaustedStyle {
+    /// Subtle translucent red glass card + crisp thin red border framing the exhausted pill.
+    #[default]
+    SoftRedWash,
+    /// Replaces maxed-out bars with a calm centered "Limit full / ↺ 2h 14m" countdown inside the pill.
+    ResetCountdown,
+    /// Softly dims the exhausted provider pill so active providers with quota stand out.
+    MutedDim,
+    /// Keeps meters visible and replaces `100%` with a crisp mini red `FULL` pill badge.
+    FullBadge,
 }
 
 /// Same shape as `Settings` in `lib/types.ts`.
@@ -588,9 +609,12 @@ pub struct Settings {
     /// automatically hide exhausted cards from the taskbar until they reset
     #[serde(rename = "autoHideExhausted", default)]
     pub auto_hide_exhausted: bool,
-    /// taskbar meter layout & reset-time presentation style
+    /// taskbar meter layout & visual variation (built on Option 1)
     #[serde(rename = "taskbarMeterStyle", default)]
     pub taskbar_meter_style: TaskbarMeterStyle,
+    /// taskbar out-of-usage / exhausted provider card presentation
+    #[serde(rename = "taskbarExhaustedStyle", default)]
+    pub taskbar_exhausted_style: TaskbarExhaustedStyle,
     /// show live local CPU & Memory monitor pill on the taskbar
     #[serde(rename = "systemMonitorEnabled", default = "default_true")]
     pub system_monitor_enabled: bool,
@@ -627,6 +651,7 @@ impl Default for Settings {
             hidden_bars: BTreeMap::new(),
             auto_hide_exhausted: false,
             taskbar_meter_style: TaskbarMeterStyle::default(),
+            taskbar_exhausted_style: TaskbarExhaustedStyle::default(),
             system_monitor_enabled: true,
             unsubscribed_accounts: Vec::new(),
             subscription_ends_at: BTreeMap::new(),
@@ -904,9 +929,22 @@ pub fn apply_settings_patch_at(current: &Settings, patch: &Value, now_ms: u64) -
     }
     match obj.get("taskbarMeterStyle").and_then(Value::as_str) {
         Some("clockBelow") => next.taskbar_meter_style = TaskbarMeterStyle::ClockBelow,
-        Some("minimalBelow") => next.taskbar_meter_style = TaskbarMeterStyle::MinimalBelow,
-        Some("resetAtBelow") => next.taskbar_meter_style = TaskbarMeterStyle::ResetAtBelow,
-        Some("pillChip") => next.taskbar_meter_style = TaskbarMeterStyle::PillChip,
+        Some("boldMeter" | "minimalBelow") => {
+            next.taskbar_meter_style = TaskbarMeterStyle::BoldMeter
+        }
+        Some("segmentedBar" | "resetAtBelow") => {
+            next.taskbar_meter_style = TaskbarMeterStyle::SegmentedBar
+        }
+        Some("tintedTag" | "pillChip") => next.taskbar_meter_style = TaskbarMeterStyle::TintedTag,
+        _ => {}
+    }
+    match obj.get("taskbarExhaustedStyle").and_then(Value::as_str) {
+        Some("softRedWash") => next.taskbar_exhausted_style = TaskbarExhaustedStyle::SoftRedWash,
+        Some("resetCountdown") => {
+            next.taskbar_exhausted_style = TaskbarExhaustedStyle::ResetCountdown
+        }
+        Some("mutedDim") => next.taskbar_exhausted_style = TaskbarExhaustedStyle::MutedDim,
+        Some("fullBadge") => next.taskbar_exhausted_style = TaskbarExhaustedStyle::FullBadge,
         _ => {}
     }
     if let Some(names) = obj
@@ -1213,9 +1251,9 @@ mod tests {
         );
         for (wire, expected) in [
             ("clockBelow", TaskbarMeterStyle::ClockBelow),
-            ("minimalBelow", TaskbarMeterStyle::MinimalBelow),
-            ("resetAtBelow", TaskbarMeterStyle::ResetAtBelow),
-            ("pillChip", TaskbarMeterStyle::PillChip),
+            ("boldMeter", TaskbarMeterStyle::BoldMeter),
+            ("segmentedBar", TaskbarMeterStyle::SegmentedBar),
+            ("tintedTag", TaskbarMeterStyle::TintedTag),
         ] {
             let patched =
                 apply_settings_patch(&Settings::default(), &json!({ "taskbarMeterStyle": wire }));
@@ -1226,12 +1264,32 @@ mod tests {
         // Unknown values preserve the existing style.
         let kept = apply_settings_patch(
             &Settings {
-                taskbar_meter_style: TaskbarMeterStyle::PillChip,
+                taskbar_meter_style: TaskbarMeterStyle::TintedTag,
                 ..Settings::default()
             },
             &json!({ "taskbarMeterStyle": "invalid" }),
         );
-        assert_eq!(kept.taskbar_meter_style, TaskbarMeterStyle::PillChip);
+        assert_eq!(kept.taskbar_meter_style, TaskbarMeterStyle::TintedTag);
+
+        // Exhausted card style serialization.
+        assert_eq!(
+            Settings::default().taskbar_exhausted_style,
+            TaskbarExhaustedStyle::SoftRedWash
+        );
+        for (wire, expected) in [
+            ("softRedWash", TaskbarExhaustedStyle::SoftRedWash),
+            ("resetCountdown", TaskbarExhaustedStyle::ResetCountdown),
+            ("mutedDim", TaskbarExhaustedStyle::MutedDim),
+            ("fullBadge", TaskbarExhaustedStyle::FullBadge),
+        ] {
+            let patched = apply_settings_patch(
+                &Settings::default(),
+                &json!({ "taskbarExhaustedStyle": wire }),
+            );
+            assert_eq!(patched.taskbar_exhausted_style, expected);
+            let out = serde_json::to_value(&patched).unwrap();
+            assert_eq!(out["taskbarExhaustedStyle"], json!(wire));
+        }
     }
 
     #[test]
