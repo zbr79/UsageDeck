@@ -106,7 +106,8 @@ const CARD_RADIUS_DIP: f32 = 10.0;
 const CARD_GAP_DIP: f32 = 8.0;
 const CARD_MARGIN_DIP: f32 = 8.0;
 
-const HEADER_ROW_H_DIP: f32 = 24.0;
+const HEADER_ROW_H_DIP: f32 = 28.0;
+const SETTINGS_BTN_SIZE_DIP: f32 = 28.0;
 const HEADER_ICON_DIP: f32 = 20.0;
 const HEADER_ICON_GAP_DIP: f32 = 8.0;
 const HEADER_SUB_H_DIP: f32 = 14.0;
@@ -776,6 +777,7 @@ pub struct TooltipWindow {
     fmt_footer: IDWriteTextFormat,
     fmt_footer_bold: IDWriteTextFormat,
     fmt_button: IDWriteTextFormat,
+    fmt_gear: Option<IDWriteTextFormat>,
     fmt_section_cap: IDWriteTextFormat,
     fmt_proc_name: IDWriteTextFormat,
     fmt_proc_val: IDWriteTextFormat,
@@ -848,7 +850,7 @@ impl TooltipWindow {
                 w!("Segoe UI"),
                 DWRITE_FONT_WEIGHT_NORMAL,
                 10.0,
-                DWRITE_TEXT_ALIGNMENT_TRAILING,
+                DWRITE_TEXT_ALIGNMENT_LEADING,
                 false,
             )?;
             let fmt_bar_pct = make_text_format(
@@ -883,6 +885,7 @@ impl TooltipWindow {
                 DWRITE_TEXT_ALIGNMENT_CENTER,
                 false,
             )?;
+            let fmt_gear = make_gear_icon_format(&dwrite);
             let fmt_section_cap = make_text_format(
                 &dwrite,
                 w!("Segoe UI"),
@@ -949,6 +952,7 @@ impl TooltipWindow {
                 fmt_footer,
                 fmt_footer_bold,
                 fmt_button,
+                fmt_gear,
                 fmt_section_cap,
                 fmt_proc_name,
                 fmt_proc_val,
@@ -1430,10 +1434,8 @@ impl TooltipWindow {
         let scale = metrics.scale.max(0.5);
         let mon_w_dip = (metrics.monitor_rect.right - metrics.monitor_rect.left) as f32 / scale;
 
-        // Top-right Settings button width.
-        let (settings_tw, _) =
-            self.measure_text("Settings", &self.fmt_button, 120.0, FOOTER_BTN_H_DIP)?;
-        let settings_bw = (settings_tw.ceil() + FOOTER_BTN_PAD_X_DIP * 2.0).max(58.0);
+        // Top-right Settings gear icon button (generous 28x28 DIP click target).
+        let settings_bw = SETTINGS_BTN_SIZE_DIP;
 
         // Collect inline header badges placed directly to the right of the provider name:
         // price/spend rate (clean neutral) -> reset count (purple) -> active alert badge.
@@ -1653,16 +1655,23 @@ impl TooltipWindow {
         };
         let title_x = content_x + HEADER_ICON_DIP + HEADER_ICON_GAP_DIP;
 
+        let settings_tone = if item.exhausted {
+            HoverButtonTone::Danger
+        } else if item.auth_expired {
+            HoverButtonTone::Warn
+        } else {
+            HoverButtonTone::Accent
+        };
         let settings_btn = HoverCardButton {
-            label: "Settings".to_string(),
+            label: String::new(),
             rect: DipRect {
                 x: content_x + content_w - settings_bw,
-                y: header_y + (HEADER_ROW_H_DIP - FOOTER_BTN_H_DIP) * 0.5,
+                y: header_y + (HEADER_ROW_H_DIP - SETTINGS_BTN_SIZE_DIP) * 0.5,
                 w: settings_bw,
-                h: FOOTER_BTN_H_DIP,
+                h: SETTINGS_BTN_SIZE_DIP,
             },
             action: HoverCardAction::OpenSettings(item.provider),
-            tone: HoverButtonTone::Accent,
+            tone: settings_tone,
         };
         let header_right_limit = settings_btn.rect.x - 8.0;
 
@@ -1958,8 +1967,8 @@ impl TooltipWindow {
                 )?;
 
                 if let Some(ref reset_text) = mb.reset_text {
-                    let reset_x = layout.content_x + mb.label_w + 4.0;
-                    let reset_w = (pct_x - 4.0 - reset_x).max(0.0);
+                    let reset_x = layout.content_x + mb.label_w + 7.0;
+                    let reset_w = (pct_x - 6.0 - reset_x).max(0.0);
                     if reset_w >= 16.0 {
                         draw_text(
                             rt,
@@ -1967,7 +1976,7 @@ impl TooltipWindow {
                             &self.fmt_bar_reset,
                             DipRect {
                                 x: reset_x,
-                                y: mb.y,
+                                y: mb.y + 0.5,
                                 w: reset_w,
                                 h: BAR_META_H_DIP,
                             },
@@ -2113,7 +2122,14 @@ impl TooltipWindow {
                 };
                 fill_rounded(rt, btn.rect, FOOTER_BTN_RADIUS_DIP, bg)?;
                 stroke_rounded(rt, btn.rect, FOOTER_BTN_RADIUS_DIP, 1.0, border)?;
-                draw_text(rt, &btn.label, &self.fmt_button, btn.rect, fg)?;
+                if matches!(
+                    btn.action,
+                    HoverCardAction::OpenSettings(_) | HoverCardAction::OpenWidgetSettings
+                ) {
+                    draw_gear_icon(rt, self.fmt_gear.as_ref(), btn.rect, fg)?;
+                } else {
+                    draw_text(rt, &btn.label, &self.fmt_button, btn.rect, fg)?;
+                }
             }
             Ok(())
         })?;
@@ -2166,17 +2182,15 @@ impl TooltipWindow {
         };
         let title_x = content_x + HEADER_ICON_DIP + HEADER_ICON_GAP_DIP;
 
-        // Top-right Settings button opening Settings -> Widget.
-        let (settings_tw, _) =
-            self.measure_text("Settings", &self.fmt_button, 120.0, FOOTER_BTN_H_DIP)?;
-        let settings_bw = (settings_tw.ceil() + FOOTER_BTN_PAD_X_DIP * 2.0).max(58.0);
+        // Top-right Settings gear icon button opening Settings -> Widget.
+        let settings_bw = SETTINGS_BTN_SIZE_DIP;
         let settings_btn = HoverCardButton {
-            label: "Settings".to_string(),
+            label: String::new(),
             rect: DipRect {
                 x: content_x + content_w - settings_bw,
-                y: header_y + (HEADER_ROW_H_DIP - FOOTER_BTN_H_DIP) * 0.5,
+                y: header_y + (HEADER_ROW_H_DIP - SETTINGS_BTN_SIZE_DIP) * 0.5,
                 w: settings_bw,
-                h: FOOTER_BTN_H_DIP,
+                h: SETTINGS_BTN_SIZE_DIP,
             },
             action: HoverCardAction::OpenWidgetSettings,
             tone: HoverButtonTone::Accent,
@@ -2583,11 +2597,25 @@ impl TooltipWindow {
                 "No active apps",
             )?;
 
-            // Top-right Settings button.
+            // Top-right Settings gear button — follows the card's status color (red/yellow/accent).
+            let (btn_tone, btn_fg_rest) = if peak_load >= 90.0 {
+                (pal.danger, pal.danger)
+            } else if peak_load >= 75.0 {
+                (pal.warn, pal.warn)
+            } else {
+                let accent_fg = if !pal.is_gemini_gem {
+                    pal.accent
+                } else if dark {
+                    rgba(94, 233, 181, 1.0)
+                } else {
+                    rgba(0, 122, 85, 1.0)
+                };
+                (pal.accent, accent_fg)
+            };
             for btn in &buttons {
                 let is_hovered = hovered_button == Some(&btn.action);
                 let bg = with_alpha(
-                    pal.accent,
+                    btn_tone,
                     if is_hovered {
                         if dark {
                             0.28
@@ -2601,7 +2629,7 @@ impl TooltipWindow {
                     },
                 );
                 let border = with_alpha(
-                    pal.accent,
+                    btn_tone,
                     if is_hovered {
                         0.78
                     } else if dark {
@@ -2612,16 +2640,12 @@ impl TooltipWindow {
                 );
                 let fg = if is_hovered && dark {
                     pal.text_primary
-                } else if !pal.is_gemini_gem {
-                    pal.accent
-                } else if dark {
-                    rgba(94, 233, 181, 1.0)
                 } else {
-                    rgba(0, 122, 85, 1.0)
+                    btn_fg_rest
                 };
                 fill_rounded(rt, btn.rect, FOOTER_BTN_RADIUS_DIP, bg)?;
                 stroke_rounded(rt, btn.rect, FOOTER_BTN_RADIUS_DIP, 1.0, border)?;
-                draw_text(rt, &btn.label, &self.fmt_button, btn.rect, fg)?;
+                draw_gear_icon(rt, self.fmt_gear.as_ref(), btn.rect, fg)?;
             }
 
             Ok(())
@@ -2747,6 +2771,75 @@ impl Drop for TooltipWindow {
             }
         }
     }
+}
+
+/// Try to create a DirectWrite text format for the native Windows Settings gear glyph (`\u{E713}`),
+/// preferring `Segoe Fluent Icons` (Windows 11) and falling back to `Segoe MDL2 Assets` (Windows 10).
+unsafe fn make_gear_icon_format(dwrite: &IDWriteFactory) -> Option<IDWriteTextFormat> {
+    let mut coll: Option<IDWriteFontCollection> = None;
+    if dwrite.GetSystemFontCollection(&mut coll, false).is_err() {
+        return None;
+    }
+    let coll = coll?;
+    for family in [w!("Segoe Fluent Icons"), w!("Segoe MDL2 Assets")] {
+        let mut idx = 0u32;
+        let mut exists = windows::core::BOOL(0);
+        if coll.FindFamilyName(family, &mut idx, &mut exists).is_ok() && exists.as_bool() {
+            if let Ok(fmt) = make_text_format(
+                dwrite,
+                family,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                14.5,
+                DWRITE_TEXT_ALIGNMENT_CENTER,
+                false,
+            ) {
+                return Some(fmt);
+            }
+        }
+    }
+    None
+}
+
+/// Draw the Settings gear icon centered inside `rect` — using the crisp native Windows Fluent
+/// glyph when available, or a clean 8-tooth Direct2D vector gear fallback.
+fn draw_gear_icon(
+    rt: &ID2D1DCRenderTarget,
+    fmt_gear: Option<&IDWriteTextFormat>,
+    rect: DipRect,
+    color: D2D1_COLOR_F,
+) -> Result<()> {
+    if let Some(fmt) = fmt_gear {
+        return draw_text(rt, "\u{E713}", fmt, rect, color);
+    }
+    let cx = rect.x + rect.w * 0.5;
+    let cy = rect.y + rect.h * 0.5;
+    let ring_r = 4.1f32;
+    let ring = DipRect {
+        x: cx - ring_r,
+        y: cy - ring_r,
+        w: ring_r * 2.0,
+        h: ring_r * 2.0,
+    };
+    stroke_rounded(rt, ring, ring_r, 2.0, color)?;
+    let tooth_r = 5.7f32;
+    let tooth_sz = 2.6f32;
+    for i in 0..8 {
+        let angle = (i as f32) * std::f32::consts::FRAC_PI_4;
+        let tx = cx + angle.cos() * tooth_r - tooth_sz * 0.5;
+        let ty = cy + angle.sin() * tooth_r - tooth_sz * 0.5;
+        fill_rounded(
+            rt,
+            DipRect {
+                x: tx,
+                y: ty,
+                w: tooth_sz,
+                h: tooth_sz,
+            },
+            1.0,
+            color,
+        )?;
+    }
+    Ok(())
 }
 
 /// Pick a proportional provider hover card width in DIPs based on bar count and measured content.

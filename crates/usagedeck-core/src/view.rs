@@ -16,7 +16,7 @@ use crate::providers::cursor_diag::{CursorAttempt, DbHow};
 use crate::providers::cursor_usage::{CursorUsage, ModelSpend as CursorModelSpend, OnDemand};
 use crate::providers::grok::GrokUsage;
 use crate::providers::opencode::{OpenCodeUsage, UsageWindow};
-use crate::store::{Settings, TaskbarMeterStyle, ThemeMode, WidgetProvider};
+use crate::store::{Settings, TaskbarExhaustedStyle, TaskbarMeterStyle, ThemeMode, WidgetProvider};
 use crate::Core;
 use chrono::{DateTime, Local, NaiveDate, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
@@ -239,6 +239,9 @@ pub struct TaskbarSnapshot {
     pub snoozed_count: usize,
     /// Selected taskbar meter layout & reset-time style.
     pub taskbar_meter_style: TaskbarMeterStyle,
+    /// Selected taskbar out-of-usage / exhausted card design.
+    #[serde(default)]
+    pub taskbar_exhausted_style: TaskbarExhaustedStyle,
     /// Whether the local CPU & Memory taskbar monitor is enabled in Settings.
     #[serde(default = "default_true_snap")]
     pub system_monitor_enabled: bool,
@@ -1110,6 +1113,7 @@ pub async fn poll_snapshot(core: &Core) -> TaskbarSnapshot {
         app_skin: settings.app_skin,
         snoozed_count,
         taskbar_meter_style: settings.taskbar_meter_style,
+        taskbar_exhausted_style: settings.taskbar_exhausted_style,
         system_monitor_enabled: settings.system_monitor_enabled,
         system: None,
     }
@@ -4119,6 +4123,7 @@ pub fn demo_snapshot(now_ms: i64) -> TaskbarSnapshot {
         app_skin: crate::store::AppSkin::default(),
         snoozed_count: 0,
         taskbar_meter_style: TaskbarMeterStyle::default(),
+        taskbar_exhausted_style: TaskbarExhaustedStyle::default(),
         system_monitor_enabled: true,
         system: Some(crate::sysmon::demo_system_snapshot()),
     }
